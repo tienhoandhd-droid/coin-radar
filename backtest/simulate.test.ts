@@ -92,7 +92,7 @@ test('Long chạm SL: lỗ = 400 × 5 + phí 0,05% hai chiều = −2 039 USDT =
   close(r.costs, 400 * 100 * 0.0005 + 400 * 95 * 0.0005); // 20 + 19
   close(r.pnl, -2039);
   close(r.pctEquity, (-2039 / CAPITAL) * 100);
-  close(r.R, -2039 / 2040); // 1R = 400 × (5 + 100 × 0,1%) = 2 040
+  close(r.R, -1); // 1R = q × (|giá xấu nhất − SL| + nửa phí ở giá vào + nửa phí ở giá SL) = 400 × 5,0975 = 2 039 — chạm SL đủ = −1R
   assert.equal(r.flags.gap, false);
   close(r.maeR!, (94 - 100) / 5); // giá xấu nhất 94 trong nến chạm SL
 });
@@ -102,6 +102,7 @@ test('Short chạm SL đối xứng: lỗ −2 041 USDT (phí chiều ra tính t
   assert.equal(r.reason, 'stop_loss');
   close(r.gross, -2000);
   close(r.pnl, -2000 - 20 - 400 * 105 * 0.0005);
+  close(r.R, -1); // 1R = 400 × 5,1025 = 2 041
 });
 
 test('Long: TP1 50% tại 125 rồi trailing 10% từ đỉnh 130 → thoát 117 (trên hòa vốn)', async () => {
@@ -263,7 +264,7 @@ test('portfolioView: lệnh chờ khớp và lệnh đang mở đều chiếm r�
   await advanceTrade(a, bars([[100, 100.5, 99.5, 100]]), Infinity, { funding: [], resolve: null });
   const v = portfolioView([a, b]);
   assert.equal(v.length, 2);
-  close(v[0]!.riskAmount, 400 * (5 + 100 * 0.001));
+  close(v[0]!.riskAmount, 400 * 5.0975); // cùng công thức định cỡ của planner
   assert.equal(v[0]!.pastTp1, false);
   assert.ok(v[1]!.riskAmount > 0, 'lệnh limit chờ khớp vẫn giữ chỗ rủi ro');
   await advanceTrade(a, bars([[118, 126, 117, 125.5]], T0 + M5), Infinity, { funding: [], resolve: null });
@@ -371,4 +372,19 @@ test('≤ 2%: Long trả funding nhiều kỳ trước khi chạm SL (ca FFUSDT)
   assert.equal(r.reason, 'stop_loss');
   assert.ok(r.funding < 0);
   assert.ok(r.pctEquity >= -2 - 1e-9, `lỗ ${r.pctEquity}%`);
+});
+
+test('R: chạm SL đủ với trượt theo cỡ (KL mỏng) vẫn ≈ −1R — 1R gồm trượt hai chiều của khối lượng cuối', async () => {
+  const cost: SimCost = { tierPct: 0.1, impactPct: 0.5, vol1m: 400_000 };
+  const p = { ...plan('long', { entryType: 'limit', limitPrice: 100 }) };
+  const tr = createTrade({
+    id: 'r1', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: p.capital, contract: C, plan: p, cost, pathInterval: '5m',
+    planner: planned(p, { costModel: { tierPct: 0.1, quoteVolPerMin: 400_000 } }),
+    meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  const r = await run(tr, bars([[100.5, 101, 99.9, 100.2], [99.8, 99.9, 94, 94.5]]));
+  assert.equal(r.reason, 'stop_loss');
+  // limit khớp đúng giá xấu nhất 100 nhưng KHÔNG trượt chiều vào (lệnh chờ) trong khi 1R có dự trù trượt hai chiều → lỗ hơi dưới 1R
+  assert.ok(r.R >= -1 - 1e-9 && r.R < -0.99, `R ${r.R}`);
+  assert.ok(r.pctEquity >= -2 - 1e-9);
 });

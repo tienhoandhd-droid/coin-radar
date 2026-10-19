@@ -74,6 +74,7 @@ export type SimTrade = {
     tick: number; qStep: number; leverage: number; costPct: number; cost: SimCost; pathInterval: string; meta: TradeMeta;
     initialStopX: number; tp1X: number; actX: number; cbPct: number; beX: number | null; tp2X: number | null; tp3X: number | null;
     trailAtr: number; timeStopMs: number; maxHoldMs: number; entryType: PlannerPlan['entryType']; sizing: Sizing;
+    riskModel: { a: number; b: number; fundingPerUnit: number }; // từ planner: rủi ro(q) = q·a + q²·b
   };
   s: State;
   b: {
@@ -122,6 +123,7 @@ export function createTrade(a: {
       beX: be?.op === 'placeStopLoss' ? toX(d, be.input.triggerPrice) : null, tp2X: tgt(1), tp3X: tgt(2), trailAtr,
       timeStopMs: cfg.timeStopHours * HOUR, maxHoldMs: cfg.maxHoldHours * HOUR, entryType: a.plan.entryType,
       sizing: { plannedRiskPct: pr.sizing.realRiskPct, requestedQty: pr.sizing.requestedQty, qty: pr.sizing.qty, notes: pr.reasons },
+      riskModel: { a: pr.sizing.riskModel.a, b: pr.sizing.riskModel.b, fundingPerUnit: pr.sizing.riskModel.fundingPerUnit },
     },
     s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null },
     b: {
@@ -495,20 +497,16 @@ export function portfolioView(trades: readonly SimTrade[]): OpenTrade[] {
   return trades.filter((t) => !isDone(t)).map((t) => {
     const s = t.s;
     const k = t.k;
-    let notional = 0, risk = 0;
-    const stopReal = realPx(t, k.initialStopX);
-    if (s.posQty > 0) {
-      const avg = realPx(t, s.avgX);
-      notional += s.posQty * avg;
-      risk += s.posQty * (Math.max(0, k.d * (avg - stopReal)) + (avg * k.costPct) / 100);
-    }
+    // rủi ro = cùng công thức định cỡ của planner (giá vào xấu nhất, phí hai chiều, trượt theo cỡ, đệm funding) cho phần đang mở + phần chờ khớp
+    let notional = 0, q = 0;
+    if (s.posQty > 0) { notional += s.posQty * realPx(t, s.avgX); q += s.posQty; }
     for (const l of s.legs) {
       if (l.status !== 'pending') continue;
-      const px = realPx(t, l.limitX);
-      const q = l.qty - l.filledQty;
-      notional += q * px;
-      risk += q * (Math.abs(px - stopReal) + (px * k.costPct) / 100);
+      const rest = l.qty - l.filledQty;
+      notional += rest * realPx(t, l.limitX);
+      q += rest;
     }
+    const risk = q * k.riskModel.a + q * q * k.riskModel.b;
     return { symbol: k.symbol, side: k.side, notional, leverage: k.leverage, riskAmount: risk, pastTp1: s.tp1Done };
   });
 }
@@ -533,8 +531,10 @@ export function tradeRecord(tr: SimTrade): TradeRecord {
   const avg = filled ? roundPx(b.entryNotional / b.maxPosQty) : null; // giá vào TB theo mọi chân đã khớp
   const pnl = b.gross - b.costs + b.funding;
   const stopReal = realPx(tr, k.initialStopX);
-  const unit = avg === null ? 0 : Math.abs(avg - stopReal) + (avg * k.costPct) / 100;
-  const riskAtFill = b.maxPosQty * unit;
+  // 1R = rủi ro định cỡ của planner cho KHỐI LƯỢNG ĐÃ KHỚP, không gồm đệm funding: q·(a − funding/coin) + q²·b
+  // (|giá xấu nhất − SL| + phí hai chiều + trượt theo cỡ) → chạm SL đủ ở giá xấu nhất = −1R; funding thật tính riêng vào lãi lỗ.
+  const q = b.maxPosQty;
+  const riskAtFill = q * (k.riskModel.a - k.riskModel.fundingPerUnit) + q * q * k.riskModel.b;
   const exQty = b.exits.reduce((x, e) => x + e.qty, 0);
   const oneR = avg === null ? NaN : Math.abs(avg - stopReal);
   const avgXv = avg === null ? NaN : toX(k.d, avg);
