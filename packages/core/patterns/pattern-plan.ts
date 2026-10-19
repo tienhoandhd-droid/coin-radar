@@ -390,8 +390,12 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     const estLoss = legs.reduce((sum, l) => sum + l.qty * Math.abs(l.price - stop), 0) + (notional * costPct) / 100;
     return { label, fill: f, qty, q, estLoss, legs, avgEntry };
   };
+  const exitPolicy = a.exitPolicy ?? COMMON.exit.defaultPolicy;
+  const c2 = exitPolicy === 'C2' && prices[0] !== null; // C2: chỉ cần TP1 và phần trailing (còn lại) mỗi chân >= 1 bước
   const rowOk = (r: PatternFillRow) =>
-    r.legs.every((l) => l.qty > 0 && prices.every((p, i) => p === null || (pcts[i] ?? 0) === 0 || l.q[i]! > 0));
+    r.legs.every((l) => l.qty > 0 && (c2
+      ? l.q[0] > 0 && sq(l.qty - l.q[0]) > 0
+      : prices.every((p, i) => p === null || (pcts[i] ?? 0) === 0 || l.q[i]! > 0)));
   let fillTable: PatternFillRow[] = entryType === 'limit'
     ? [makeRow('limit', limitPrice!)]
     : [makeRow('giá hiện tại', marketPrice), makeRow('giữa', snapToTick((marketPrice + maxEntry) / 2, tick, 'nearest')), makeRow('giá tối đa', maxEntry)];
@@ -419,7 +423,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   if (!rowOk(row0)) {
     problems.push(row0.legs.some((l) => l.qty <= 0)
       ? 'Khối lượng quá nhỏ so với bước khối lượng của sàn — tăng vốn hoặc bỏ lệnh'
-      : `Khối lượng không chia được ${pcts.join('/')} theo bước khối lượng của sàn`);
+      : `Khối lượng không chia được ${c2 ? `TP1 ${ex[0]}% + trailing ${100 - ex[0]!}%` : pcts.join('/')} theo bước khối lượng của sàn`);
   }
   let maxNote = '';
   if (problems.length === 0 && entryType !== 'limit') {
@@ -558,7 +562,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     targets,
     targetsIfMarketOnly: entryType === 'split' ? row0.legs[0]!.q : null,
     tp1NetR,
-    exit: buildExit({ policy: a.exitPolicy ?? COMMON.exit.defaultPolicy, side, entry, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * A, costPct, qty: row0.qty, tp1Qty: targets[0]!.qty }),
+    exit: buildExit({ policy: exitPolicy, side, worstEntry: limitPrice === null ? maxEntry : side === 'long' ? Math.max(maxEntry, limitPrice) : Math.min(maxEntry, limitPrice), valid, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * A, costPct, qty: row0.qty, tp1Qty: targets[0]!.qty }),
     afterTp1Stop,
     afterTp1StopIfMarketOnly,
     afterTp1Rule,

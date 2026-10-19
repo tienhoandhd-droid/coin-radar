@@ -68,7 +68,7 @@ export const COMMON = {
   portfolio: { maxOpenTrades: 10 }, // trần 10 lệnh mở cùng lúc, đủ 10 thì không vào lệnh mới (thay đề xuất cũ 3 lệnh/6%/5 altcoin/2 cùng ngành/3 cùng chiều) — người dùng chốt 19/10/2026
   exit: {
     defaultPolicy: 'C2' as ExitPolicy, // người dùng chốt 19/10/2026: TP1 chốt 50%, 50% còn lại trailing stop trên sàn kích hoạt tại TP1. 'A0' = 50/30/20 cố định (luật cũ, để đối chứng)
-    tp1Pct: 50, // % vị thế chốt tại TP1 (cả A0 và C2)
+    // % chốt tại TP1 lấy từ COMMON.zones.exitPcts[0] (một nguồn duy nhất, cả A0 và C2)
   },
   binanceTrailMaxCallbackPct: 10, // lệnh TRAILING_STOP_MARKET của Binance: callbackRate tối đa 10 (%), tối thiểu 0,1 — developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order (tra 19/10/2026)
   // Vùng hỗ trợ/kháng cự — ĐỀ XUẤT, CHƯA BACKTEST

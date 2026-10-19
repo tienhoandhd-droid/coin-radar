@@ -332,7 +332,7 @@ test('1.4 splitQuantity: 29 (bước 1) → 14/8/7; 0,033 (bước 0,001) → 0,
 });
 
 test('1.3 qty = 0 → kế hoạch không hợp lệ, có lý do khối lượng', () => {
-  const p = buildPlan({ ...baseArgs, stepSize: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  const p = buildPlan({ ...baseArgs, exitPolicy: 'A0', stepSize: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(p.qty, 0);
   assert.equal(p.valid, false);
   assert.equal(p.invalidReason, 'Khối lượng quá nhỏ so với bước khối lượng của sàn — tăng vốn hoặc bỏ lệnh');
@@ -340,11 +340,11 @@ test('1.3 qty = 0 → kế hoạch không hợp lệ, có lý do khối lượng
 
 test('1.4 qty không chia được 50/30/20 → không hợp lệ; chia được → qty từng TP cộng lại bằng qty', () => {
   // vốn 1000, rủi ro 0,5%, vào 96,3, SL 94,7, phí cao → qty khoảng 3 với bước 1
-  const small = buildPlan({ ...baseArgs, stepSize: 1, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  const small = buildPlan({ ...baseArgs, exitPolicy: 'A0', stepSize: 1, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(small.qty, 2);
   assert.equal(small.valid, false);
   assert.equal(small.invalidReason, 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn');
-  const ok = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  const ok = buildPlan({ ...baseArgs, exitPolicy: 'A0', side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(ok.valid, true);
   assert.equal(r6(ok.targets.reduce((s, t) => s + t.qty, 0)), r6(ok.qty));
 });
@@ -456,7 +456,7 @@ const rowOk = (p: ReturnType<typeof buildPlan>, f: { qty: number; q: number[] })
   f.qty > 0 && p.targets.every((t, i) => t.price === null || f.q[i]! > 0);
 
 test('3.1 Long, 3 TP, vốn 1480, bước 1: dòng giữa/tối đa chia ra TP2 = 0 → bỏ dòng, hạ giá tối đa về giá hiện tại', () => {
-  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1480, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  const p = buildPlan({ ...baseArgs, exitPolicy: 'A0', stepSize: 1, capital: 1480, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(p.valid, true);
   assert.ok(p.targets.every((t) => t.price !== null));
   assert.ok(p.fillTable.every((f) => rowOk(p, f)), JSON.stringify(p.fillTable));
@@ -468,7 +468,7 @@ test('3.1 Long, 3 TP, vốn 1480, bước 1: dòng giữa/tối đa chia ra TP2 
 
 test('3.1 Short (gương): cùng lỗi → nâng giá tối đa lên giá hiện tại', () => {
   const zs = [zone(104, 105, 3), zone(101, 101.8), zone(97, 98), zone(93, 94)];
-  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1490, side: 'short', entry: flat(103.7), zones: zs });
+  const p = buildPlan({ ...baseArgs, exitPolicy: 'A0', stepSize: 1, capital: 1490, side: 'short', entry: flat(103.7), zones: zs });
   assert.equal(p.valid, true);
   assert.ok(p.fillTable.every((f) => rowOk(p, f)), JSON.stringify(p.fillTable));
   assert.equal(p.fillTable.length, 1);
@@ -497,7 +497,7 @@ test('3.1 Toàn trailing Short, vốn 380: mirror', () => {
 });
 
 test('3.1 dòng đầu hỏng → vẫn không hợp lệ như cũ', () => {
-  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  const p = buildPlan({ ...baseArgs, exitPolicy: 'A0', stepSize: 1, capital: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(p.valid, false);
   assert.equal(p.invalidReason, 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn');
 });
@@ -520,30 +520,41 @@ test('M2 worstTp1NetR (lệnh vùng): market tính ở giá tối đa, limit ở
 // ---- B0: chính sách thoát mặc định C2 ----
 const closeTo = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≠ ${b}`);
 
-test('B0: mặc định C2 — Long vào 96,3, TP1 98,8, ATR 1 (trailing 3), phí 0,25%: callback bị chặn bởi mức bảo đảm không lỗ', () => {
+test('B0: mặc định C2 — Long: bảo đảm không lỗ tính ở giá khớp XẤU NHẤT (maxEntry 96,6), callback làm tròn xuống', () => {
   const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(p.exit.policy, 'C2');
-  // TP2/TP3 vẫn được tính làm thông tin
-  assert.deepEqual(p.targets.map((t) => r6(t.price!)), [98.8, 101.8, 105.8]);
+  assert.deepEqual(p.targets.map((t) => r6(t.price!)), [98.8, 101.8, 105.8]); // TP2/TP3 vẫn tính
+  assert.equal(r6(p.maxEntry), 96.6);
   const t = p.exit.trailing!;
-  // hòa vốn = 96,3 × 1,0025 = 96,54075; bảo đảm = (98,8 − 96,54075)/98,8 = 2,28659%; ATR% = 3/98,8 = 3,0364% → lấy 2,28659%
+  // hòa vốn xấu nhất = 96,6 × 1,0025 = 96,8415; bảo đảm = (98,8 − 96,8415)/98,8 = 1,98213% -> 1,98; ATR% = 3,0364%
   closeTo(t.activationPrice, 98.8);
-  closeTo(t.noLossCallbackPct, ((98.8 - 96.54075) / 98.8) * 100);
-  closeTo(t.callbackPct, ((98.8 - 96.54075) / 98.8) * 100);
-  closeTo(t.stopAtActivation, 96.54075);
+  closeTo(t.noLossCallbackPct, ((98.8 - 96.8415) / 98.8) * 100);
+  closeTo(t.callbackPct, 1.98);
+  closeTo(t.stopAtActivation, 98.8 * (1 - 0.0198)); // 96,84376 >= 96,8415
+  assert.ok(t.stopAtActivation >= p.maxEntry * 1.0025);
   assert.equal(t.needsBreakevenFloor, false);
   assert.equal(p.exit.tp1Qty, p.targets[0]!.qty);
   closeTo(p.exit.trailQty, p.qty - p.targets[0]!.qty, 1e-9);
 });
 
-test('B0: C2 Short đối xứng — vào 103,7, TP1 101,2, hòa vốn 103,44075', () => {
+test('B0: C2 Short đối xứng — giá khớp xấu nhất 103,4 (thấp nhất cho Short), hòa vốn 103,1415', () => {
   const zones = [zone(104, 105, 3), zone(100, 101), zone(97, 98), zone(93, 94)];
   const p = buildPlan({ ...baseArgs, side: 'short', entry: flat(103.7), zones });
+  assert.equal(r6(p.maxEntry), 103.4);
   const t = p.exit.trailing!;
-  closeTo(t.noLossCallbackPct, ((103.44075 - 101.2) / 101.2) * 100);
-  closeTo(t.callbackPct, ((103.44075 - 101.2) / 101.2) * 100);
-  closeTo(t.stopAtActivation, 103.44075);
-  assert.ok(t.stopAtActivation <= p.entry);
+  closeTo(t.noLossCallbackPct, ((103.1415 - 101.2) / 101.2) * 100); // 1,91852%
+  closeTo(t.callbackPct, 1.91);
+  closeTo(t.stopAtActivation, 101.2 * 1.0191); // 103,13292 <= 103,1415
+  assert.ok(t.stopAtActivation <= p.maxEntry * 0.9975);
+});
+
+test('B0: C2 lệnh limit — bảo đảm tính tại giá limit', () => {
+  const zones = [...supports, zone(103, 104), zone(108, 109)];
+  const far = buildPlan({ ...baseArgs, side: 'long', entry: flat(100), zones });
+  assert.equal(far.entryType, 'limit');
+  const t = far.exit.trailing!;
+  assert.ok(t.stopAtActivation >= far.entry * 1.0025 - 1e-9, `${t.stopAtActivation} < ${far.entry * 1.0025}`);
+  closeTo(t.noLossCallbackPct, ((far.targets[0]!.price! - far.entry * 1.0025) / far.targets[0]!.price!) * 100);
 });
 
 test('B0: exitPolicy A0 giữ luật cũ (không trailing trên sàn), 50/30/20', () => {
@@ -557,4 +568,26 @@ test('B0: rủi ro 2% vốn → ngân sách rủi ro 20 USDT trên 1000 USDT', (
   const p = buildPlan({ ...baseArgs, riskPct: COMMON.risk.perTradePct, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(p.riskAmount, 20);
   assert.equal(p.riskPct, 2);
+});
+
+// ---- B0 vòng sửa 1: C2 chỉ cần TP1 và phần trailing chia được; A0 giữ kiểm tra cũ ----
+// vốn 1,2 USDT × 0,5% = 0,006 rủi ro ÷ (1,6 + 96,3×0,25%) = 0,00326 -> 0,003. A0: TP1 0,001 / TP2 floor(0,0009)=0 -> không chia được. C2: TP1 0,001 + trailing 0,002.
+test('B0: khối lượng 0,003 — A0 bị loại vì TP2 không chia được, C2 vẫn hợp lệ (TP1 0,001 + trailing 0,002)', () => {
+  const a = { ...baseArgs, capital: 1.2, side: 'long' as const, entry: flat(96.3), zones: [...supports, ...resistances] };
+  const old = buildPlan({ ...a, exitPolicy: 'A0' });
+  assert.equal(old.qty, 0.003);
+  assert.equal(old.valid, false);
+  assert.match(old.invalidReason!, /50\/30\/20/);
+  const c2 = buildPlan({ ...a });
+  assert.equal(c2.valid, true, c2.invalidReason ?? '');
+  assert.equal(c2.exit.tp1Qty, 0.001);
+  assert.equal(c2.exit.trailQty, 0.002);
+});
+
+test('B0: C2 vẫn bị loại khi TP1 hoặc phần trailing < 1 bước', () => {
+  // khối lượng 0,001: TP1 = floor(0,0005) = 0 -> không có TP1
+  const p = buildPlan({ ...baseArgs, capital: 0.4, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.qty, 0.001);
+  assert.equal(p.valid, false);
+  assert.match(p.invalidReason!, /TP1 50% \+ trailing 50%/);
 });

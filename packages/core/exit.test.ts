@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { COMMON } from './config.ts';
-import { trailingFor } from './exit.ts';
+import { trailingFor, floorPct } from './exit.ts';
 import { RULES } from './rules.ts';
 
 const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≠ ${b}`);
@@ -10,7 +10,8 @@ test('quyết định người dùng 19/10/2026 nằm trong config', () => {
   assert.equal(COMMON.risk.perTradePct, 2);
   assert.equal(COMMON.portfolio.maxOpenTrades, 10);
   assert.equal(COMMON.exit.defaultPolicy, 'C2');
-  assert.equal(COMMON.exit.tp1Pct, 50);
+  assert.equal(COMMON.zones.exitPcts[0], 50); // một nguồn duy nhất cho % chốt TP1
+  assert.equal('tp1Pct' in COMMON.exit, false);
   assert.equal(COMMON.binanceTrailCallbackMinPct, 0.1);
   assert.equal(COMMON.binanceTrailMaxCallbackPct, 10);
 });
@@ -30,8 +31,8 @@ test('C2 Long: callback theo ATR khi nhỏ hơn mức bảo đảm không lỗ',
   near(t.activationPrice, 110);
   near(t.atrCallbackPct, (2 / 110) * 100);
   near(t.noLossCallbackPct, (9.75 / 110) * 100);
-  near(t.callbackPct, (2 / 110) * 100);
-  near(t.stopAtActivation, 108);
+  near(t.callbackPct, 1.81); // 1,81818% làm tròn XUỐNG 0,01% (làm tròn gần nhất sẽ lên 1,82%)
+  near(t.stopAtActivation, 110 * (1 - 0.0181)); // 108,009
   assert.equal(t.clampedTo, null);
   assert.equal(t.needsBreakevenFloor, false);
 });
@@ -39,8 +40,9 @@ test('C2 Long: callback theo ATR khi nhỏ hơn mức bảo đảm không lỗ',
 // Mức bảo đảm bó hơn ATR: vào 100, TP1 101, ATR-khoảng 3 → ATR% = 2,970%; bảo đảm = 0,75/101 = 0,7426% → callback = 0,7426%, dừng = 101×(1−0,007426) = 100,25 (đúng hòa vốn)
 test('C2 Long: callback bị chặn bởi mức bảo đảm không lỗ, mức dừng = giá vào + phí', () => {
   const t = trailingFor('long', 100, 101, 3, 0.25);
-  near(t.callbackPct, (0.75 / 101) * 100);
-  near(t.stopAtActivation, 100.25);
+  near(t.callbackPct, 0.74); // 0,74257% -> 0,74 (xuống)
+  near(t.stopAtActivation, 101 * (1 - 0.0074)); // 100,2526 >= hòa vốn 100,25
+  assert.ok(t.stopAtActivation >= 100.25);
 });
 
 // Vào 100, TP1 150: bảo đảm = 49,75/150 = 33,17%; ATR-khoảng 20 → 13,33% → vượt trần sàn → 10%; dừng = 150 × 0,9 = 135
@@ -64,9 +66,9 @@ test('C2 Long: bảo đảm không lỗ < 0,1% → needsBreakevenFloor', () => {
 // Short đối xứng: vào 100, TP1 90, hòa vốn = 100 − 0,25 = 99,75. ATR% = 2/90 = 2,2222%; bảo đảm = 9,75/90 = 10,8333% → callback 2,2222%; dừng = 90 × 1,022222 = 92
 test('C2 Short: đối xứng với Long', () => {
   const t = trailingFor('short', 100, 90, 2, 0.25);
-  near(t.callbackPct, (2 / 90) * 100);
+  near(t.callbackPct, 2.22); // 2,2222% -> 2,22
   near(t.noLossCallbackPct, (9.75 / 90) * 100);
-  near(t.stopAtActivation, 92);
+  near(t.stopAtActivation, 90 * 1.0222); // 91,998
   assert.equal(t.needsBreakevenFloor, false);
 });
 
@@ -85,4 +87,22 @@ test('đầu vào không hợp lệ thì ném lỗi, không đoán', () => {
   assert.throws(() => trailingFor('long', 100, 110, 0, 0.25), /trailing/);
   assert.throws(() => trailingFor('long', 100, 99, 2, 0.25), /TP1/);
   assert.throws(() => trailingFor('short', 100, 101, 2, 0.25), /TP1/);
+});
+
+// Làm tròn gần nhất sẽ phá bảo đảm: vào 100, TP1 101, hòa vốn 100,25 -> bảo đảm = 0,7425742...% (làm tròn gần nhất = 0,74 xuống, vẫn an toàn);
+// vào 100, TP1 102, bảo đảm = 1,75/102 = 1,715686% -> gần nhất 1,72 (LÊN) làm mức dừng 102×(1−0,0172) = 100,2456 < 100,25 -> phải xuống 1,71
+test('callback làm tròn XUỐNG: tại ca mà làm tròn gần nhất đi lên và phá bảo đảm', () => {
+  const t = trailingFor('long', 100, 102, 5, 0.25);
+  near(t.callbackPct, 1.71);
+  assert.ok(t.stopAtActivation >= 100.25, `${t.stopAtActivation}`);
+  assert.ok(102 * (1 - 0.0172) < 100.25); // chứng minh làm tròn gần nhất là sai
+  const s = trailingFor('short', 100, 98, 5, 0.25); // hòa vốn 99,75; (99,75 − 98)/98 = 1,785714% -> 1,78
+  near(s.callbackPct, 1.78);
+  assert.ok(s.stopAtActivation <= 99.75, `${s.stopAtActivation}`);
+});
+
+test('floorPct dùng chung: xuống 0,01%', () => {
+  assert.equal(floorPct(1.7156862), 1.71);
+  assert.equal(floorPct(10), 10);
+  assert.equal(floorPct(0.1), 0.1);
 });

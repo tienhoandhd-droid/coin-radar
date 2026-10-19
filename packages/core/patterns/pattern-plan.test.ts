@@ -552,15 +552,27 @@ test('M3: dải giá vào có CẬN DƯỚI (Long) / CẬN TRÊN (Short) = mức
   assert.match(s.entryReason, /chỉ vào khi giá trong \[109,20; 110,00\]; ngoài khoảng này bỏ lệnh/);
 });
 
-test('B0: kế hoạch mô hình mặc định C2 — trailing kích hoạt tại TP1, TP1 vẫn là T_ngắn, khối lượng chia 50/50', () => {
+test('B0: kế hoạch mô hình mặc định C2 — bảo đảm không lỗ ở giá khớp xấu nhất, callback làm tròn xuống 0,01', () => {
   const p = ready(args());
   assert.equal(p.exit.policy, 'C2');
   const t = p.exit.trailing!;
-  const tp1 = p.targets[0]!.price!;
-  assert.equal(t.activationPrice, tp1);
-  // phí 0,25% (nhóm high): hòa vốn = giá vào × 1,0025; mức dừng lúc kích hoạt không thấp hơn hòa vốn nếu không cờ lưới hòa vốn
-  if (!t.needsBreakevenFloor) assert.ok(t.stopAtActivation >= p.entry * 1.0025 - 1e-9, `${t.stopAtActivation} < ${p.entry * 1.0025}`);
+  assert.equal(t.activationPrice, p.targets[0]!.price!);
+  const worst = Math.max(p.maxEntry, p.limitPrice ?? -Infinity); // Long: giá khớp cao nhất = xấu nhất
+  assert.ok(!t.needsBreakevenFloor);
+  assert.ok(t.stopAtActivation >= worst * 1.0025 - 1e-9, `${t.stopAtActivation} < ${worst * 1.0025}`);
+  assert.equal(Math.round(t.callbackPct * 100) / 100, t.callbackPct);
   assert.ok(t.callbackPct >= 0.1 && t.callbackPct <= 10);
   assert.equal(p.exit.tp1Qty, p.targets[0]!.qty);
   assert.ok(Math.abs(p.exit.trailQty - (p.qty - p.targets[0]!.qty)) < 1e-9);
+});
+
+test('B0: mô hình — khối lượng 0,003: A0 bị loại (TP2 không chia được), C2 hợp lệ', () => {
+  const r0 = buildPatternPlan({ ...args(), capital: 1.7, exitPolicy: 'A0' });
+  assert.equal(r0.status, 'rejected');
+  assert.match(r0.reason!, /50\/30\/20/);
+  const r2 = buildPatternPlan({ ...args(), capital: 1.7 });
+  assert.equal(r2.status, 'ready', r2.reason ?? '');
+  assert.equal(r2.plan!.qty, 0.003);
+  assert.equal(r2.plan!.exit.tp1Qty, 0.001);
+  assert.equal(r2.plan!.exit.trailQty, 0.002);
 });

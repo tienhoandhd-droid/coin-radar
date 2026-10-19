@@ -286,6 +286,8 @@ export function buildPlan(a: PlanArgs): TradePlan {
       : `Giá đang sát vùng ${sideWord} ${dz(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${fp(maxEntry)}${maxEntryNote}`;
   }
 
+  const exitPolicy = a.exitPolicy ?? COMMON.exit.defaultPolicy;
+  const c2 = exitPolicy === 'C2' && targets[0]!.price !== null; // C2 không có TP1 -> cả vị thế theo trailing ATR như cũ, giữ kiểm tra cũ
   const costPct = COMMON.costRoundTripPct[a.costTier];
   const size = positionSize(a.capital, a.riskPct, entry, stop, costPct, a.stepSize);
   const estLoss = size.qty * riskPerUnit + (size.notional * costPct) / 100;
@@ -304,22 +306,24 @@ export function buildPlan(a: PlanArgs): TradePlan {
     if (size.qty <= 0) {
       valid = false;
       invalidReason = 'Khối lượng quá nhỏ so với bước khối lượng của sàn — tăng vốn hoặc bỏ lệnh';
-    } else if (targets.some((t) => t.price !== null && t.qty <= 0)) {
+    } else if (c2 ? !(targets[0]!.qty > 0 && size.qty - targets[0]!.qty > 0) : targets.some((t) => t.price !== null && t.qty <= 0)) {
       valid = false;
-      invalidReason = 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn';
+      invalidReason = c2
+        ? `Khối lượng không chia được TP1 ${zc.exitPcts[0]}% + trailing ${100 - zc.exitPcts[0]!}% theo bước khối lượng của sàn`
+        : 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn';
     }
   }
   // Dòng đầu đã hợp lệ thì kiểm nốt các dòng sau bằng cùng luật: khối lượng > 0 và mọi phần có giá TP phải ≥ 1 bước.
   // Giá khớp càng xấu thì khối lượng càng nhỏ nên các dòng sau dễ hỏng trước → bỏ dòng hỏng, hạ giá tối đa về dòng hợp lệ cuối cùng.
   if (valid && entryType === 'market') {
-    const rowOk = (f: FillRow) => f.qty > 0 && targets.every((t, i) => t.price === null || f.q[i]! > 0);
+    const rowOk = (f: FillRow) => f.qty > 0 && (c2 ? f.q[0] > 0 && f.qty - f.q[0] > 0 : targets.every((t, i) => t.price === null || f.q[i]! > 0));
     const kept = fillTable.filter(rowOk);
     if (kept.length < fillTable.length && kept.length > 0) {
       fillTable.length = 0;
       fillTable.push(...kept);
       maxEntry = snapToTick(kept[kept.length - 1]!.fill, tick, a.side === 'long' ? 'down' : 'up');
       if (a.side === 'long') entryZone.high = maxEntry; else entryZone.low = maxEntry;
-      entryReason += `; giá tối đa ${a.side === 'long' ? 'hạ xuống' : 'nâng lên'} ${fp(maxEntry)} vì khối lượng không chia được ${zc.exitPcts.join('/')} ở giá khớp xấu hơn`;
+      entryReason += `; giá tối đa ${a.side === 'long' ? 'hạ xuống' : 'nâng lên'} ${fp(maxEntry)} vì khối lượng không chia được ${c2 ? `TP1 ${zc.exitPcts[0]}% + trailing ${100 - zc.exitPcts[0]!}%` : zc.exitPcts.join('/')} ở giá khớp xấu hơn`;
     }
   }
   const safe = maxSafeLeverage(riskPerUnit / entry, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops);
@@ -340,7 +344,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     stopReason,
     targets,
     afterTp1Stop: entry,
-    exit: buildExit({ policy: a.exitPolicy ?? COMMON.exit.defaultPolicy, side: a.side, entry, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * atrEntry, costPct, qty: size.qty, tp1Qty: targets[0]!.qty }),
+    exit: buildExit({ policy: exitPolicy, side: a.side, worstEntry: entryType === 'limit' ? entry : maxEntry, valid, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * atrEntry, costPct, qty: size.qty, tp1Qty: targets[0]!.qty }),
     valid,
     invalidReason,
     trailAtr: cfg.trailAtrMult * atrEntry,

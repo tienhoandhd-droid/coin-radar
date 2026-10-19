@@ -261,7 +261,7 @@ test('M3: dòng giá hiện tại ghi khung và thời điểm của giá dùng'
 // ---- B0: chính sách thoát C2 (mặc định) và rủi ro 2% ----
 const c2Long: TradePlan = {
   ...base, riskPct: 2, riskAmount: 20,
-  exit: buildExit({ policy: 'C2', side: 'long', entry: 0.6143, tp1: 0.761, trailAtr: 0.05, costPct: 0.25, qty: 29, tp1Qty: 14 }),
+  exit: buildExit({ policy: 'C2', side: 'long', worstEntry: 0.6263, valid: true, tp1: 0.761, trailAtr: 0.05, costPct: 0.25, qty: 29, tp1Qty: 14 }),
 };
 
 test('C2 Long: TP1 chốt 50% + 50% còn lại trailing trên sàn, kích hoạt tại TP1, khoảng lùi và mức dừng', () => {
@@ -277,7 +277,7 @@ test('C2 Long: TP1 chốt 50% + 50% còn lại trailing trên sàn, kích hoạt
 
 test('C2 Short: cùng định dạng', () => {
   const c2Short: TradePlan = { ...base, side: 'short', riskPct: 2, riskAmount: 20,
-    exit: buildExit({ policy: 'C2', side: 'short', entry: 0.6143, tp1: 0.5, trailAtr: 0.05, costPct: 0.25, qty: 29, tp1Qty: 14 }) };
+    exit: buildExit({ policy: 'C2', side: 'short', worstEntry: 0.6143, valid: true, tp1: 0.5, trailAtr: 0.05, costPct: 0.25, qty: 29, tp1Qty: 14 }) };
   const t = planLines(head, { ...c2Short, targets: [{ ...base.targets[0]!, price: 0.5 }, base.targets[1]!, base.targets[2]!] }, 0.0001).join('\n');
   assert.match(t, /TP1: 0,5000 chốt 50% = 14 coin .*khoảng lùi 10,00% \(mức dừng lúc kích hoạt ≈ 0,5500 ≥ giá vào \+ phí\)/);
 });
@@ -300,4 +300,12 @@ test('B0 mô hình C2: chân chia TP1/trailing, TP1 kèm trailing, TP2/TP3 chỉ
   assert.match(t, /Chân 1 — MARKET 50%.*= TP1 4,803 \/ trailing 4,804/);
   assert.match(t, /TP2 \(tham khảo, không đặt lệnh với C2\)/);
   assert.doesNotMatch(t, /Sau TP1 → SL về/);
+});
+
+test('B0 mô hình chia 2 chân: bảo đảm không lỗ tính ở chân xấu hơn (market tại giá tối đa 111,49 so với limit 110,25)', () => {
+  const p = patternPlan(111.4, {}, [], 'C2');
+  assert.equal(p.entryType, 'split');
+  const worst = Math.max(p.maxEntry, p.limitPrice!);
+  assert.equal(worst, p.maxEntry);
+  assert.ok(p.exit.trailing!.stopAtActivation >= worst * 1.0025 - 1e-9, `${p.exit.trailing!.stopAtActivation}`);
 });
