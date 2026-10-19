@@ -76,8 +76,9 @@ const isStopId = (id: string) => /-(SL|BE)-\d+$/.test(id);
 // place_stop khi đã có lệnh dừng lành trên sàn → onReject = stop_replace_rejected (giữ dừng cũ); ngược lại → market_close.
 function assertNoGap(acts: Action[], ex: ExchangeState) {
   for (const p of ofType(acts, 'place_stop')) {
-    const healthy = ex.openAlgoOrders.some((o) => o.symbol === p.symbol && isStopId(o.clientId) && !acts.some((x) => x.type === 'cancel_algo' && x.clientId === o.clientId && x.onlyAfterPlaced === null));
-    assert.equal(p.onReject, healthy ? 'stop_replace_rejected' : 'market_close', `onReject của ${p.clientId}`);
+    // Không còn lệnh dừng nào của bot (chưa bị hủy ngay) → từ chối thì BẮT BUỘC đóng; còn lệnh cũ → từng ca test kiểm loại onReject
+    const anyStop = ex.openAlgoOrders.some((o) => o.symbol === p.symbol && isStopId(o.clientId) && !acts.some((x) => x.type === 'cancel_algo' && x.clientId === o.clientId && x.onlyAfterPlaced === null));
+    if (!anyStop) assert.equal(p.onReject, 'market_close', `onReject của ${p.clientId}`);
   }
   const posSyms = new Set(ex.positions.filter((p) => p.positionAmt !== 0).map((p) => p.symbol));
   const closed = new Set(ofType(acts, 'market_close').map((m) => m.symbol));
@@ -202,8 +203,8 @@ for (const side of SIDES) {
     assert.equal(be.purpose, 'breakeven');
     assert.equal(be.clientId, legClientId(t, 'BE', 0));
     assert.equal(be.input.triggerPrice, px(side, 100.1)); // giá khớp thật 100 + phí 0,1%
-    // BE = STOP_MARKET reduce-only THEO KHỐI LƯỢNG (không closePosition) → cùng tồn tại được với SL gốc closePosition
-    assert.equal(be.qty, 30);
+    // BE + trailing = vị thế: trailing 30 phủ cả vị thế 30 → BE closePosition (qty null) làm sàn cho phần trailing
+    assert.equal(be.qty, null);
     assert.equal(be.onReject, 'stop_replace_rejected', 'SL gốc còn lành → BE bị từ chối thì giữ SL, không đóng');
     const cancel = ofType(acts, 'cancel_algo')[0]!;
     assert.equal(cancel.clientId, algo(t, 'SL').clientId);
@@ -575,6 +576,102 @@ for (const side of SIDES) {
     const acts = run([a, b], ex, ctx(side));
     assert.deepEqual(types(acts).sort(), ['alert', 'block_symbol']);
     assert.equal(ofType(acts, 'alert')[0]!.level, 'urgent');
+  });
+}
+
+for (const side of SIDES) {
+  const blockedPair = (stopA: number, stopB: number, aFilled: boolean) => {
+    const a = mkTrade(side, { status: aFilled ? 'open' : 'pending', plan: { stop: px(side, stopA) } as TradeState['plan'] });
+    if (!aFilled) {
+      a.fills = [];
+      a.legs.E1!.status = 'open';
+    }
+    const b = mkTrade(side, { status: 'pending', fills: [], createdAt: NOW - 60_000, plan: { stop: px(side, stopB) } as TradeState['plan'] });
+    b.legs = { E1: { ...b.legs.E1!, status: 'open', orderIds: [] } };
+    return { a, b };
+  };
+
+  test(`[${side}] 37. mã bị khóa (hai lệnh chờ, khớp chưa hiện) + vị thế KHÔNG có dừng → hủy lệnh vào, đặt SL closePosition ở mức CHẶT nhất`, () => {
+    const { a, b } = blockedPair(97, 98, false);
+    const ex: ExchangeState = { positions: [pos(side, 10)], openOrders: [entryOrder(a, 'E1'), entryOrder(b, 'E1')], openAlgoOrders: [], recentFills: [] };
+    const acts = run([a, b], ex, ctx(side));
+    assert.ok(types(acts).includes('block_symbol'));
+    assert.deepEqual(ofType(acts, 'cancel_order').map((x) => x.clientId).sort(), [legClientId(a, 'E1', 0), legClientId(b, 'E1', 0)].sort());
+    const ps = ofType(acts, 'place_stop');
+    assert.equal(ps.length, 1);
+    assert.equal(ps[0]!.input.triggerPrice, px(side, 98), 'mức dừng gần giá mark nhất');
+    assert.equal(ps[0]!.qty, null);
+    assert.equal(ps[0]!.onReject, 'market_close');
+    assert.equal(ps[0]!.clientId, legClientId(b, 'SL', 0));
+    assert.equal(ofType(acts, 'market_close').length, 0);
+  });
+
+  test(`[${side}] 38. mã bị khóa (hai lệnh có khớp, SL lệnh cũ đã mất) + mark đã qua mọi mức dừng → hủy lệnh vào TRƯỚC rồi đóng khẩn`, () => {
+    const { a, b } = blockedPair(97, 98, true);
+    const ex: ExchangeState = { positions: [pos(side, 10)], openOrders: [entryOrder(b, 'E2')], openAlgoOrders: [algo(a, 'TP1')], recentFills: [fillOf(b, 'E1', 5, 100, 8101, NOW - 30_000)] };
+    const acts = run([a, b], ex, ctx(side, 96.5));
+    const iClose = acts.findIndex((x) => x.type === 'market_close');
+    assert.ok(iClose >= 0, JSON.stringify(types(acts)));
+    assert.ok(acts.findIndex((x) => x.type === 'cancel_order') < iClose);
+    assert.equal(ofType(acts, 'place_stop').length, 0);
+    assert.equal(ofType(acts, 'market_close')[0]!.qty, 10);
+  });
+
+  test(`[${side}] 38b. mã bị khóa, không dừng, thiếu giá mark → đóng khẩn`, () => {
+    const { a, b } = blockedPair(97, 98, false);
+    const acts = run([a, b], { positions: [pos(side, 10)], openOrders: [], openAlgoOrders: [], recentFills: [] }, ctx(side, 100, { markPrices: {} }));
+    assert.equal(ofType(acts, 'market_close').length, 1);
+  });
+
+  const afterTp1 = (posQty: number, trQty: number, be: { closePosition: boolean; quantity: number } | null) => {
+    const t = mkTrade(side, { tp1Filled: true });
+    t.legs.TP1!.status = 'filled';
+    t.legs.SL!.status = 'cancelled'; // SL gốc đã được thay bằng BE ở lượt trước
+    t.legs.TR!.qty = trQty;
+    const algos = [algo(t, 'TR', { quantity: trQty })];
+    if (be !== null) {
+      t.legs.BE = { role: 'BE', clientId: legClientId(t, 'BE', 0), attempt: 0, status: 'open', qty: be.quantity, triggerPrice: px(side, 100.1), orderIds: [] };
+      algos.push(algo(t, 'BE', be));
+    }
+    return { t, ex: { positions: [pos(side, posQty)], openOrders: [], openAlgoOrders: algos, recentFills: [] } as ExchangeState };
+  };
+
+  test(`[${side}] 39. BE theo khối lượng: vị thế LỚN lên (40, trailing 30, BE 5) → thay BE = 10 (đặt mới trước, hủy cũ sau)`, () => {
+    const { t, ex } = afterTp1(40, 30, { closePosition: false, quantity: 5 });
+    const acts = run([t], ex, ctx(side, 105));
+    const ps = ofType(acts, 'place_stop');
+    assert.equal(ps.length, 1);
+    assert.equal(ps[0]!.qty, 10);
+    assert.equal(ps[0]!.clientId, legClientId(t, 'BE', 1));
+    assert.equal(ps[0]!.onReject, 'market_close', 'BE cũ 5 + trailing 30 < vị thế 40: lệnh cũ không phủ đủ → từ chối thì đóng');
+    const c = ofType(acts, 'cancel_algo');
+    assert.deepEqual(c.map((x) => [x.clientId, x.onlyAfterPlaced]), [[legClientId(t, 'BE', 0), ps[0]!.clientId]]);
+  });
+
+  test(`[${side}] 40. BE theo khối lượng: vị thế NHỎ lại (30, trailing 20, BE 15) → thay BE = 10; cancel_then_place khi đã fallback`, () => {
+    const { t, ex } = afterTp1(30, 20, { closePosition: false, quantity: 15 });
+    const p0 = ofType(run([t], ex, ctx(side, 105)), 'place_stop')[0]!;
+    assert.equal(p0.qty, 10);
+    assert.equal(p0.onReject, 'stop_replace_rejected', 'BE cũ 15 + trailing 20 ≥ vị thế 30: còn phủ đủ → giữ cũ');
+    t.stopReplaceFallback = true;
+    const acts = run([t], ex, ctx(side, 105)).filter((x) => x.type !== 'alert');
+    assert.deepEqual(types(acts), ['cancel_algo', 'place_stop']);
+  });
+
+  test(`[${side}] 41. BE + trailing = vị thế (30 = 20 + 10) → không hành động`, () => {
+    const { t, ex } = afterTp1(30, 20, { closePosition: false, quantity: 10 });
+    assert.deepEqual(run([t], ex, ctx(side, 105)).filter((x) => x.type !== 'alert'), []);
+  });
+
+  test(`[${side}] 42. trước TP1: chỉ còn BE theo khối lượng mà vị thế lớn hơn → đặt SL closePosition ngay trong lượt`, () => {
+    const t = mkTrade(side);
+    t.legs.BE = { role: 'BE', clientId: legClientId(t, 'BE', 0), attempt: 0, status: 'open', qty: 30, triggerPrice: px(side, 100.1), orderIds: [] };
+    const ex = { ...healthy(t), openAlgoOrders: [algo(t, 'BE', { closePosition: false, quantity: 30, triggerPrice: px(side, 98) }), algo(t, 'TP1'), algo(t, 'TR')] };
+    const ps = ofType(run([t], ex, ctx(side)), 'place_stop');
+    assert.equal(ps.length, 1);
+    assert.equal(ps[0]!.role, 'SL');
+    assert.equal(ps[0]!.qty, null);
+    assert.equal(ps[0]!.onReject, 'market_close');
   });
 }
 

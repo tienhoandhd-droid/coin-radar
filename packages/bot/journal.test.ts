@@ -239,3 +239,22 @@ test('nhật ký: stop_replace_rejected → chân BE bị từ chối + lệnh c
   assert.equal(s.trades[t.signalId]!.stopReplaceFallback, true);
   assert.equal(s.trades[t.signalId]!.legs.BE!.status, 'rejected');
 });
+
+test('nhật ký: -2022 (REDUCE_ONLY_REJECT) không bật fallback; thay lệnh dừng thành công thì tắt fallback', () => {
+  const dir = tmp();
+  const j = openJournal({ dir, now: () => NOW });
+  const t = plannedTrade();
+  j.append({ type: 'signal_accepted', trade: t });
+  const be0 = legClientId(t, 'BE', 0);
+  const be1 = legClientId(t, 'BE', 1);
+  j.append({ type: 'order_intent', signalId: t.signalId, role: 'BE', clientId: be0, attempt: 0, qty: 30, triggerPrice: 100.1 });
+  j.append({ type: 'stop_replace_rejected', signalId: t.signalId, role: 'BE', clientId: be0, code: -2022, msg: 'ReduceOnly Order is rejected.' });
+  assert.equal(j.state().trades[t.signalId]!.stopReplaceFallback, false, '-2022 → đổi cỡ, không phải trùng lệnh dừng');
+  assert.equal(j.state().trades[t.signalId]!.legs.BE!.status, 'rejected');
+  j.append({ type: 'stop_replace_rejected', signalId: t.signalId, role: 'BE', clientId: be0, code: null, msg: 'x' });
+  assert.equal(j.state().trades[t.signalId]!.stopReplaceFallback, true);
+  j.append({ type: 'order_intent', signalId: t.signalId, role: 'BE', clientId: be1, attempt: 1, qty: 30, triggerPrice: 100.1 });
+  j.append({ type: 'order_result', signalId: t.signalId, role: 'BE', clientId: be1, kind: 'ok', sent: true, orderId: 77, code: null, msg: '' });
+  assert.equal(j.state().trades[t.signalId]!.stopReplaceFallback, false);
+  assert.deepEqual(restore({ dir }), j.state());
+});

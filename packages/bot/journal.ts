@@ -10,6 +10,7 @@ import type { AttributedFill, ExPosition, Fill, LegRole, LegState, LegStatus, Tr
 // KÈM cảnh báo; dòng hỏng ở giữa → dừng (không bao giờ im lặng bỏ qua sự kiện). Không bao giờ ghi secret (redact).
 
 export const DEFAULT_JOURNAL_DIR = 'data/bot';
+export const REDUCE_ONLY_REJECT = -2022; // docs/reference/binance-usdm-api.md bảng lỗi
 const SNAPSHOT = 'snapshot.json';
 const FILE_RE = /^journal-\d{4}-\d{2}-\d{2}\.jsonl$/;
 
@@ -92,6 +93,8 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       const leg = legOf(t, e.role, e.clientId);
       if (e.orderId !== null && !leg.orderIds.includes(e.orderId)) leg.orderIds.push(e.orderId);
       if (leg.clientId === e.clientId) leg.status = e.kind === 'ok' ? 'open' : e.kind === 'unknown_status' ? 'unknown' : 'rejected';
+      // Thay lệnh dừng đã thành công → bỏ chế độ dự phòng cancel_then_place
+      if (e.kind === 'ok' && (e.role === 'SL' || e.role === 'BE')) t.stopReplaceFallback = false;
       break;
     }
     case 'fill': {
@@ -131,7 +134,8 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       if (t === null) break;
       const leg = legOf(t, e.role, e.clientId);
       if (leg.clientId === e.clientId) leg.status = 'rejected';
-      t.stopReplaceFallback = true;
+      // -2022 REDUCE_ONLY_REJECT (tài liệu tra cứu): khối lượng reduce-only xung đột → lần sau bộ đối chiếu đổi cỡ BE, không phải trùng lệnh dừng
+      if (e.code !== REDUCE_ONLY_REJECT) t.stopReplaceFallback = true;
       break;
     }
     case 'trade_closed': {
