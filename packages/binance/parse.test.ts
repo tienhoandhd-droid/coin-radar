@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseKlines, parseContracts, parsePremium } from './parse.ts';
+import { parseKlines, parseContracts, parsePremium, parseFundingInfo } from './parse.ts';
 
 // Hàng kline Binance Futures: 12 cột (định dạng đã kiểm 19/10/2026: cột 10 = taker buy quote)
 const row = (openTime: number, closeTime: number) => [openTime, '100', '110', '90', '105', '10', closeTime, '1000', 50, '6', '600', '0'];
@@ -66,4 +66,22 @@ test('parsePremium: markPrice null → ném lỗi, không thành 0', () => {
     () => parsePremium([{ symbol: 'BTCUSDT', markPrice: null, lastFundingRate: '0', nextFundingTime: 1 }]),
     /giá trị số không hợp lệ/,
   );
+});
+
+test('parseFundingInfo: symbol → số giờ mỗi kỳ funding', () => {
+  const m = parseFundingInfo([
+    { symbol: 'BTCUSDT', adjustedFundingRateCap: '0.02', fundingIntervalHours: 8 },
+    { symbol: 'ZKCUSDT', fundingIntervalHours: '4' },
+  ]);
+  assert.equal(m.get('BTCUSDT'), 8);
+  assert.equal(m.get('ZKCUSDT'), 4);
+  assert.equal(m.get('XYZUSDT'), undefined);
+});
+
+test('parseFundingInfo: thiếu/<=0/không phải số/không phải mảng → ném lỗi nêu tên mã', () => {
+  assert.throws(() => parseFundingInfo([{ symbol: 'AAAUSDT' }]), /AAAUSDT/);
+  assert.throws(() => parseFundingInfo([{ symbol: 'AAAUSDT', fundingIntervalHours: 0 }]), /AAAUSDT/);
+  assert.throws(() => parseFundingInfo([{ symbol: 'AAAUSDT', fundingIntervalHours: 'x' }]), /AAAUSDT/);
+  assert.throws(() => parseFundingInfo([{ fundingIntervalHours: 8 }]), /symbol/);
+  assert.throws(() => parseFundingInfo({ code: -1 }), /fundingInfo/);
 });

@@ -39,11 +39,11 @@ test('201 nến tăng đều (100..300) → up', () => {
 
 test('cầu dao: BTC giảm 5% trong 4 nến 1H → bật', () => {
   const closes = [...Array.from({ length: 30 }, () => 100), 99, 97, 96, 95];
-  assert.equal(circuitBreaker(series(closes, 0.002)).tripped, true);
+  assert.equal(circuitBreaker(series(closes, 0.002), 12).tripped, true);
 });
 test('cầu dao: biến động bình thường → không bật', () => {
   const closes = Array.from({ length: 34 }, (_, i) => 100 + (i % 2) * 0.3);
-  assert.equal(circuitBreaker(series(closes, 0.002)).tripped, false);
+  assert.equal(circuitBreaker(series(closes, 0.002), 12).tripped, false);
 });
 
 test('allowedSide: up chỉ Long, Short cần điểm ≥ 80', () => {
@@ -52,4 +52,31 @@ test('allowedSide: up chỉ Long, Short cần điểm ≥ 80', () => {
   assert.equal(allowedSide('up', 'short', 80), true);
   assert.equal(allowedSide('down', 'long', 79), false);
   assert.equal(allowedSide('sideways', 'short', 70), true);
+});
+
+test('cầu dao: nhánh biên độ nến cuối > 3×ATR → bật', () => {
+  const c = series(Array.from({ length: 40 }, () => 100), 0.002);
+  c[39] = { ...c[39]!, high: 110, low: 90 };
+  const r = circuitBreaker(c, 12);
+  assert.equal(r.tripped, true);
+  assert.match(r.reason ?? '', /ATR/);
+});
+
+test('cầu dao: sập cách đây 5 giờ vẫn giữ bật khi dừng 12h (swing)', () => {
+  // 30 nến phẳng, sập 5% trong 4 nến (chỉ số 30..33), rồi 5 nến phẳng ở đáy
+  const closes = [...Array.from({ length: 30 }, () => 100), 99, 97, 96, 95, ...Array.from({ length: 5 }, () => 95)];
+  const r = circuitBreaker(series(closes, 0.002), 12);
+  assert.equal(r.tripped, true);
+  assert.match(r.reason ?? '', /bật lúc/);
+  assert.match(r.reason ?? '', /dừng tới/);
+});
+
+test('cầu dao: cùng tình huống nhưng dừng chỉ 3h (fast) → đã hết hạn dừng', () => {
+  const closes = [...Array.from({ length: 30 }, () => 100), 99, 97, 96, 95, ...Array.from({ length: 5 }, () => 95)];
+  assert.equal(circuitBreaker(series(closes, 0.002), 3).tripped, false);
+});
+
+test('cầu dao: sập cách đây 13 giờ, dừng 12h → đã tắt', () => {
+  const closes = [...Array.from({ length: 30 }, () => 100), 99, 97, 96, 95, ...Array.from({ length: 13 }, () => 95)];
+  assert.equal(circuitBreaker(series(closes, 0.002), 12).tripped, false);
 });

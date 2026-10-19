@@ -28,20 +28,33 @@ export function marketRegime(btcDaily: Candle[]): { regime: Regime; reasons: str
   return { regime: 'sideways', reasons };
 }
 
-export function circuitBreaker(btcHourly: Candle[]): { tripped: boolean; reason: string | null } {
-  if (btcHourly.length < 20) return { tripped: false, reason: null };
+// Kiểm điều kiện cầu dao tại MỘT thời điểm (kết thúc ở nến cuối của mảng).
+function breakerAt(btcHourly: Candle[]): string | null {
+  if (btcHourly.length < 20) return null;
   const closes = btcHourly.map((k) => k.close);
   const now = last(closes);
   const fourAgo = closes[closes.length - 5]!;
   const movePct = ((now - fourAgo) / fourAgo) * 100;
-  if (Math.abs(movePct) >= COMMON.breakerBtcMovePct) {
-    return { tripped: true, reason: `BTC biến động ${movePct.toFixed(1)}% trong 4 giờ` };
-  }
+  if (Math.abs(movePct) >= COMMON.breakerBtcMovePct) return `BTC biến động ${movePct.toFixed(1)}% trong 4 giờ`;
   const a = atr(btcHourly.slice(0, -1), 14);
   const lastCandle = btcHourly[btcHourly.length - 1]!;
   const range = lastCandle.high - lastCandle.low;
-  if (range > COMMON.breakerRangeAtr * last(a)) {
-    return { tripped: true, reason: `Nến 1H BTC biên độ ${(range / last(a)).toFixed(1)}×ATR` };
+  if (range > COMMON.breakerRangeAtr * last(a)) return `Nến 1H BTC biên độ ${(range / last(a)).toFixed(1)}×ATR`;
+  return null;
+}
+
+// Không lưu trạng thái: cầu dao coi là đang bật nếu điều kiện đã xảy ra ở BẤT KỲ nến 1H nào trong
+// `pauseHours` giờ gần nhất (12h Swing / 3h Lướt nhanh) — đúng "dừng tín hiệu mới" của spec 3.2.
+export function circuitBreaker(btcHourly: Candle[], pauseHours: number): { tripped: boolean; reason: string | null } {
+  if (!Number.isInteger(pauseHours) || pauseHours < 1) throw new Error(`circuitBreaker: pauseHours phải là số nguyên ≥ 1, nhận ${pauseHours}`);
+  for (let back = 0; back < pauseHours; back++) {
+    const window = back === 0 ? btcHourly : btcHourly.slice(0, -back);
+    const why = breakerAt(window);
+    if (why !== null) {
+      const at = window[window.length - 1]!.closeTime;
+      const iso = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+      return { tripped: true, reason: `${why} — bật lúc ${iso(at)}, dừng tới ${iso(at + pauseHours * 3_600_000)}` };
+    }
   }
   return { tripped: false, reason: null };
 }

@@ -20,7 +20,7 @@ const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
   move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
-  liquidationOk: true, fundingRate: 0.0001, minutesToFunding: 200,
+  liquidationOk: true, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
 };
 
 test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
@@ -63,4 +63,19 @@ test('mức rủi ro: ATR% cao → Rất cao; coin mới tối thiểu Cao', () 
 test('cờ đáo hạn quyền chọn bật cả 24 giờ sau đáo hạn, tắt khi đã xa', () => {
   assert.match(eventWindow(new Date('2026-12-25T20:00:00Z'), [], 'swing').flag ?? '', /đáo hạn/);
   assert.equal(eventWindow(new Date('2026-12-27T12:00:00Z'), [], 'swing').flag, null);
+});
+
+test('G-09 quy về %/8h: 0,06%/4h chặn Long, 0,06%/8h thì không; note nêu cả hai chu kỳ', () => {
+  const g4 = evaluateGates({ ...ok, fundingRate: 0.0006, fundingIntervalHours: 4 }).find((x) => x.code === 'G-09')!;
+  assert.equal(g4.pass, false);
+  assert.equal(g4.note, 'Funding 0,0600%/4h ≈ 0,1200%/8h');
+  const g8 = evaluateGates({ ...ok, fundingRate: 0.0006, fundingIntervalHours: 8 }).find((x) => x.code === 'G-09')!;
+  assert.equal(g8.pass, true);
+  assert.equal(g8.note, 'Funding 0,0600%/8h');
+});
+
+test('G-01: cầu dao bật thì note nêu thời điểm bật', () => {
+  const g = evaluateGates({ ...ok, breakerTripped: true, breakerNote: 'bật lúc X' }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /bật lúc X/);
 });

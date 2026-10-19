@@ -2,7 +2,7 @@ import { atr, last } from './indicators.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { buildPlan, nearestLevels, maxSafeLeverage, type TradePlan, type CostTier } from './plan.ts';
-import { evaluateGates, type GateResult } from './gates.ts';
+import { evaluateGates, ratePer8h, fundingNote, type GateResult } from './gates.ts';
 import { eventWindow, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
 import { COMMON } from './config.ts';
@@ -19,9 +19,12 @@ export type AnalyzeInput = {
   btcTrend: Candle[];
   regime: Regime;
   breakerTripped: boolean;
+  breakerNote?: string;
   liquidityRankPct: number;
   spreadPct: number;
   premium: PremiumIndex;
+  fundingIntervalHours: number; // chu kỳ funding (giờ); mã không có trong fundingInfo → 8 và fundingIntervalDefault = true
+  fundingIntervalDefault: boolean;
   now: Date;
   events: MacroEvent[];
   capital: number;
@@ -52,10 +55,25 @@ export function analyze(i: AnalyzeInput): Analysis {
   const levels = nearestLevels(i.entry, COMMON.pivotConfirmBars);
   const dailyAtr = last(atr(i.daily, 14));
   const price = last(i.entry.map((k) => k.close));
+  const closesWindow = i.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
+  let peak = -Infinity;
+  let maxDd = 0;
+  for (const c of closesWindow) { peak = Math.max(peak, c); maxDd = Math.max(maxDd, (1 - c / peak) * 100); }
+  const risk = riskTier({
+    dailyAtrPct: (dailyAtr / price) * 100,
+    ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
+    liquidityRank: i.liquidityRankPct,
+    maxDrawdown90Pct: maxDd,
+  });
+  // P-01: rủi ro mỗi lệnh tối đa 0,25% cho Lướt nhanh và coin rủi ro Cao/Rất cao
+  const capRisk = i.mode === 'fast' || risk.tier === 'Cao' || risk.tier === 'Rất cao';
+  const riskPct = capRisk ? Math.min(i.riskPct, COMMON.highRiskTierPct) : i.riskPct;
+  if (riskPct < i.riskPct) risk.notes.push(`P-01: hạ rủi ro mỗi lệnh từ ${i.riskPct}% xuống ${riskPct}% (${i.mode === 'fast' ? 'Lướt nhanh' : 'mức rủi ro ' + risk.tier})`);
+
   const planFor = (side: Side) => buildPlan({
-    mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct: i.riskPct,
+    mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
     costTier: costTier(i.liquidityRankPct), stepSize: i.contract.stepSize,
-    fundingRate: i.premium.lastFundingRate, levels,
+    fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, levels,
   });
   const planLong = planFor('long');
   const planShort = planFor('short');
@@ -66,9 +84,9 @@ export function analyze(i: AnalyzeInput): Analysis {
   // F-01: funding quá nhiệt cùng chiều lệnh → trừ điểm
   const flags: string[] = [];
   const applyFunding = (s: SideScore): SideScore => {
-    const adverse = (s.side === 'long' ? 1 : -1) * i.premium.lastFundingRate;
+    const adverse = (s.side === 'long' ? 1 : -1) * ratePer8h(i.premium.lastFundingRate, i.fundingIntervalHours);
     if (adverse > COMMON.fundingHotPer8h) {
-      flags.push(`F-01 Funding quá nhiệt cùng chiều ${s.side === 'long' ? 'Long' : 'Short'}`);
+      flags.push(`F-01 Funding quá nhiệt cùng chiều ${s.side === 'long' ? 'Long' : 'Short'} (${fundingNote(i.premium.lastFundingRate, i.fundingIntervalHours, i.fundingIntervalDefault)})`);
       return { ...s, score: Math.max(0, s.score - COMMON.fundingHotPenalty), reasons: [...s.reasons, { code: 'F-01', text: 'Funding quá nhiệt cùng chiều lệnh', points: -COMMON.fundingHotPenalty }] };
     }
     return s;
@@ -84,26 +102,15 @@ export function analyze(i: AnalyzeInput): Analysis {
   const move1hPct = h.length >= 2 ? (last(h.map((k) => k.close)) / h[h.length - 2]!.close - 1) * 100 : 0;
   const stopDistPct = plan.riskPerUnit / plan.entry;
   const gates = evaluateGates({
-    mode: i.mode, side: best.side, score: best.score, regime: i.regime, breakerTripped: i.breakerTripped,
+    mode: i.mode, side: best.side, score: best.score, regime: i.regime, breakerTripped: i.breakerTripped, breakerNote: i.breakerNote,
     warmupBars: Math.min(i.trend.length, i.entry.length), coverage: best.coverage,
     liquidityRankPct: i.liquidityRankPct, spreadPct: i.spreadPct,
     move1hPct, volumeZ1h: volumeZ(h, 20),
     ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
     eventBlocked: ev.blocked,
     liquidationOk: maxSafeLeverage(stopDistPct, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops) >= 1,
-    fundingRate: i.premium.lastFundingRate,
+    fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
     minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,
-  });
-
-  const closesWindow = i.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
-  let peak = -Infinity;
-  let maxDd = 0;
-  for (const c of closesWindow) { peak = Math.max(peak, c); maxDd = Math.max(maxDd, (1 - c / peak) * 100); }
-  const risk = riskTier({
-    dailyAtrPct: (dailyAtr / price) * 100,
-    ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
-    liquidityRank: i.liquidityRankPct,
-    maxDrawdown90Pct: maxDd,
   });
 
   const allPass = gates.every((g) => g.pass);

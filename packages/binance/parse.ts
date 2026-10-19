@@ -89,3 +89,18 @@ export function parsePremium(raw: unknown): PremiumIndex[] {
     };
   });
 }
+
+// /fapi/v1/fundingInfo: chu kỳ funding (giờ) của từng hợp đồng. Hợp đồng KHÔNG có trong danh sách
+// dùng chu kỳ mặc định 8h (theo tài liệu Binance) — việc đó do nơi gọi xử lý, hàm này chỉ đọc đúng dữ liệu.
+export function parseFundingInfo(raw: unknown): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const t of arr(raw, 'fundingInfo')) {
+    const x = t as Record<string, unknown>;
+    if (typeof x?.symbol !== 'string' || x.symbol === '') throw new Error(`Binance fundingInfo: thiếu symbol (${show(t).slice(0, 120)})`);
+    const w = `fundingInfo ${x.symbol}`;
+    const hours = num(x.fundingIntervalHours, `${w} fundingIntervalHours`);
+    if (hours <= 0) throw new Error(`Binance ${w}: fundingIntervalHours phải > 0, nhận ${show(x.fundingIntervalHours)}`);
+    out.set(x.symbol, hours);
+  }
+  return out;
+}

@@ -19,7 +19,7 @@ export type ModeConfig = {
   maxHoldHours: number;
   defaultRiskPct: number;
   maxLeverage: number;
-  fundingIntervalsPerHold: number; // số lần thanh toán funding dự kiến trong thời gian giữ (8h/lần)
+  fundingHoldHours: number; // thời gian giữ lệnh DỰ KIẾN (giờ) để ước chi phí funding; số kỳ = fundingHoldHours / chu kỳ funding thật của hợp đồng. Đề xuất, chưa backtest. KHÔNG phải trần maxHoldHours
   minAgeDays: number;
   breakerPauseHours: number;
 };
@@ -31,7 +31,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
     rsBars: 48, flowBars: 16, flowSkipBars: 2,
     stopAtrMult: 2.5, pivotBufferAtr: 0.5, maxEntryAtr: 0.3, tp1R: 1.5, trailAtrMult: 3,
     timeStopHours: 8, maxHoldHours: 24, defaultRiskPct: 0.25, maxLeverage: 10,
-    fundingIntervalsPerHold: 1, minAgeDays: 30, breakerPauseHours: 3,
+    fundingHoldHours: 8, minAgeDays: 30, breakerPauseHours: 3,
   },
   swing: {
     trendInterval: '1d', entryInterval: '4h', trendLimit: 300, entryLimit: 500,
@@ -39,7 +39,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
     rsBars: 14, flowBars: 30, flowSkipBars: 0,
     stopAtrMult: 2, pivotBufferAtr: 0.5, maxEntryAtr: 0.3, tp1R: 1.5, trailAtrMult: 3,
     timeStopHours: 7 * 24, maxHoldHours: 21 * 24, defaultRiskPct: 0.5, maxLeverage: 5,
-    fundingIntervalsPerHold: 21, minAgeDays: 0, breakerPauseHours: 12,
+    fundingHoldHours: 7 * 24, minAgeDays: 0, breakerPauseHours: 12,
   },
 };
 
@@ -54,6 +54,8 @@ export const COMMON = {
   maxSpreadPct: 0.15, // G-03: spread tối đa (%)
   pumpMovePct: 15, // G-04
   pumpVolumeZ: 5, // G-04
+  highRiskTierPct: 0.25, // P-01: rủi ro tối đa mỗi lệnh (% vốn) cho Lướt nhanh và cho coin mức rủi ro Cao/Rất cao — theo spec, đề xuất, chưa backtest
+  defaultFundingIntervalHours: 8, // Binance: hợp đồng KHÔNG có trong /fapi/v1/fundingInfo dùng chu kỳ mặc định 8h (theo tài liệu Binance) — đề xuất, chưa backtest
   fundingExtremePer8h: 0.001, // G-09: |funding| > 0,1%/8h cùng chiều lệnh → chặn. Tạm dùng ngưỡng tuyệt đối (spec: z-score 30 ngày — làm ở kế hoạch 3 khi có lịch sử)
   fundingHotPer8h: 0.0005, // F-01: > 0,05%/8h cùng chiều → trừ điểm
   fundingHotPenalty: 10,

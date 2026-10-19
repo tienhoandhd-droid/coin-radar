@@ -9,6 +9,7 @@ export type GateContext = {
   score: number;
   regime: Regime;
   breakerTripped: boolean;
+  breakerNote?: string;
   warmupBars: number;
   coverage: number;
   liquidityRankPct: number; // 0 = thanh khoản cao nhất, 1 = thấp nhất
@@ -18,18 +19,34 @@ export type GateContext = {
   ageDays: number;
   eventBlocked: boolean;
   liquidationOk: boolean;
-  fundingRate: number; // mỗi 8h, dương = Long trả
+  fundingRate: number; // mức MỖI KỲ funding của hợp đồng, dương = Long trả
+  fundingIntervalHours: number; // chu kỳ funding của hợp đồng (giờ)
+  fundingIntervalDefault: boolean; // true = mã không có trong fundingInfo, dùng mặc định 8h
   minutesToFunding: number;
 };
 
+const pct4 = (rate: number) => (rate * 100).toFixed(4).replace('.', ',');
+
+// Quy mức funding mỗi kỳ về %/8h để dùng chung một ngưỡng cho mọi hợp đồng.
+export function ratePer8h(rate: number, intervalHours: number): number {
+  return (rate * 8) / intervalHours;
+}
+
+export function fundingNote(rate: number, intervalHours: number, isDefault: boolean): string {
+  const base = intervalHours === 8
+    ? `Funding ${pct4(rate)}%/8h`
+    : `Funding ${pct4(rate)}%/${intervalHours}h ≈ ${pct4(ratePer8h(rate, intervalHours))}%/8h`;
+  return isDefault ? `${base} (mặc định 8h: mã không có trong fundingInfo)` : base;
+}
+
 export function evaluateGates(c: GateContext): GateResult[] {
   const dir = c.side === 'long' ? 1 : -1;
-  const adverseFunding = dir * c.fundingRate; // > 0 nghĩa là lệnh phải trả funding
+  const adverseFunding = dir * ratePer8h(c.fundingRate, c.fundingIntervalHours); // %/8h; > 0 nghĩa là lệnh phải trả funding
   return [
     {
       code: 'G-01',
       pass: !c.breakerTripped && allowedSide(c.regime, c.side, c.score),
-      note: c.breakerTripped ? 'Cầu dao biến động đang bật' : `Chế độ ${c.regime}`,
+      note: c.breakerTripped ? `Cầu dao biến động đang bật${c.breakerNote ? ' — ' + c.breakerNote : ''}` : `Chế độ ${c.regime}`,
     },
     {
       code: 'G-02',
@@ -57,7 +74,7 @@ export function evaluateGates(c: GateContext): GateResult[] {
     {
       code: 'G-09',
       pass: adverseFunding <= COMMON.fundingExtremePer8h,
-      note: `Funding ${(c.fundingRate * 100).toFixed(4)}%/8h`,
+      note: fundingNote(c.fundingRate, c.fundingIntervalHours, c.fundingIntervalDefault),
     },
     {
       code: 'G-10',

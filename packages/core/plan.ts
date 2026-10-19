@@ -50,6 +50,7 @@ export type TradePlan = {
   qty: number;
   notional: number;
   riskAmount: number;
+  riskPct: number; // % vốn rủi ro thực sự đã dùng để tính khối lượng (P-01)
   safeLeverage: number;
   suggestedLeverage: number;
   liquidationEstimate: number;
@@ -68,7 +69,8 @@ export type PlanArgs = {
   riskPct: number;
   costTier: CostTier;
   stepSize: number;
-  fundingRate: number;
+  fundingRate: number; // mức MỖI KỲ funding của hợp đồng (không phải %/8h)
+  fundingIntervalHours: number; // chu kỳ funding của hợp đồng (giờ)
   levels: { above: number | null; below: number | null };
 };
 
@@ -110,7 +112,12 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const size = positionSize(a.capital, a.riskPct, price, stop, costPct, a.stepSize);
   const safe = maxSafeLeverage(riskPerUnit / price, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops);
   const suggested = Math.max(1, Math.min(cfg.maxLeverage, Math.floor(safe)));
-  const fundingPerUnit = a.fundingRate * cfg.fundingIntervalsPerHold * price; // dương = Long trả
+  if (!Number.isFinite(a.fundingIntervalHours) || a.fundingIntervalHours <= 0) {
+    throw new Error(`Không lập được kế hoạch: chu kỳ funding không hợp lệ (${a.fundingIntervalHours})`);
+  }
+  // Số kỳ funding thật trong thời gian giữ dự kiến: 4h/kỳ → gấp đôi 8h/kỳ
+  const fundingEvents = cfg.fundingHoldHours / a.fundingIntervalHours;
+  const fundingPerUnit = a.fundingRate * fundingEvents * price; // dương = Long trả
   return {
     side: a.side,
     entry: price,
@@ -122,6 +129,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     qty: size.qty,
     notional: size.notional,
     riskAmount: size.riskAmount,
+    riskPct: a.riskPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,
     liquidationEstimate: liquidationPrice(price, suggested, a.side, COMMON.maintenanceMarginRate),

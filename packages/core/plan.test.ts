@@ -42,7 +42,7 @@ test('nearestLevels: pivot đã xác nhận gần nhất trên/dưới giá', ()
 test('buildPlan Long: cắt lỗ dưới giá, chốt lời 1 = 1,5R, Short đối xứng', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const base = { mode: 'swing' as const, entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.5, costTier: 'high' as const,
-    stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+    stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, levels: { above: null, below: null } };
   const L = buildPlan({ ...base, side: 'long' });
   assert.ok(L.stop < L.entry && L.tp1 > L.entry);
   assert.equal(r6((L.tp1 - L.entry) / (L.entry - L.stop)), 1.5);
@@ -56,20 +56,39 @@ test('buildPlan Long: cắt lỗ dưới giá, chốt lời 1 = 1,5R, Short đ�
 test('buildPlan báo lỗi khi nến phẳng (ATR = 0), không trả giá trị vô nghĩa', () => {
   const flat = Array.from({ length: 60 }, (_, i) => k(i, 100, 100, 100));
   const args = { mode: 'fast' as const, side: 'long' as const, entry: flat, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, levels: { above: null, below: null } };
   assert.throws(() => buildPlan(args), /ATR/);
 });
 
 test('buildPlan báo lỗi khi dữ liệu dưới 15 nến (ATR chưa tính được)', () => {
   const short = Array.from({ length: 10 }, (_, i) => k(i, 100 + i));
   const args = { mode: 'fast' as const, side: 'long' as const, entry: short, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, levels: { above: null, below: null } };
   assert.throws(() => buildPlan(args), /ATR/);
 });
 
 test('buildPlan Swing báo lỗi khi ATR ngày là NaN', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const args = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: NaN, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, levels: { above: null, below: null } };
   assert.throws(() => buildPlan(args), /ATR ngày/);
+});
+
+test('buildPlan: funding tính theo số kỳ thật — hợp đồng 4h trả gấp đôi hợp đồng 8h cùng mức/kỳ, 1h gấp 8 lần', () => {
+  const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
+  const base = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.5,
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+  const p8 = buildPlan({ ...base, fundingIntervalHours: 8 });
+  const p4 = buildPlan({ ...base, fundingIntervalHours: 4 });
+  const p1 = buildPlan({ ...base, fundingIntervalHours: 1 });
+  assert.equal(r6(p4.fundingCostR / p8.fundingCostR), 2);
+  assert.equal(r6(p1.fundingCostR / p8.fundingCostR), 8);
+});
+
+test('buildPlan: ghi lại riskPct đã dùng và riskAmount theo đó', () => {
+  const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
+  const p = buildPlan({ mode: 'swing', side: 'long', entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.25, costTier: 'high',
+    stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, levels: { above: null, below: null } });
+  assert.equal(p.riskPct, 0.25);
+  assert.equal(p.riskAmount, 2.5);
 });
