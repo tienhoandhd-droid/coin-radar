@@ -101,15 +101,18 @@ export function marketStreamNames(symbols: readonly string[], intervals: readonl
 
 type MConn = {
   ws: WsLike | null;
-  queue: string[];
+  batches: Map<number, string[]>; // lô SUBSCRIBE chưa được ack: id → params
+  queue: number[]; // id lô chờ gửi (theo nhịp)
   sentAt: number[];
-  pendingAcks: Set<number>;
+  retries: number; // số vòng gửi lại lô lỗi/thiếu ack
+  ackTimer: unknown | null;
   subscribed: boolean;
-  intentional: boolean;
+  intentional: boolean; // đã xử lý xong (đóng chủ động hoặc đã coi là mất) → bỏ mọi sự kiện muộn
   lastMsgAt: number;
   timers: Set<unknown>;
 };
 type Shard = { idx: number; streams: string[]; current: MConn | null; next: MConn | null; attempt: number; reconnectTimer: unknown | null };
+type StreamMeta = { kind: 'mark'; symbol: string } | { kind: 'kline'; key: string };
 
 export function createMarketStream(opts: {
   symbols: readonly string[];
@@ -120,12 +123,14 @@ export function createMarketStream(opts: {
   clock?: Clock;
   random?: () => number;
   base?: string; // mặc định wss://fstream.binance.com (production) [WSC]
-  staleAfterMs?: number; // không có cập nhật quá ngưỡng → stale (mặc định 10 s)
+  staleAfterMs?: number; // không có cập nhật quá ngưỡng → stale (mặc định 10 s), tính RIÊNG cho mark và từng khoảng nến
   msgsPerSec?: number; // tin gửi lên mỗi kết nối mỗi giây (mặc định 5, tối đa 10)
   paramsPerMessage?: number; // số stream mỗi tin SUBSCRIBE [Đề xuất]: tài liệu không nêu trần, mặc định 50
   maxStreamsPerConn?: number;
   rotateAfterMs?: number; // xoay vòng trước mốc 24 h (mặc định 23 h)
   idleTimeoutMs?: number; // im lặng quá lâu → nối lại (mặc định 60 s)
+  ackTimeoutMs?: number; // lô SUBSCRIBE không có ack quá hạn → gửi lại (mặc định 10 s) [Đề xuất]
+  maxSubscribeRetries?: number; // quá số vòng gửi lại → đóng và nối lại (mặc định 3)
   backoffBaseMs?: number;
   backoffCapMs?: number;
 }) {
@@ -139,6 +144,8 @@ export function createMarketStream(opts: {
   const perConn = opts.maxStreamsPerConn ?? MAX_STREAMS_PER_CONN;
   const rotateAfter = opts.rotateAfterMs ?? 23 * H;
   const idleTimeout = opts.idleTimeoutMs ?? 60_000;
+  const ackTimeout = opts.ackTimeoutMs ?? 10_000;
+  const maxRetries = opts.maxSubscribeRetries ?? 3;
   const bBase = opts.backoffBaseMs ?? 1000;
   const bCap = opts.backoffCapMs ?? 60_000;
   if (perSec < 1 || perSec > MAX_INCOMING_MSGS_PER_SEC) throw new Error(`msgsPerSec phải trong 1..${MAX_INCOMING_MSGS_PER_SEC}`);
@@ -148,14 +155,21 @@ export function createMarketStream(opts: {
   const log = (m: string) => opts.log?.(scrub(m, []));
 
   const streams = marketStreamNames(opts.symbols, opts.intervals);
+  const meta = new Map<string, StreamMeta>();
+  for (const s of opts.symbols) {
+    const up = s.toUpperCase();
+    for (const i of opts.intervals) meta.set(`${s.toLowerCase()}@kline_${i}`, { kind: 'kline', key: `${up}|${i}` });
+    meta.set(`${s.toLowerCase()}@markPrice@1s`, { kind: 'mark', symbol: up });
+  }
   const shards: Shard[] = [];
   for (let i = 0; i < streams.length; i += perConn) {
     shards.push({ idx: shards.length, streams: streams.slice(i, i + perConn), current: null, next: null, attempt: 0, reconnectTimer: null });
   }
 
-  const lastSeen = new Map<string, number>(); // symbol → giờ máy nhận tin gần nhất
+  const lastMarkAt = new Map<string, number>(); // SYMBOL → giờ máy nhận mark gần nhất
+  const lastKlineAt = new Map<string, number>(); // `SYMBOL|interval` → giờ máy nhận kline gần nhất (kể cả chưa đóng)
   const marks = new Map<string, MarkPrice>();
-  const lastClosed = new Map<string, number>(); // `${symbol}|${interval}` → closeTime (T) nến đóng gần nhất
+  const lastClosed = new Map<string, number>(); // `SYMBOL|interval` → closeTime (T) nến đóng gần nhất
   let stopped = true;
   let nextId = 1;
 
@@ -164,11 +178,16 @@ export function createMarketStream(opts: {
     c?.timers.add(h);
     return h;
   }
-  function clearConn(c: MConn) { for (const h of c.timers) clock.clearTimeout(h); c.timers.clear(); }
+  function clearConn(c: MConn) { for (const h of c.timers) clock.clearTimeout(h); c.timers.clear(); c.ackTimer = null; }
   function closeIntentional(c: MConn) {
     c.intentional = true;
     clearConn(c);
     c.ws?.close();
+  }
+  // Đóng rồi coi là mất NGAY: Node 24 có thể không phát onclose với socket half-open (đã kiểm ở rà soát B8a)
+  function closeAndLose(shard: Shard, c: MConn) {
+    c.ws?.close();
+    lost(shard, c);
   }
 
   function drain(shard: Shard, c: MConn) {
@@ -176,12 +195,14 @@ export function createMarketStream(opts: {
     const now = clock.now();
     c.sentAt = c.sentAt.filter((t) => t > now - 1000);
     while (c.queue.length > 0 && c.sentAt.length < perSec) {
-      const m = c.queue.shift()!;
+      const id = c.queue.shift()!;
+      const params = c.batches.get(id);
+      if (!params) continue;
       try {
-        c.ws.send(m);
+        c.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params, id }));
       } catch (e) {
         log(`Market #${shard.idx}: lỗi gửi SUBSCRIBE (${errText(e)}) — đóng để nối lại`);
-        c.ws.close();
+        closeAndLose(shard, c);
         return;
       }
       c.sentAt.push(now);
@@ -189,8 +210,50 @@ export function createMarketStream(opts: {
     if (c.queue.length > 0) later(c, () => drain(shard, c), c.sentAt[0]! + 1000 - now);
   }
 
+  function armAck(shard: Shard, c: MConn) {
+    if (c.ackTimer !== null) { clock.clearTimeout(c.ackTimer); c.timers.delete(c.ackTimer); }
+    c.ackTimer = later(c, () => {
+      c.ackTimer = null;
+      if (c.batches.size > 0) resubscribe(shard, c, `không nhận ack sau ${ackTimeout} ms`);
+    }, ackTimeout);
+  }
+
+  // Phản hồi lỗi {code,msg} không có id [WSL] → không biết lô nào: gửi lại MỌI lô đã gửi mà chưa ack,
+  // và coi các stream đó là stale tới khi có dữ liệu thật.
+  function resubscribe(shard: Shard, c: MConn, why: string) {
+    if (c.intentional) return;
+    c.retries++;
+    if (c.retries > maxRetries) {
+      log(`Market #${shard.idx}: SUBSCRIBE hỏng ${c.retries - 1} vòng (${why}) — đóng để nối lại`);
+      closeAndLose(shard, c);
+      return;
+    }
+    const queued = new Set(c.queue);
+    const sentUnacked = [...c.batches.keys()].filter((id) => !queued.has(id));
+    log(`Market #${shard.idx}: ${why} — gửi lại ${sentUnacked.length} lô SUBSCRIBE (vòng ${c.retries})`);
+    for (const id of sentUnacked) {
+      const params = c.batches.get(id)!;
+      c.batches.delete(id);
+      for (const s of params) markStreamStale(s);
+      const nid = nextId++;
+      c.batches.set(nid, params);
+      c.queue.push(nid);
+    }
+    drain(shard, c);
+    armAck(shard, c);
+  }
+
+  function markStreamStale(stream: string) {
+    const m = meta.get(stream);
+    if (!m) return;
+    if (m.kind === 'mark') lastMarkAt.delete(m.symbol); else lastKlineAt.delete(m.key);
+  }
+
   function connect(shard: Shard, role: 'main' | 'rotating') {
-    const c: MConn = { ws: null, queue: [], sentAt: [], pendingAcks: new Set(), subscribed: false, intentional: false, lastMsgAt: clock.now(), timers: new Set() };
+    const c: MConn = {
+      ws: null, batches: new Map(), queue: [], sentAt: [], retries: 0, ackTimer: null,
+      subscribed: false, intentional: false, lastMsgAt: clock.now(), timers: new Set(),
+    };
     if (role === 'rotating') shard.next = c; else shard.current = c;
     try {
       c.ws = new WS(url);
@@ -201,32 +264,35 @@ export function createMarketStream(opts: {
     }
     const ws = c.ws;
     ws.onopen = () => {
+      if (c.intentional) return;
       log(`Market #${shard.idx}: đã mở kết nối${role === 'rotating' ? ' (xoay vòng)' : ''}, đăng ký ${shard.streams.length} stream`);
       for (let i = 0; i < shard.streams.length; i += perMsg) {
         const id = nextId++;
-        c.pendingAcks.add(id);
-        c.queue.push(JSON.stringify({ method: 'SUBSCRIBE', params: shard.streams.slice(i, i + perMsg), id }));
+        c.batches.set(id, shard.streams.slice(i, i + perMsg));
+        c.queue.push(id);
       }
       drain(shard, c);
+      armAck(shard, c);
       later(c, () => rotate(shard, c), rotateAfter);
     };
     ws.onmessage = (ev) => {
+      if (c.intentional) return; // tin muộn từ socket đã bỏ
       c.lastMsgAt = clock.now();
       onMessage(shard, c, ev.data);
     };
     ws.onerror = () => {
+      if (c.intentional) return;
       log(`Market #${shard.idx}: lỗi WebSocket — đóng để nối lại`);
-      ws.close();
+      closeAndLose(shard, c);
     };
     ws.onclose = () => {
-      clearConn(c);
       if (c.intentional || stopped) return;
       lost(shard, c);
     };
     const idleCheck = () => {
       if (clock.now() - c.lastMsgAt > idleTimeout) {
         log(`Market #${shard.idx}: không nhận tin quá ${idleTimeout} ms — đóng để nối lại`);
-        ws.close();
+        closeAndLose(shard, c);
         return;
       }
       later(c, idleCheck, Math.max(1, Math.floor(idleTimeout / 2)));
@@ -240,8 +306,10 @@ export function createMarketStream(opts: {
     connect(shard, 'rotating');
   }
 
+  // Idempotent: gọi nhiều lần (onerror, onclose muộn, canh im lặng) chỉ xử lý một lần
   function lost(shard: Shard, c: MConn) {
-    c.intentional = true; // đã xử lý, không xử lý lần hai
+    if (c.intentional && shard.current !== c && shard.next !== c) return;
+    c.intentional = true;
     clearConn(c);
     if (stopped) return;
     if (shard.current === c) {
@@ -272,6 +340,7 @@ export function createMarketStream(opts: {
   function subscribedDone(shard: Shard, c: MConn) {
     c.subscribed = true;
     shard.attempt = 0;
+    if (c.ackTimer !== null) { clock.clearTimeout(c.ackTimer); c.timers.delete(c.ackTimer); c.ackTimer = null; }
     if (shard.next === c) {
       const old = shard.current;
       shard.current = c;
@@ -290,15 +359,15 @@ export function createMarketStream(opts: {
       log(`Market #${shard.idx}: không đọc được tin (${errText(e)})`);
       return;
     }
-    // Phản hồi SUBSCRIBE {"result":null,"id":n}; lỗi {"code":..,"msg":..} [WSL]
+    // Phản hồi SUBSCRIBE {"result":null,"id":n}; lỗi {"code":..,"msg":..} không có id [WSL]
     if ('id' in msg && 'result' in msg) {
-      c.pendingAcks.delete(msg.id as number);
+      c.batches.delete(msg.id as number);
       if (msg.result !== null) log(`Market #${shard.idx}: phản hồi SUBSCRIBE lạ: ${JSON.stringify(msg.result)}`);
-      if (!c.subscribed && c.pendingAcks.size === 0 && c.queue.length === 0) subscribedDone(shard, c);
+      if (!c.subscribed && c.batches.size === 0) subscribedDone(shard, c);
       return;
     }
     if ('code' in msg && !('stream' in msg)) {
-      log(`Market #${shard.idx}: lỗi SUBSCRIBE từ sàn: code ${String(msg.code)} ${String(msg.msg)}`);
+      resubscribe(shard, c, `lỗi SUBSCRIBE từ sàn: code ${String(msg.code)} ${String(msg.msg)}`);
       return;
     }
     try {
@@ -314,18 +383,18 @@ export function createMarketStream(opts: {
   // Payload kline [WSM]: k.t giờ mở, k.T giờ đóng, o/h/l/c, v base volume, q quote volume, Q taker buy quote volume, x đã đóng
   function onKline(d: Obj) {
     const k = obj(d.k, 'kline.k');
-    const symbol = str(d, 's', 'kline');
+    const symbol = str(d, 's', 'kline').toUpperCase();
     const interval = str(k, 'i', 'kline.k');
     const closed = k.x;
     if (typeof closed !== 'boolean') throw new Error('kline.k.x: không phải boolean');
-    lastSeen.set(symbol, clock.now());
+    const key = `${symbol}|${interval}`;
+    lastKlineAt.set(key, clock.now());
     if (!closed) return;
     const candle: Candle = {
       openTime: num(k, 't', 'kline.k'), closeTime: num(k, 'T', 'kline.k'),
       open: num(k, 'o', 'kline.k'), high: num(k, 'h', 'kline.k'), low: num(k, 'l', 'kline.k'), close: num(k, 'c', 'kline.k'),
       volume: num(k, 'v', 'kline.k'), quoteVolume: num(k, 'q', 'kline.k'), takerBuyQuote: num(k, 'Q', 'kline.k'),
     };
-    const key = `${symbol}|${interval}`;
     const prevT = lastClosed.get(key);
     if (prevT !== undefined) {
       if (candle.openTime <= prevT) return; // trùng (chồng lấn lúc xoay vòng / nối lại)
@@ -338,15 +407,19 @@ export function createMarketStream(opts: {
 
   // Payload mark price [WSM]: e markPriceUpdate, E giờ sự kiện, s, p giá mark
   function onMark(d: Obj) {
-    const symbol = str(d, 's', 'markPrice');
+    const symbol = str(d, 's', 'markPrice').toUpperCase();
     const eventTime = num(d, 'E', 'markPrice');
     const price = num(d, 'p', 'markPrice');
     const now = clock.now();
-    lastSeen.set(symbol, now);
+    lastMarkAt.set(symbol, now);
     const cur = marks.get(symbol);
     if (cur && cur.eventTime > eventTime) return;
     marks.set(symbol, { price, eventTime, receivedAt: now });
   }
+
+  const old = (t: number | undefined) => t === undefined || clock.now() - t > staleAfter;
+  const isMarkStale = (symbol: string) => old(lastMarkAt.get(symbol.toUpperCase()));
+  const isKlineStale = (symbol: string, interval: string) => old(lastKlineAt.get(`${symbol.toUpperCase()}|${interval}`));
 
   return {
     start() {
@@ -363,14 +436,20 @@ export function createMarketStream(opts: {
         s.next = null;
       }
     },
-    latestMark: (symbol: string): MarkPrice | null => marks.get(symbol) ?? null,
-    // Bot KHÔNG được mở lệnh khi isStale(symbol) = true
+    latestMark: (symbol: string): MarkPrice | null => marks.get(symbol.toUpperCase()) ?? null,
+    isMarkStale,
+    isKlineStale,
+    // Cổng vào lệnh: Bot KHÔNG được mở lệnh khi isStale(symbol) = true (mark HOẶC bất kỳ khoảng nến nào đã cũ)
     isStale(symbol: string): boolean {
-      const t = lastSeen.get(symbol);
-      return t === undefined || clock.now() - t > staleAfter;
+      return isMarkStale(symbol) || opts.intervals.some((i) => isKlineStale(symbol, i));
     },
-    // Ghi mốc nến đóng cuối đã nạp qua REST để phát hiện lỗ ngay ở nến WS đầu tiên
-    seedLastClosed(symbol: string, interval: string, closeTime: number) { lastClosed.set(`${symbol}|${interval}`, closeTime); },
+    // Ghi mốc nến đóng cuối đã nạp qua REST. Gọi TRƯỚC start() để kiểm được lỗ ngay ở nến WS đầu tiên;
+    // chỉ tiến (lấy max) để gọi muộn không làm lùi mốc.
+    seedLastClosed(symbol: string, interval: string, closeTime: number) {
+      const key = `${symbol.toUpperCase()}|${interval}`;
+      const cur = lastClosed.get(key);
+      if (cur === undefined || closeTime > cur) lastClosed.set(key, closeTime);
+    },
     connectionCount: () => shards.length,
   };
 }
@@ -519,6 +598,7 @@ export function createUserStream(opts: {
   base?: string;
   keepaliveMs?: number; // mặc định 30 phút [Đề xuất trong tài liệu tra cứu 6.1]
   keepaliveRetryMs?: number; // gia hạn lỗi tạm → thử lại sau (mặc định 60 s)
+  stableAfterMs?: number; // kết nối sống được bấy lâu mới đặt lại bộ đếm lùi (mặc định 60 s)
   rotateAfterMs?: number;
   backoffBaseMs?: number;
   backoffCapMs?: number;
@@ -544,6 +624,8 @@ export function createUserStream(opts: {
   let reconnectTimer: unknown | null = null;
   let keepaliveTimer: unknown | null = null;
   let rotateTimer: unknown | null = null;
+  let stableTimer: unknown | null = null;
+  const stableAfter = opts.stableAfterMs ?? 60_000;
 
   const clear = (h: unknown | null) => { if (h !== null) clock.clearTimeout(h); };
 
@@ -587,7 +669,9 @@ export function createUserStream(opts: {
       current = c;
       pending = null;
       if (old) { old.intentional = true; old.ws?.close(); }
-      attempt = 0;
+      // Chỉ đặt lại bộ đếm lùi khi kết nối sống ổn định (tránh vòng mở-rớt dồn dập, mỗi vòng một POST listenKey)
+      clear(stableTimer);
+      stableTimer = clock.setTimeout(() => { stableTimer = null; if (c === current) attempt = 0; }, stableAfter);
       clear(reconnectTimer); reconnectTimer = null;
       clear(rotateTimer);
       rotateTimer = clock.setTimeout(() => { rotateTimer = null; log('User stream: xoay vòng kết nối trước mốc 24 giờ'); void establish('rotate'); }, rotateAfter);
@@ -596,20 +680,30 @@ export function createUserStream(opts: {
       opts.onEvent({ type: 'resync_required', reason });
     };
     ws.onmessage = (ev) => { if (c === current) onMessage(ev.data); };
-    ws.onerror = () => { log('User stream: lỗi WebSocket — đóng để nối lại'); ws.close(); };
-    ws.onclose = () => {
+    // Đóng rồi coi là mất NGAY: socket half-open trên Node 24 có thể không bao giờ phát onclose
+    ws.onerror = () => {
       if (c.intentional || stopped) return;
-      c.intentional = true;
-      if (c === current) {
-        current = null;
-        log('User stream: mất kết nối');
-        if (!pending) scheduleReconnect('reconnect');
-      } else if (c === pending) {
-        pending = null;
-        log('User stream: kết nối mới hỏng trước khi mở');
-        scheduleReconnect(reason);
-      }
+      log('User stream: lỗi WebSocket — đóng để nối lại');
+      ws.close();
+      lostConn(c, reason);
     };
+    ws.onclose = () => lostConn(c, reason);
+  }
+
+  // Idempotent: onerror rồi onclose muộn chỉ xử lý một lần
+  function lostConn(c: UConn, reason: ResyncReason) {
+    if (c.intentional || stopped) return;
+    c.intentional = true;
+    if (c === current) {
+      current = null;
+      clear(stableTimer); stableTimer = null;
+      log('User stream: mất kết nối');
+      if (!pending) scheduleReconnect('reconnect');
+    } else if (c === pending) {
+      pending = null;
+      log('User stream: kết nối mới hỏng trước khi mở');
+      scheduleReconnect(reason);
+    }
   }
 
   function scheduleReconnect(reason: ResyncReason) {
@@ -652,7 +746,7 @@ export function createUserStream(opts: {
     try {
       if (e === 'listenKeyExpired') {
         // [UDS] sau sự kiện này không còn sự kiện nào cho tới khi dùng listenKey mới
-        log(`User stream: listenKeyExpired (key ${String(ev.listenKey)}) — tạo key mới và nối lại`);
+        log('User stream: nhận listenKeyExpired — tạo key mới và nối lại');
         void establish('listenkey_expired');
         return;
       }
@@ -679,8 +773,8 @@ export function createUserStream(opts: {
     },
     stop() {
       stopped = true;
-      clear(reconnectTimer); clear(keepaliveTimer); clear(rotateTimer);
-      reconnectTimer = keepaliveTimer = rotateTimer = null;
+      clear(reconnectTimer); clear(keepaliveTimer); clear(rotateTimer); clear(stableTimer);
+      reconnectTimer = keepaliveTimer = rotateTimer = stableTimer = null;
       for (const c of [current, pending]) if (c) { c.intentional = true; c.ws?.close(); }
       current = pending = null;
     },

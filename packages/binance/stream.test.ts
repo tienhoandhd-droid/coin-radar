@@ -41,6 +41,8 @@ type Sent = { at: number; data: string };
 
 function fakeWsFactory(clock: Clock) {
   const all: FakeWs[] = [];
+  // silentClose = true: close() KHÔNG phát onclose (mô phỏng socket half-open trên Node 24)
+  const cfg = { silentClose: false };
   class FakeWs implements WsLike {
     url: string;
     sent: Sent[] = [];
@@ -51,7 +53,7 @@ function fakeWsFactory(clock: Clock) {
     onerror: ((ev: unknown) => void) | null = null;
     constructor(url: string) { this.url = url; all.push(this); }
     send(data: string) { if (this.closed) throw new Error('gửi trên kết nối đã đóng'); this.sent.push({ at: clock.now(), data }); }
-    close() { if (this.closed) return; this.closed = true; queueMicrotask(() => this.onclose?.({ code: 1000 })); }
+    close() { if (this.closed) return; this.closed = true; if (!cfg.silentClose) queueMicrotask(() => this.onclose?.({ code: 1000 })); }
     // phía "server"
     open() { this.onopen?.({}); }
     push(obj: unknown) { if (!this.closed) this.onmessage?.({ data: JSON.stringify(obj) }); }
@@ -59,7 +61,7 @@ function fakeWsFactory(clock: Clock) {
     subs(): Array<{ method: string; params: string[]; id: number }> { return this.sent.map((s) => JSON.parse(s.data)); }
     ackAll() { for (const m of this.subs()) this.push({ result: null, id: m.id }); }
   }
-  return { Ctor: FakeWs as unknown as new (url: string) => WsLike, all, last: () => all[all.length - 1]! };
+  return { Ctor: FakeWs as unknown as new (url: string) => WsLike, all, last: () => all[all.length - 1]!, cfg };
 }
 
 const kline = (sym: string, interval: string, t: number, closed: boolean, intervalMs = 60_000) => ({
@@ -90,7 +92,7 @@ test('URL /market/stream (không dùng /ws, /stream cũ) và tên stream viết 
 
 test('SUBSCRIBE: id là số nguyên không âm, gửi dàn đều ≤ 10 tin/giây (cửa sổ trượt 1 s)', async () => {
   const symbols = Array.from({ length: 300 }, (_, i) => `S${i}USDT`); // 300 × (1 kline + mark) = 600 stream
-  const { ws, m, clock } = marketSetup({ symbols, paramsPerMessage: 10, msgsPerSec: 10 });
+  const { ws, m, clock } = marketSetup({ symbols, paramsPerMessage: 10, msgsPerSec: 10, ackTimeoutMs: 600_000 });
   m.start();
   ws.last().open();
   await clock.advance(20_000);
@@ -123,7 +125,7 @@ test('mặc định gửi ≤ 5 tin/giây (chừa chỗ cho pong tự động)',
 
 test('chia nhiều kết nối khi > 1024 stream; mỗi kết nối ≤ 1024', async () => {
   const symbols = Array.from({ length: 700 }, (_, i) => `S${i}USDT`); // 700 × 2 = 1400 stream
-  const { ws, m, clock } = marketSetup({ symbols });
+  const { ws, m, clock } = marketSetup({ symbols, ackTimeoutMs: 600_000 });
   m.start();
   assert.equal(ws.all.length, 2);
   for (const c of ws.all) c.open();
@@ -248,10 +250,12 @@ test('dữ liệu cũ: không cập nhật quá N giây → isStale; có cập n
   assert.equal(m.isStale('BTCUSDT'), true, 'chưa có dữ liệu = stale');
   ws.last().open();
   ws.last().push(mark('BTCUSDT', clock.now(), '1'));
+  ws.last().push(kline('BTCUSDT', '1m', 60_000, false)); // nến chưa đóng vẫn là dữ liệu sống
   assert.equal(m.isStale('BTCUSDT'), false);
   await clock.advance(10_001);
   assert.equal(m.isStale('BTCUSDT'), true);
-  ws.last().push(kline('BTCUSDT', '1m', 60_000, false)); // nến chưa đóng vẫn là dữ liệu sống
+  ws.last().push(mark('BTCUSDT', clock.now(), '1'));
+  ws.last().push(kline('BTCUSDT', '1m', 60_000, false));
   assert.equal(m.isStale('BTCUSDT'), false);
 });
 
@@ -486,4 +490,176 @@ test('lỗi WebSocket có chứa URL vẫn được che listenKey', async () => 
   assert.ok(logs.length > 0);
   assert.ok(!logs.join('\n').includes('LKSECRET-0001'));
   u.stop();
+});
+
+// ---- Vòng sửa 1 (task-B8a-review.md) -------------------------------------------------------------
+test('half-open: im lặng → close() không phát onclose vẫn nối lại ngay; onclose/tin muộn của socket cũ bị bỏ', async () => {
+  const { ws, m, clock, events } = marketSetup({ idleTimeoutMs: 60_000 });
+  ws.cfg.silentClose = true;
+  m.start();
+  const old = ws.last();
+  old.open();
+  old.ackAll();
+  await clock.advance(61_000 + 30_000 + 2_000); // canh im lặng + lùi 750 ms
+  assert.equal(old.closed, true);
+  assert.equal(ws.all.length, 2, 'đã mở kết nối mới dù không có onclose');
+  old.onclose?.({ code: 1006 }); // onclose đến muộn
+  old.onmessage?.({ data: JSON.stringify(kline('BTCUSDT', '1m', 60_000, true)) }); // tin muộn
+  await clock.advance(5_000);
+  assert.equal(ws.all.length, 2, 'không nối lại lần hai');
+  assert.equal(events.length, 0, 'tin từ socket cũ bị bỏ');
+});
+
+test('half-open: onerror mà không có onclose → market nối lại', async () => {
+  const { ws, m, clock } = marketSetup();
+  ws.cfg.silentClose = true;
+  m.start();
+  ws.last().open();
+  ws.last().onerror?.({});
+  await clock.advance(2_000);
+  assert.equal(ws.all.length, 2);
+  ws.all[0]!.onclose?.({});
+  await clock.advance(5_000);
+  assert.equal(ws.all.length, 2);
+});
+
+test('half-open user stream: onerror không có onclose → nối lại + resync_required; sự kiện muộn của socket cũ bị bỏ', async () => {
+  const { ws, u, events, clock } = userSetup();
+  ws.cfg.silentClose = true;
+  await u.start();
+  const old = ws.last();
+  old.open();
+  await clock.advance(1);
+  old.onerror?.({});
+  await clock.advance(2_000);
+  assert.equal(ws.all.length, 2);
+  ws.last().open();
+  await clock.advance(1);
+  old.onclose?.({});
+  old.onmessage?.({ data: JSON.stringify({ e: 'ORDER_TRADE_UPDATE', E: 1, T: 1, o: {} }) });
+  await clock.advance(10_000);
+  assert.equal(ws.all.length, 2, 'không nối lại lần hai');
+  assert.deepEqual(events, [{ type: 'resync_required', reason: 'start' }, { type: 'resync_required', reason: 'reconnect' }]);
+});
+
+test('kline vẫn chạy, mark ngừng → mark stale (isStale cũng true); và ngược lại', async () => {
+  const { ws, m, clock } = marketSetup({ staleAfterMs: 10_000 });
+  m.start();
+  ws.last().open();
+  ws.last().push(mark('BTCUSDT', clock.now(), '1'));
+  for (let i = 0; i < 10; i++) { await clock.advance(2_000); ws.last().push(kline('BTCUSDT', '1m', 60_000, false)); }
+  assert.equal(m.isKlineStale('BTCUSDT', '1m'), false);
+  assert.equal(m.isMarkStale('BTCUSDT'), true);
+  assert.equal(m.isStale('BTCUSDT'), true);
+  for (let i = 0; i < 10; i++) { await clock.advance(2_000); ws.last().push(mark('BTCUSDT', clock.now(), '1')); }
+  assert.equal(m.isMarkStale('BTCUSDT'), false);
+  assert.equal(m.isKlineStale('BTCUSDT', '1m'), true);
+  assert.equal(m.isStale('BTCUSDT'), true);
+});
+
+test('lỗi SUBSCRIBE {code,msg}: log, gửi lại lô chưa ack (id mới), symbol liên quan stale tới khi có dữ liệu', async () => {
+  const { ws, m, clock, logs } = marketSetup({ symbols: ['AUSDT', 'BUSDT'], paramsPerMessage: 2 });
+  m.start();
+  const c = ws.last();
+  c.open();
+  c.push(mark('AUSDT', clock.now(), '1'));
+  c.push(kline('AUSDT', '1m', 0, false));
+  assert.equal(m.isStale('AUSDT'), false);
+  const first = c.subs();
+  assert.equal(first.length, 2);
+  c.push({ result: null, id: first[1]!.id }); // lô 2 OK, lô 1 lỗi
+  c.push({ code: 2, msg: 'Invalid request: too many parameters' });
+  assert.ok(logs.some((l) => /lỗi SUBSCRIBE/.test(l)));
+  assert.equal(m.isStale('AUSDT'), true, 'symbol của lô lỗi bị coi là stale');
+  await clock.advance(2_000);
+  const again = c.subs().slice(2);
+  assert.equal(again.length, 1, 'chỉ gửi lại lô chưa ack');
+  assert.deepEqual(again[0]!.params, first[0]!.params);
+  assert.notEqual(again[0]!.id, first[0]!.id);
+  c.push(mark('AUSDT', clock.now(), '1'));
+  c.push(kline('AUSDT', '1m', 0, false));
+  assert.equal(m.isStale('AUSDT'), false, 'có dữ liệu lại → hết stale');
+});
+
+test('không có ack quá hạn → gửi lại; lỗi lặp nhiều lần → đóng và nối lại', async () => {
+  const { ws, m, clock } = marketSetup({ ackTimeoutMs: 10_000 });
+  m.start();
+  const c = ws.last();
+  c.open();
+  await clock.advance(10_500);
+  assert.equal(c.subs().length, 2, 'gửi lại sau hạn ack');
+  for (let i = 0; i < 4; i++) { c.push(mark('BTCUSDT', clock.now(), '1')); await clock.advance(10_500); }
+  assert.equal(c.closed, true);
+  assert.ok(ws.all.length >= 2, 'đã nối lại kết nối mới');
+});
+
+test('xoay vòng: kết nối cũ rớt trước khi kết nối mới ack → kết nối mới thế chỗ, không nối lại thêm', async () => {
+  const { ws, m, clock, events } = marketSetup({ rotateAfterMs: 120_000, idleTimeoutMs: 1_000_000 });
+  m.start();
+  const old = ws.last();
+  old.open();
+  old.ackAll();
+  await clock.advance(120_000);
+  const fresh = ws.last();
+  assert.equal(ws.all.length, 2);
+  fresh.open();
+  old.drop();
+  await clock.advance(5_000);
+  assert.equal(ws.all.length, 2);
+  fresh.push(kline('BTCUSDT', '1m', 60_000, true));
+  assert.equal(events.filter((e) => e.type === 'kline').length, 1);
+});
+
+test('seedLastClosed: chuẩn hóa chữ hoa, chỉ tiến không lùi', async () => {
+  const { ws, m, events } = marketSetup();
+  m.seedLastClosed('btcusdt', '1m', 119_999);
+  m.start();
+  ws.last().open();
+  ws.last().push(kline('BTCUSDT', '1m', 120_000, true));
+  m.seedLastClosed('BTCUSDT', '1m', 59_999); // cũ hơn → bỏ qua
+  ws.last().push(kline('BTCUSDT', '1m', 180_000, true));
+  assert.equal(events.filter((e) => e.type === 'backfill_required').length, 0);
+});
+
+test('user stream mở rồi rớt ngay liên tục: độ trễ vẫn tăng (chỉ reset sau khi ổn định)', async () => {
+  const { ws, u, clock } = userSetup({ stableAfterMs: 60_000 });
+  await u.start();
+  ws.last().open();
+  await clock.advance(1);
+  ws.last().drop();
+  await clock.advance(1_000); // 750 ms
+  assert.equal(ws.all.length, 2);
+  ws.last().open();
+  await clock.advance(1);
+  ws.last().drop();
+  await clock.advance(1_000);
+  assert.equal(ws.all.length, 2, 'lần 2 phải chờ lâu hơn (1500 ms)');
+  await clock.advance(1_000);
+  assert.equal(ws.all.length, 3);
+});
+
+test('user xoay vòng: sự kiện trên kết nối cũ vẫn nhận trước khi mới mở, sau đó bị bỏ', async () => {
+  const H = 3_600_000;
+  const { ws, u, events, clock } = userSetup({ rotateAfterMs: 23 * H });
+  await u.start();
+  const old = ws.last();
+  old.open();
+  await clock.advance(23 * H);
+  const ev = (E: number) => ({ e: 'ACCOUNT_UPDATE', E, T: E, a: { m: 'ORDER', B: [], P: [] } });
+  old.push(ev(1));
+  ws.last().open();
+  await clock.advance(1);
+  old.onmessage?.({ data: JSON.stringify(ev(2)) });
+  ws.last().push(ev(3));
+  assert.deepEqual(events.filter((e) => e.type === 'account_update').map((e) => (e as { eventTime: number }).eventTime), [1, 3]);
+});
+
+test('log listenKeyExpired không in listenKey (kể cả khi chưa có trong danh sách che)', async () => {
+  const { ws, u, clock, logs } = userSetup();
+  await u.start();
+  ws.last().open();
+  await clock.advance(1);
+  ws.last().push({ e: 'listenKeyExpired', E: 1, listenKey: 'KHOALA-CHUA-THAY-123' });
+  await clock.advance(1);
+  assert.ok(!logs.join('\n').includes('KHOALA-CHUA-THAY-123'));
 });
