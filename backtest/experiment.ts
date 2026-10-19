@@ -167,6 +167,8 @@ Kế hoạch 2, "Quy trình mô phỏng MÙ": mọi lần thử thay đổi (lu�
   Cấu hình Hạng A × A0 cũng đã xem — coi là một phần của hai lần thử này, không đếm thêm.
 - Các lần chạy lại của Task 3 sau khi sửa lỗi bộ mô phỏng KHÔNG phải lần thử (cùng giả thuyết, sửa công cụ).
 - Chạy lại cùng (biến thể, chế độ) — vd. quyết định lại theo tiêu chí mới — THAY dòng cũ, không tăng k.
+- Sửa định cỡ/công cụ (không đổi luật vào/thoát) ghi là biến thể "không tính là thử" (cột k = —, quyết định "gốc mới"), vd. \`f1-funding-fix\`.
+- Task 8: thay đổi được nhận CHỒNG lên nhau — lần thử sau so với gốc mới (\`--base\`, ghi "[gốc: …]" ở cột Thay đổi).
 
 **Tiêu chí nhận (cấp danh mục, cùng lịch ngày D):** cận dưới CI Bonferroni (bootstrap theo khối NGÀY) của Δ R/ngày **và** Δ lợi suất
 vốn %/ngày > 0; kỳ vọng R toàn bộ tăng; sụt giảm lớn nhất % vốn **và** chuỗi thua dài nhất không tệ hơn gốc (không có dung sai); ≥ 30 lệnh.
