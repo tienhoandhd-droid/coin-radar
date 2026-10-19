@@ -67,6 +67,11 @@ export const COMMON = {
   liquidationBufferStops: 1, // giá thanh lý phải xa hơn cắt lỗ ≥ 1 khoảng cắt lỗ
   roundNumberProximityAtr: 0.2, // cắt lỗ cách số tròn trong khoảng này (×ATR) thì đẩy qua số tròn — đề xuất, chưa backtest
   riskAtrPctTiers: [4, 6, 10],
+  // analyze — đề xuất, chưa backtest:
+  costTierRank: { high: 0.2, mid: 0.5 }, // hạng thanh khoản ≤ high → nhóm 'high'; ≤ mid → 'mid'; còn lại 'low'
+  liquidRankForRs: 0.5, // chỉ tính sức mạnh tương đối so BTC khi hạng thanh khoản ≤ mức này
+  watchScore: 50, // điểm tối thiểu để gắn nhãn 'Theo dõi'
+  drawdownDays: 90, // cửa sổ (ngày) đo mức sụt tối đa cho mức rủi ro
   // G-07 / G-10 / mức rủi ro — đề xuất, chưa backtest:
   eventWindowsHours: {
     FOMC: { before: 4, after: 2 },
