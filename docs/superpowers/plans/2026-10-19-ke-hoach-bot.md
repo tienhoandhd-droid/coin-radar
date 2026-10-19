@@ -50,6 +50,10 @@ Test từng mục.
 
 `packages/bot/planner.ts`: từ `TradePlan` + exchangeInfo (tick/step/minNotional/MAX_NUM_ORDERS) + vốn → danh sách lệnh mong muốn theo chính sách C2: vào (market/limit), SL gốc, TP1 50% reduce-only, trailing 50% với `activatePrice=TP1` và `callbackRate` = min(theo ATR, (TP1 − (giá vào + phí))/TP1) giới hạn trong [0,1; 10] — nếu < 0,1% → thêm lệnh dừng sàn ở giá vào làm lưới; khối lượng theo 2% và trần đòn bẩy; kiểm thanh lý. Thuần, test bảng ca Long/Short.
 
+### Task B3b: TP1 bỏ qua vùng cản yếu (người dùng chốt 19/10/2026)
+
+Người dùng: “lệnh quá ngắn thì khả năng biên độ lợi nhuận không cao” → chọn **bỏ vùng cản yếu đầu tiên, lấy TP1 xa hơn** (không thêm ngưỡng %). Quy tắc: khi đặt TP1 (lệnh vùng và lệnh mô hình), chỉ vùng có **độ mạnh ≥ 2** (config, cùng ngưỡng `minSlStrength`) mới là vật cản; vùng yếu hơn bị bỏ qua và ghi vào lý do (“bỏ qua vùng … (độ mạnh x) — TP1 lấy vùng kế tiếp”). Áp đồng bộ: chọn TP1 trong plan.ts và pattern-plan.ts, luật “kháng cự ngay sát giá vào” (G-12), S-03, Hạng A tiêu chí 3 (“không có vùng cản MẠNH giữa giá vào và TP1”), bản in. Kế hoạch 2: thêm biến thể so sánh “TP1 tại vùng đầu tiên bất kể độ mạnh” để đo tác động. Test Long/Short.
+
 ### Task B4: Nhật ký + bộ đối chiếu thuần
 
 `packages/bot/journal.ts` (JSONL chỉ ghi thêm + ảnh chụp, khôi phục), `packages/bot/reconcile.ts` (mong muốn × thật → hành động theo R8: thiếu dừng → đặt/đóng; dừng mồ côi → hủy; TP1 khớp lúc vắng mặt → hủy SL gốc chỉ khi trailing đã kích hoạt; khớp một phần; vị thế lạ → báo, không đụng; chặn gán khớp của lệnh cũ cho lệnh mới). Test bảng ca ≥ 15 tình huống.
