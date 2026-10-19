@@ -6,6 +6,8 @@ import { patternId, evaluateState } from './state.ts';
 import { atr } from '../indicators.ts';
 import { COMMON } from '../config.ts';
 import type { Candle } from '../types.ts';
+import { readFileSync } from 'node:fs';
+import { parseKlines } from '../../binance/parse.ts';
 
 const H4 = 4 * 3600_000;
 function k(i: number, close: number, half = 0.5): Candle {
@@ -128,4 +130,38 @@ test('P2 chống look-ahead: chuỗi ngẫu nhiên có seed (đủ 4 loại) —
   for (let n = 30; n <= c.length; n++) {
     assert.equal(sig(trackPatterns('X', c.slice(0, n), '4h', all)), sig(trackPatterns('X', c, '4h', all, n - 1)), `nến ${n - 1}`);
   }
+});
+
+// ---- B1 (rà soát cuối 1c): dữ liệu THẬT. ETHUSDT 4H, 800 nến Binance (cắt từ lần tải 19/10/2026). Trước khi sửa, asOf trên mảng
+// dài hơn lệch tiền tố ở T = 729–736 (swingPivots thay pivot cuối bằng pivot tương lai cực hơn). Sau khi sửa: 0 lệch.
+const realEth = (): Candle[] =>
+  parseKlines(JSON.parse(readFileSync(new URL('./fixtures/ethusdt-4h.json', import.meta.url), 'utf8')), Number.MAX_SAFE_INTEGER);
+
+test('B1 dữ liệu thật ETHUSDT 4H: trackPatterns(asOf = T) trên mảng dài == trackPatterns trên tiền tố c[0..T] — 0 lệch', () => {
+  const c = realEth();
+  assert.equal(c.length, 800);
+  const all = ['rectangle', 'double', 'triangle', 'flag'] as const;
+  const ser = (xs: ReturnType<typeof trackPatterns>) => JSON.stringify(xs.map((t) => [t.id, t.geometry.kind, t.geometry.pivots.map((p) => c[p.index]!.openTime),
+    t.result.state, t.result.breakoutIndex, t.result.side, t.result.retest, t.result.signalStale]).sort());
+  const bad: number[] = [];
+  for (let T = 400; T < c.length - 1; T++) {
+    if (ser(trackPatterns('ETHUSDT', c, '4h', all, T)) !== ser(trackPatterns('ETHUSDT', c.slice(0, T + 1), '4h', all))) bad.push(T);
+  }
+  assert.deepEqual(bad, [], `lệch tại T = ${bad.join(', ')}`);
+});
+
+test('B1 dữ liệu thật: ATR tính trên tiền tố == ATR cả chuỗi cắt tới T; evaluateState(asOf) == evaluateState trên tiền tố (cùng hình học)', () => {
+  const c = realEth();
+  const a = atr(c, COMMON.patterns.atrPeriod);
+  let compared = 0;
+  for (let T = 400; T < c.length - 1; T += 3) {
+    const pre = c.slice(0, T + 1);
+    const preAtr = atr(pre, COMMON.patterns.atrPeriod);
+    assert.deepEqual(preAtr, a.slice(0, T + 1), `ATR lệch tại T = ${T}`);
+    for (const t of trackPatterns('ETHUSDT', pre, '4h', ['rectangle', 'double', 'triangle', 'flag'])) {
+      assert.deepEqual(evaluateState(t.geometry, c, a, '4h', T), evaluateState(t.geometry, pre, preAtr, '4h'), `T = ${T} ${t.id}`);
+      compared++;
+    }
+  }
+  assert.ok(compared > 100, `quá ít phép so sánh: ${compared}`);
 });

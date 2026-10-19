@@ -51,13 +51,17 @@ function apexIndex(g: PatternGeometry): number | null {
 // Chạy lại từ các nến ĐÃ ĐÓNG: quyết định tại nến i chỉ dùng nến ≤ i (c[c.length-1] là nến mới nhất).
 // Mô hình thường: biết khi pivot cuối được xác nhận (endIndex + pivotConfirmBars), nến phá vỡ xét từ nến kế tiếp.
 // Cờ: endIndex là nến e, có thể chính là nến phá vỡ nên xét từ endIndex.
-// asOf (mặc định = nến cuối): chỉ dùng nến ≤ asOf, dù mảng dài hơn — để so "chạy toàn bộ" với "chạy tăng dần".
-export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf: string, asOf: number = c.length - 1): StateResult {
+// asOf (mặc định = nến cuối): CẮT nến và ATR về [0..asOf] rồi mới chạy, nên kết quả == chạy trên tiền tố với CÙNG hình học
+// (ATR Wilder chỉ phụ thuộc nến ≤ i, nên cắt ATR == tính lại ATR trên tiền tố — có bài kiểm dữ liệu thật trong track.test.ts).
+// Lưu ý: hình học phải lấy từ chính tiền tố (trackPatterns cắt mảng); hình học từ mảng dài hơn có thể chứa pivot tương lai.
+export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: number[], tf: string, asOf: number = full.length - 1): StateResult {
   const cfg = COMMON.patterns.state;
   const confirmAtr = (cfg.confirmAtr as Record<string, number>)[tf];
   if (confirmAtr === undefined) throw new Error(`khung không hỗ trợ: ${tf}`);
-  if (atr.length !== c.length) throw new Error(`độ dài atr (${atr.length}) khác độ dài nến (${c.length})`);
-  if (!Number.isInteger(asOf) || asOf < 0 || asOf >= c.length) throw new Error(`asOf ${asOf} ngoài phạm vi 0..${c.length - 1}`);
+  if (fullAtr.length !== full.length) throw new Error(`độ dài atr (${fullAtr.length}) khác độ dài nến (${full.length})`);
+  if (!Number.isInteger(asOf) || asOf < 0 || asOf >= full.length) throw new Error(`asOf ${asOf} ngoài phạm vi 0..${full.length - 1}`);
+  const c = asOf === full.length - 1 ? full : full.slice(0, asOf + 1);
+  const atr = asOf === fullAtr.length - 1 ? fullAtr : fullAtr.slice(0, asOf + 1);
   const last = asOf;
   const flag = isFlag(g);
   const armedFrom = flag ? g.endIndex : g.endIndex + COMMON.pivotConfirmBars;
