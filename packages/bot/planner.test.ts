@@ -50,7 +50,7 @@ function mkPlan(side: Side, entryType: 'market' | 'limit' | 'split', floor: bool
 function input(plan: PlannerPlan, over: Partial<PlannerInput> = {}): PlannerInput {
   return {
     plan, grade: 'A', signal: { id: 'AAAUSDT|swing|long|zone|1|98', fresh: true }, mode: 'swing', contract: C, capital: plan.capital,
-    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, costModel: { tierPct: plan.costPct, quoteVolPerMin: Infinity }, fundingBuffer: FB0, ...over,
+    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, costModel: { tierPct: plan.costPct, quoteVolPerMin: 1e15 }, fundingBuffer: FB0, ...over,
   };
 }
 
@@ -447,4 +447,10 @@ test('Fail closed (rà soát lại vòng 2): thiếu costModel hoặc đệm fun
   const zeroFunding = planOrders(input(plan, { fundingBuffer: { maxAbsRate: 0, intervalHours: 8 } }));
   assert.equal(zeroFunding.allowed, false);
   assert.match(zeroFunding.reasons.join(' '), /thiếu dữ liệu funding/);
+});
+
+test('costModel KL 1 phút = Infinity (trượt theo cỡ = 0) → từ chối, không định cỡ âm thầm thiếu trượt (rà soát lại Task 3 vòng 2)', () => {
+  const r = planOrders(input(mkPlan('long', 'market', false), { costModel: { tierPct: 0.1, quoteVolPerMin: Infinity } }));
+  assert.equal(r.allowed, false);
+  assert.match(r.reasons.join(' | '), /KL 1 phút Infinity không hữu hạn/);
 });

@@ -144,3 +144,11 @@ test('I7 parseLeverageBrackets: đúng dạng tài liệu (symbol, brackets[]: b
   assert.throws(() => parseLeverageBrackets([{ symbol: 'BTCUSDT', brackets: [] }]), /BTCUSDT.*rỗng/);
   assert.throws(() => parseLeverageBrackets({ code: -2015 }), /leverageBracket/);
 });
+
+test('parseFundingHistory: /fapi/v1/fundingRate → { fundingTime, fundingRate }; trường hỏng → ném lỗi nêu mã', async () => {
+  const { parseFundingHistory } = await import('./parse.ts');
+  assert.deepEqual(parseFundingHistory([{ symbol: 'AAAUSDT', fundingTime: 1000, fundingRate: '-0.00030000', markPrice: '1.2' }]),
+    [{ fundingTime: 1000, fundingRate: -0.0003 }]);
+  assert.throws(() => parseFundingHistory([{ symbol: 'AAAUSDT', fundingTime: 1000, fundingRate: '' }]), /fundingRate AAAUSDT/);
+  assert.throws(() => parseFundingHistory({ code: -1121 }), /kỳ vọng mảng/);
+});

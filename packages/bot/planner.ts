@@ -155,6 +155,8 @@ export function planOrders(i: PlannerInput): PlannerResult {
   const fb = i.fundingBuffer;
   problems.push(...fundingBufferProblems(fb).map((x) => `${x} — cần để giữ lỗ ≤ ${COMMON.risk.perTradePct}%`));
   problems.push(...costModelProblems(cm)); // bắt buộc (fail closed): không quay về phí kế hoạch
+  // KL 1 phút = Infinity (chỉ dùng trong test của core) nghĩa là trượt theo cỡ = 0 — bot chạy thật phải có KL thật (rà soát lại Task 3 vòng 2)
+  if (cm !== undefined && !Number.isFinite(cm.quoteVolPerMin)) problems.push(`costModel: KL 1 phút ${cm.quoteVolPerMin} không hữu hạn — trượt theo cỡ sẽ bằng 0 mà không báo`);
   let expireAt: number | undefined;
   if (hasLimit) {
     const h = p.limitExpiryHours;
@@ -173,7 +175,8 @@ export function planOrders(i: PlannerInput): PlannerResult {
 
   // ---- 3. Khối lượng 2% do planner TỰ tính ở giá khớp XẤU NHẤT (rà soát B3 #1/#2) --------------------------------------
   // Không tin plan.qty/plan.riskPct (kế hoạch có thể lập với vốn khác, hoặc ở giá kế hoạch thay vì giá xấu nhất).
-  // perUnit = |giá xấu nhất − SL| + giá xấu nhất × costPct% (phí + trượt theo nhóm thanh khoản + trượt theo cỡ lệnh).
+  // Rủi ro(q) = q·a + q²·b (packages/core/sizing.ts riskModel): a = |giá xấu nhất − SL| + nửa phí nhóm ở giá xấu nhất + nửa phí nhóm ở giá SL
+  // + đệm funding/coin; b = trượt theo cỡ hai chiều. Khối lượng = nghiệm dương của rủi ro(q) = 2% vốn, làm tròn xuống theo bước.
   // plan.qty chỉ là trần trên (vd kế hoạch mô hình chỉ đặt limit cho 50% khối lượng) — không bao giờ phóng to.
   const dec = tickDecimals(qStep);
   const floorQ = (x: number) => (x > 0 && Number.isFinite(x) ? Number((Math.floor(x / qStep + 1e-9) * qStep).toFixed(dec)) : 0);

@@ -51,7 +51,7 @@ function plan(side: Side, over: Partial<PlannerPlan> = {}): PlannerPlan {
 function planned(p: PlannerPlan, over: Partial<PlannerInput> = {}): PlannerResult {
   const r = planOrders({
     plan: p, grade: 'A', signal: { id: `AAAUSDT|swing|${p.side}|zone|1|${p.stop}`, fresh: true }, mode: 'swing', contract: C, capital: p.capital,
-    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, costModel: { tierPct: p.costPct, quoteVolPerMin: Infinity }, fundingBuffer: FB, ...over,
+    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, costModel: { tierPct: p.costPct, quoteVolPerMin: 1e30 }, fundingBuffer: FB, ...over,
   });
   assert.ok(r.allowed, `planner từ chối: ${r.reasons.join('; ')}`);
   return r;
@@ -253,10 +253,10 @@ test('Dừng theo thời gian không áp dụng khi đã đạt +1R (đỉnh ≥
 
 test('Trần danh mục: 10 lệnh còn rủi ro → planner (dùng lại) từ chối; lệnh đã qua TP1 không tính', () => {
   const open: OpenTrade[] = Array.from({ length: 10 }, (_, i) => ({ symbol: `X${i}USDT`, side: 'long', notional: 100, leverage: 5, riskAmount: 10, pastTp1: false }));
-  const r = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open, openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, costModel: { tierPct: 0.1, quoteVolPerMin: Infinity }, fundingBuffer: FB });
+  const r = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open, openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, costModel: { tierPct: 0.1, quoteVolPerMin: 1e30 }, fundingBuffer: FB });
   assert.equal(r.allowed, false);
   assert.match(r.reasons.join(' '), /trần 10 lệnh/);
-  const r2 = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open.map((o, i) => ({ ...o, pastTp1: i < 3 })), openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, costModel: { tierPct: 0.1, quoteVolPerMin: Infinity }, fundingBuffer: FB });
+  const r2 = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open.map((o, i) => ({ ...o, pastTp1: i < 3 })), openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, costModel: { tierPct: 0.1, quoteVolPerMin: 1e30 }, fundingBuffer: FB });
   assert.equal(r2.allowed, true);
 });
 

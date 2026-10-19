@@ -33,7 +33,9 @@ export function maxSafeLeverage(stopDistPct: number, mmr: number, bufferStops: n
 }
 
 // Khối lượng 2% + rủi ro thật: CÙNG công thức với planner của bot (packages/core/sizing.ts — rà soát Task 3 kế hoạch 2):
-// phí nhóm chiều vào ở giá vào, chiều ra ở giá SL, trượt theo cỡ hai chiều, đệm funding. Bản in máy quét = số bot sẽ vào.
+// phí nhóm chiều vào ở giá vào, chiều ra ở giá SL, trượt theo cỡ hai chiều, đệm funding. Bản in máy quét = số bot sẽ vào KHI đệm funding
+// giống nhau: máy quét tải |funding| lớn nhất 30 ngày cho mã Đạt tiêu chí (scanner/funding-history.ts); không tải được → mức thận trọng
+// fundingFallbackRate (≥ mức bot dùng) và ghi chú trên bản in. Phát lại (backtest) không truyền → analyze dùng |funding kỳ gần nhất|.
 export function positionSize(a: { mode: Mode; capital: number; riskPct: number; entry: number; stop: number; stepSize: number; cost: CostModel; fundingBuffer: FundingBuffer }) {
   const model = riskModel(a.mode, a.entry, a.stop, a.cost, a.fundingBuffer);
   const s = sizeForRisk(model, a.capital, a.riskPct, a.stepSize);

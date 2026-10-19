@@ -22,3 +22,16 @@ test('đệm funding = 0 (thiếu dữ liệu) bị từ chối — fail closed;
   assert.equal(fundingFallbackRate(8), COMMON.risk.fundingFallbackPer8h);
   assert.equal(fundingFallbackRate(4), COMMON.risk.fundingFallbackPer8h / 2);
 });
+
+test('maxAbsFundingRate: |funding| lớn nhất trong N ngày tới t, chỉ kỳ ĐÃ chốt (≤ t), không nhìn trước', async () => {
+  const { maxAbsFundingRate } = await import('./sizing.ts');
+  const D = 86_400_000, T = 100 * D;
+  const rows = [
+    { fundingTime: T - 31 * D, fundingRate: -0.01 }, // ngoài 30 ngày
+    { fundingTime: T - 10 * D, fundingRate: -0.0007 },
+    { fundingTime: T - 1, fundingRate: 0.0003 },
+    { fundingTime: T + 1, fundingRate: 0.05 }, // tương lai
+  ];
+  assert.equal(maxAbsFundingRate(rows, T, 30), 0.0007);
+  assert.equal(maxAbsFundingRate([], T, 30), 0);
+});

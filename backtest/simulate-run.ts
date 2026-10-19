@@ -30,7 +30,7 @@ import type { Analysis } from '../packages/core/analyze.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { createReplay, decisionTimes, signalDedupeKey, loadContracts, DEV_PERIOD, type FundingRow, type Window } from './replay.ts';
-import { fundingFallbackRate } from '../packages/core/sizing.ts';
+import { fundingFallbackRate, maxAbsFundingRate } from '../packages/core/sizing.ts';
 import { loadCandles, createFetcher, fetchWindow1m, HOUR, MINUTE, DAY, type Interval, type Fetcher } from './data.ts';
 import {
   createTrade, advanceTrade, forceClose, tradeRecord, portfolioView, createBook, bookFlow, bookClose, isPaused, summarize, groupStats, isDone,
@@ -69,10 +69,7 @@ export function pickCandidates(results: readonly Analysis[], filter: Filter, st:
 
 // |funding| lớn nhất mỗi kỳ trong COMMON.risk.fundingBufferLookbackDays ngày tới t — chỉ các kỳ ĐÃ chốt (fundingTime ≤ t, không nhìn trước)
 export function maxAbsFunding(rows: readonly FundingRow[], t: number): number {
-  const from = t - COMMON.risk.fundingBufferLookbackDays * DAY;
-  let m = 0;
-  for (const r of rows) if (r.fundingTime > from && r.fundingTime <= t) m = Math.max(m, Math.abs(r.fundingRate));
-  return m;
+  return maxAbsFundingRate(rows, t, COMMON.risk.fundingBufferLookbackDays); // một công thức với máy quét (packages/core/sizing.ts)
 }
 
 // Đệm funding cho planner tại t: |funding| lớn nhất 30 ngày; không có kỳ nào (hoặc toàn 0) → mức thận trọng theo chu kỳ (KHÔNG dùng 0,

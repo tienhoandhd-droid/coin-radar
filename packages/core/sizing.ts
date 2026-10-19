@@ -40,6 +40,16 @@ export function fundingSettlements(mode: Mode, intervalHours: number): number {
   return Math.ceil(CONFIG[mode].maxHoldHours / intervalHours - 1e-9);
 }
 
+// |funding| lớn nhất mỗi kỳ trong lookbackDays ngày tới t — chỉ các kỳ ĐÃ chốt (fundingTime ≤ t, không nhìn trước). Không có kỳ nào → 0
+// (nơi gọi thay bằng fundingFallbackRate, không dùng 0). Dùng chung: máy quét (scanner/funding-history.ts), mô phỏng (simulate-run.ts).
+export function maxAbsFundingRate(rows: ReadonlyArray<{ fundingTime: number; fundingRate: number }>, t: number,
+  lookbackDays: number = COMMON.risk.fundingBufferLookbackDays): number {
+  const from = t - lookbackDays * 86_400_000;
+  let m = 0;
+  for (const r of rows) if (r.fundingTime > from && r.fundingTime <= t) m = Math.max(m, Math.abs(r.fundingRate));
+  return m;
+}
+
 // Mức funding thận trọng mỗi kỳ khi không có lịch sử (hoặc lịch sử toàn 0): COMMON.risk.fundingFallbackPer8h quy theo chu kỳ.
 export function fundingFallbackRate(intervalHours: number): number {
   return (COMMON.risk.fundingFallbackPer8h * intervalHours) / 8;

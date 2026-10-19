@@ -3,6 +3,7 @@ import { marketRegime, circuitBreaker, btcSma200ReclaimedAt, type Regime } from 
 import { inPatternScope } from '../packages/core/gates.ts';
 import { candleProblems } from '../packages/core/candles.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
+import { fundingFallbackRate } from '../packages/core/sizing.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } from '../packages/core/types.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
@@ -34,6 +35,9 @@ export type ScanInput = {
   leverageBrackets?: ReadonlyMap<string, MarginBracket[]>; // bậc ký quỹ thật theo mã (leverageBracket, cần key — bot); máy quét: không có → bảng giả định
   // |funding| lớn nhất gần đây theo mã (đệm funding trong định cỡ, core/sizing.ts); không có → analyze dùng |funding kỳ gần nhất|
   fundingMaxAbs?: ReadonlyMap<string, number>;
+  // Máy quét chạy thật (scanner/funding-history.ts): tải |funding| lớn nhất 30 ngày CHỈ cho mã Đạt tiêu chí (hạn mức 500 lệnh/5 phút),
+  // rồi chấm lại mã đó với đệm đúng như planner. Lỗi (trừ 418/429) → mức thận trọng fundingFallbackRate + ghi chú trên kết quả.
+  fundingMaxAbsLoader?: (symbol: string) => Promise<number>;
   prevSignals: ReadonlyMap<string, SignalState>; // I5: tín hiệu gần nhất theo mã (đang mở hoặc đã kết thúc lúc nào) — cập nhật bằng advanceSignalState sau mỗi lần quét; máy quét: Map rỗng
 };
 
@@ -113,16 +117,33 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
       const premium = input.premiums.get(c.symbol);
       if (!book || !premium) throw new Error('Thiếu bookTicker hoặc premiumIndex');
       const mid = (book.bid + book.ask) / 2;
-      results.push(analyze({
+      const intervalHours = input.fundingIntervals.get(c.symbol) ?? COMMON.defaultFundingIntervalHours;
+      const run = (fundingMaxAbsRate: number | undefined) => analyze({
         mode, contract: c, trend, entry, daily, hourly, btcTrend,
         regime: regime.regime, breakerTripped: breaker.tripped, breakerNote: breaker.reason ?? undefined,
         liquidityRankPct: rank, spreadPct: ((book.ask - book.bid) / mid) * 100,
-        premium, fundingIntervalHours: input.fundingIntervals.get(c.symbol) ?? COMMON.defaultFundingIntervalHours,
+        premium, fundingIntervalHours: intervalHours,
         fundingIntervalDefault: !input.fundingIntervals.has(c.symbol), now: new Date(now), events: input.events, capital: input.capital, riskPct: COMMON.risk.perTradePct,
         patternData, openTrades: input.openTrades, prevSignal: input.prevSignals.get(c.symbol) ?? null,
-        ...(input.fundingMaxAbs?.has(c.symbol) ? { fundingMaxAbsRate: input.fundingMaxAbs.get(c.symbol)! } : {}),
+        ...(fundingMaxAbsRate !== undefined ? { fundingMaxAbsRate } : {}),
         ...(input.leverageBrackets ? { leverageBrackets: input.leverageBrackets.get(c.symbol) ?? [] } : {}),
-      }));
+      });
+      let a = run(input.fundingMaxAbs?.get(c.symbol));
+      if (input.fundingMaxAbsLoader !== undefined && !input.fundingMaxAbs?.has(c.symbol) && a.label.startsWith('Đạt')) {
+        let rate: number;
+        let note: string | null = null;
+        try {
+          rate = await input.fundingMaxAbsLoader(c.symbol);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (BAN.test(msg)) throw e; // sàn chặn → dừng quét như mọi lệnh gọi khác
+          rate = fundingFallbackRate(intervalHours);
+          note = `đệm funding: không tải được lịch sử ${COMMON.risk.fundingBufferLookbackDays} ngày (${msg}) → dùng mức thận trọng ${(rate * 100).toFixed(3).replace('.', ',')}%/kỳ`;
+        }
+        a = run(rate);
+        if (note !== null) a.flags.push(note);
+      }
+      results.push(a);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push({ symbol: c.symbol, error: message });

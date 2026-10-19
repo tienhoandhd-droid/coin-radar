@@ -161,7 +161,8 @@ export function analyze(i: AnalyzeInput): Analysis {
   }
   // Định cỡ kế hoạch = CÙNG công thức với planner của bot (core/sizing.ts): trượt theo cỡ (I7) của chính khối lượng in, phí kế hoạch ước trên
   // notional SAU trần thanh khoản (rà soát Task 3 kế hoạch 2, I1), đệm funding. |funding| lớn nhất gần đây: nơi gọi truyền từ lịch sử
-  // (fundingMaxAbsRate); không có → |funding kỳ gần nhất| (máy quét chưa tải lịch sử funding); vẫn = 0 → mức thận trọng (không dùng 0).
+  // (fundingMaxAbsRate — máy quét: run-scan tải cho mã Đạt tiêu chí rồi chấm lại); không có → |funding kỳ gần nhất| (phát lại); vẫn = 0
+  // → mức thận trọng (không dùng 0).
   const fundingRaw = i.fundingMaxAbsRate ?? Math.abs(i.premium.lastFundingRate);
   const fundingBuffer = { maxAbsRate: fundingRaw > 0 ? fundingRaw : fundingFallbackRate(i.fundingIntervalHours), intervalHours: i.fundingIntervalHours };
 

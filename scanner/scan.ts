@@ -7,6 +7,7 @@ import { parseEvents, eventCalendarStatus } from '../packages/core/events.ts';
 import { parseScanArgs, type ScanArgs } from './args.ts';
 import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, portfolioLines, headerWarningLines, type GradedItem } from './plan-print.ts';
 import { runScan } from './run-scan.ts';
+import { createFundingMaxAbsLoader } from './funding-history.ts';
 
 const { values } = parseArgs({ options: {
   mode: { type: 'string', default: 'swing' },
@@ -40,6 +41,8 @@ const premiums = new Map(parsePremium(await client.get('/fapi/v1/premiumIndex'))
 const fundingIntervals = parseFundingInfo(await client.get('/fapi/v1/fundingInfo'));
 const scan = await runScan({
   mode, contracts, tickers, books, premiums, fundingIntervals, now, events, capital, limit: args.limit, openTrades: [], prevSignals: new Map(),
+  // Đệm funding đúng như planner: |funding| lớn nhất 30 ngày, tải cho mã Đạt tiêu chí (không tải được → mức thận trọng + ghi chú trên kế hoạch)
+  fundingMaxAbsLoader: createFundingMaxAbsLoader({ get: client.get, now }),
   klines: async (symbol, interval, limit) => parseKlines(await client.get(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`), now),
 });
 const { regime, breaker, btcReclaim, errors, banned, inScope } = scan;
@@ -101,7 +104,7 @@ const graded: GradedItem[] = qualified.map((a) => {
     ? (ps.fresh || args.showOld ? patternPlanLines(head, ps, tickOf(a.symbol)) : [oldPatternSignalLine(head, ps)])
     : planLines({ ...head, signal: a.signal }, a.plan!, tickOf(a.symbol));
   if (a.portfolio !== null) lines.push(...portfolioLines(a.portfolio));
-  const notes = a.flags.filter((f) => /cùng chiều|xung đột/.test(f));
+  const notes = a.flags.filter((f) => /cùng chiều|xung đột|đệm funding/.test(f));
   if (notes.length > 0) lines.push(`  Ghi chú: ${notes.join('; ')}`);
   return { symbol: a.symbol, side: a.best.side, score: a.best.score, grade: a.grade, lines };
 });

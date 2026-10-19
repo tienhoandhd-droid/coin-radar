@@ -110,6 +110,16 @@ export function parsePremium(raw: unknown): PremiumIndex[] {
   });
 }
 
+// GET /fapi/v1/fundingRate (lịch sử funding đã chốt): mảng { symbol, fundingTime, fundingRate, markPrice } — chỉ đọc hai trường cần cho
+// đệm funding; trường hỏng → ném lỗi nêu mã (không để NaN/0 lọt vào).
+export function parseFundingHistory(raw: unknown): Array<{ fundingTime: number; fundingRate: number }> {
+  return arr(raw, 'fundingRate').map((t) => {
+    const x = t as Record<string, unknown>;
+    const w = `fundingRate ${String(x?.symbol)}`;
+    return { fundingTime: num(x?.fundingTime, `${w} fundingTime`), fundingRate: num(x?.fundingRate, `${w} fundingRate`) };
+  });
+}
+
 // /fapi/v1/fundingInfo: chu kỳ funding (giờ) của từng hợp đồng. Hợp đồng KHÔNG có trong danh sách
 // dùng chu kỳ mặc định 8h (theo tài liệu Binance) — việc đó do nơi gọi xử lý, hàm này chỉ đọc đúng dữ liệu.
 export function parseFundingInfo(raw: unknown): Map<string, number> {

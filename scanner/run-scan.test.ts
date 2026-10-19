@@ -125,3 +125,27 @@ test('I7 runScan: leverageBrackets theo mã → dùng bậc thật; có bảng b
   const none = await runScan(input());
   assert.match(none.results.find((x) => x.symbol === 'AAAUSDT')!.gates.find((g) => g.code === 'G-08')!.note, /giả định/);
 });
+
+test('đệm funding máy quét: tải |funding| lớn nhất 30 ngày CHỈ cho mã Đạt tiêu chí, kế hoạch = như khi truyền sẵn fundingMaxAbs', async () => {
+  const asked: string[] = [];
+  const r = await runScan(input({ fundingMaxAbsLoader: async (s) => { asked.push(s); return 0.002; } }));
+  const dat = r.results.filter((a) => a.label.startsWith('Đạt')).map((a) => a.symbol).sort();
+  assert.ok(dat.length > 0);
+  assert.deepEqual(asked.sort(), dat);
+  const ref = await runScan(input({ fundingMaxAbs: new Map(dat.map((s) => [s, 0.002])) }));
+  assert.equal(JSON.stringify(r.results), JSON.stringify(ref.results));
+  const plain = await runScan(input());
+  const qa = (x: typeof r) => x.results.find((a) => a.symbol === 'AAAUSDT')!.plan!.qty;
+  assert.ok(qa(r) < qa(plain), 'đệm 0,2%/kỳ lớn hơn kỳ gần nhất 0,01% → khối lượng nhỏ hơn');
+});
+
+test('đệm funding máy quét: không tải được → mức thận trọng fundingFallbackRate + ghi chú hiện trên kết quả; HTTP 429 → dừng quét', async () => {
+  const { fundingFallbackRate } = await import('../packages/core/sizing.ts');
+  const r = await runScan(input({ fundingMaxAbsLoader: async () => { throw new Error('mạng lỗi'); } }));
+  const a = r.results.find((x) => x.symbol === 'AAAUSDT')!;
+  assert.ok(a.flags.some((f) => /đệm funding/.test(f) && /mạng lỗi/.test(f)), a.flags.join(' | '));
+  const ref = await runScan(input({ fundingMaxAbs: new Map([['AAAUSDT', fundingFallbackRate(8)]]) }));
+  assert.equal(a.plan!.qty, ref.results.find((x) => x.symbol === 'AAAUSDT')!.plan!.qty);
+  const b = await runScan(input({ fundingMaxAbsLoader: async () => { throw new Error('HTTP 429 quá tải'); } }));
+  assert.equal(b.banned, true);
+});
