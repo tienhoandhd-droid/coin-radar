@@ -10,10 +10,7 @@ export type ModeConfig = {
   rsBars: number; // số nến khung xu hướng để đo sức mạnh tương đối so BTC
   flowBars: number; // số nến khung vào lệnh để đo mất cân bằng taker
   flowSkipBars: number; // bỏ các nến gần nhất (Lướt nhanh: 2 nến 15m = 30 phút)
-  stopAtrMult: number;
-  pivotBufferAtr: number;
   maxEntryAtr: number;
-  tp1R: number;
   trailAtrMult: number;
   timeStopHours: number;
   maxHoldHours: number;
@@ -29,7 +26,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
     trendInterval: '1h', entryInterval: '15m', trendLimit: 500, entryLimit: 500,
     weights: { trend: 30, relativeStrength: 15, momentum: 10, flow: 25, path: 20 },
     rsBars: 48, flowBars: 16, flowSkipBars: 2,
-    stopAtrMult: 2.5, pivotBufferAtr: 0.5, maxEntryAtr: 0.3, tp1R: 1.5, trailAtrMult: 3,
+    maxEntryAtr: 0.3, trailAtrMult: 3,
     timeStopHours: 8, maxHoldHours: 24, defaultRiskPct: 0.25, maxLeverage: 10,
     fundingHoldHours: 8, minAgeDays: 30, breakerPauseHours: 3,
   },
@@ -37,7 +34,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
     trendInterval: '1d', entryInterval: '4h', trendLimit: 300, entryLimit: 500,
     weights: { trend: 35, relativeStrength: 25, momentum: 10, flow: 15, path: 15 },
     rsBars: 14, flowBars: 30, flowSkipBars: 0,
-    stopAtrMult: 2, pivotBufferAtr: 0.5, maxEntryAtr: 0.3, tp1R: 1.5, trailAtrMult: 3,
+    maxEntryAtr: 0.3, trailAtrMult: 3,
     timeStopHours: 7 * 24, maxHoldHours: 21 * 24, defaultRiskPct: 0.5, maxLeverage: 5,
     fundingHoldHours: 7 * 24, minAgeDays: 0, breakerPauseHours: 12,
   },
@@ -74,7 +71,10 @@ export const COMMON = {
     mergeAtr: 0.5, // gộp các mức cách nhau ≤ 0,5×ATR khung vào lệnh
     maxWidthAtr: 1.5, // một vùng rộng tối đa 1,5×ATR
     roundBonus: 0.5, // vùng chứa số tròn
+    roundToleranceAtr: 0.1, // số tròn nằm trong 0,1×ATR quanh vùng thì tính là chứa số tròn — đề xuất, chưa backtest
     volumeBonus: 1, // vùng thuộc nhóm 25% khối lượng giao dịch cao nhất
+    minZonesForVolume: 4, // cần ≥ 4 vùng mới tính tứ phân vị khối lượng — đề xuất, chưa backtest
+    volumePercentile: 0.75, // vùng có khối lượng ≥ phân vị 75% thì được cộng volumeBonus — đề xuất, chưa backtest
     minSlStrength: 2, // vùng dùng để đặt SL phải có độ mạnh ≥ 2
     slBufferAtr: 0.3, // SL nằm ngoài mép vùng 0,3×ATR
     tpBufferAtr: 0.2, // TP đặt trước mép vùng cản 0,2×ATR

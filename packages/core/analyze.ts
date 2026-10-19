@@ -1,11 +1,12 @@
 import { atr, last } from './indicators.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
+import { findZones } from './zones.ts';
 import { buildPlan, nearestLevels, maxSafeLeverage, type TradePlan, type CostTier } from './plan.ts';
 import { evaluateGates, ratePer8h, fundingNote, type GateResult } from './gates.ts';
 import { eventWindow, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
-import { COMMON } from './config.ts';
+import { COMMON, CONFIG } from './config.ts';
 import { btcHourlySide, type Regime } from './regime.ts';
 import type { Candle, Contract, Mode, PremiumIndex, Side } from './types.ts';
 
@@ -46,6 +47,12 @@ export type Analysis = {
   flags: string[];
 };
 
+// TẠM: quãng tới TP1; chưa có vùng cản thì dùng 1,5R như trước để điểm S-03 không đổi bản chất
+function tp1Distance(p: TradePlan): number {
+  const t = p.targets[0]!.price;
+  return t === null ? 1.5 * p.riskPerUnit : Math.abs(t - p.entry);
+}
+
 function costTier(rankPct: number): CostTier {
   return rankPct <= COMMON.costTierRank.high ? 'high' : rankPct <= COMMON.costTierRank.mid ? 'mid' : 'low';
 }
@@ -54,6 +61,8 @@ function costTier(rankPct: number): CostTier {
 export function analyze(i: AnalyzeInput): Analysis {
   const levels = nearestLevels(i.entry, COMMON.pivotConfirmBars);
   const dailyAtr = last(atr(i.daily, 14));
+  // TẠM (Task 3 tích hợp thật): dựng vùng ở đây để biên dịch được; nhãn khung chỉ để ghi nguồn
+  const zones = findZones({ entry: i.entry, trend: i.trend, entryLabel: CONFIG[i.mode].entryInterval, trendLabel: CONFIG[i.mode].trendInterval, atr: last(atr(i.entry, 14)) });
   const price = last(i.entry.map((k) => k.close));
   const closesWindow = i.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
   let peak = -Infinity;
@@ -73,13 +82,13 @@ export function analyze(i: AnalyzeInput): Analysis {
   const planFor = (side: Side) => buildPlan({
     mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
     costTier: costTier(i.liquidityRankPct), stepSize: i.contract.stepSize,
-    fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, levels,
+    fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
   });
   const planLong = planFor('long');
   const planShort = planFor('short');
   const liquid = i.liquidityRankPct <= COMMON.liquidRankForRs;
-  const long = scoreSide({ mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid, nearestLevels: levels }, 'long', planLong.tp1 - planLong.entry);
-  const short = scoreSide({ mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid, nearestLevels: levels }, 'short', planShort.entry - planShort.tp1);
+  const long = scoreSide({ mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid, nearestLevels: levels }, 'long', tp1Distance(planLong));
+  const short = scoreSide({ mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid, nearestLevels: levels }, 'short', tp1Distance(planShort));
 
   // F-01: funding quá nhiệt cùng chiều lệnh → trừ điểm
   const flags: string[] = [];

@@ -65,8 +65,8 @@ export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: str
   // Số tròn
   for (const z of zones) {
     const step = roundStep((z.low + z.high) / 2);
-    const from = z.low - 0.1 * a.atr;
-    const to = z.high + 0.1 * a.atr;
+    const from = z.low - cfg.roundToleranceAtr * a.atr;
+    const to = z.high + cfg.roundToleranceAtr * a.atr;
     const k = Math.ceil(from / step - 1e-9);
     if (k * step <= to + 1e-9) {
       z.strength += cfg.roundBonus;
@@ -74,10 +74,10 @@ export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: str
     }
   }
 
-  // Khối lượng giao dịch: cần ≥ 4 vùng để có tứ phân vị
-  if (zones.length >= 4) {
+  // Khối lượng giao dịch: cần đủ số vùng tối thiểu để có tứ phân vị
+  if (zones.length >= cfg.minZonesForVolume) {
     const vols = zones.map((z) => a.entry.reduce((s, k) => (k.low <= z.high && k.high >= z.low ? s + k.quoteVolume : s), 0));
-    const p75 = percentile([...vols].sort((x, y) => x - y), 0.75);
+    const p75 = percentile([...vols].sort((x, y) => x - y), cfg.volumePercentile);
     zones.forEach((z, i) => {
       if (vols[i]! >= p75) {
         z.strength += cfg.volumeBonus;
