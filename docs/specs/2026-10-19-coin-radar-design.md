@@ -92,23 +92,31 @@ duyệt gọi thẳng (`access-control-allow-origin: *`); nến futures có 12 c
 
 | Nhóm | Endpoint | Dùng cho |
 |---|---|---|
-| Danh sách hợp đồng | `/fapi/v1/exchangeInfo` (lọc PERPETUAL, USDT, TRADING; lấy tick size, step size, ngày niêm yết) | Cả hai |
+| Danh sách hợp đồng | `/fapi/v1/exchangeInfo` (lọc PERPETUAL, USDT, TRADING; lấy tick size, step size, ngày niêm yết; **B0b/I2**: thêm LOT_SIZE minQty/maxQty, MARKET_LOT_SIZE minQty/maxQty/stepSize, MIN_NOTIONAL (khóa `notional`), MAX_NUM_ORDERS (`limit`), `deliveryDate` — thiếu là ném lỗi) | Cả hai |
 | Nến + taker | `/fapi/v1/klines` — Swing: 1D × 300, 4H × 500; Lướt nhanh: 1H × 500, 15m × 500 | Cả hai |
 | 24h, spread | `/fapi/v1/ticker/24hr`, `/fapi/v1/ticker/bookTicker` (toàn bộ, 1 lệnh) | Thanh khoản |
 | Funding, mark price | `/fapi/v1/premiumIndex` (toàn bộ, 1 lệnh), `/fapi/v1/fundingInfo` (chu kỳ funding từng mã) | Chi phí giữ lệnh, cắt lỗ theo mark |
 | OI, long/short, taker | `/fapi/v1/openInterest`, `/futures/data/openInterestHist`, `globalLongShortAccountRatio`, `takerlongshortRatio` (Binance chỉ giữ 30 ngày → **tự lưu** vào `coin_market_history`) | Cờ phái sinh |
-| Bậc ký quỹ | `/fapi/v1/leverageBracket` **cần API key** → không dùng; giá thanh lý tính theo công thức gần đúng, ghi rõ “ước tính”, người dùng đối chiếu trên Binance | Kế hoạch lệnh |
+| Bậc ký quỹ | `/fapi/v1/leverageBracket` **cần API key** → máy quét không dùng. **B0b/I7**: MMR và đòn bẩy tối đa lấy theo bậc của notional (`margin.ts` `marginTier(notional, brackets?)`); chưa có key thì dùng bảng `COMMON.margin.defaultBrackets` — **GIẢ ĐỊNH THẬN TRỌNG, không phải số Binance** (MMR 2,5% → 25%, trần notional 5 triệu USDT). Bot có key truyền bậc thật vào cùng hàm. Giá thanh lý vẫn là công thức gần đúng, ghi rõ “ước tính” | Kế hoạch lệnh, G-08 |
 | Độ sâu | `/fapi/v1/depth?limit=100` chỉ cho coin đang đạt tiêu chí hoặc đang có lệnh | Độ dày vùng cản |
 | Vốn hóa, ngành, FDV | CoinGecko `/coins/markets` (Demo key), mỗi giờ, ghép theo ký hiệu | Rủi ro, nhóm ngành |
 | Bối cảnh | Coinbase premium, Fear & Greed, DefiLlama stablecoin, SMA200 tuần BTC | Bối cảnh, cờ |
 | Sự kiện | `data/events/*.json`: FOMC, CPI, BOJ; đáo hạn quyền chọn quý (tự tính) | Cổng sự kiện |
 
 Phí giao dịch và trượt giá là **tham số cấu hình**, giá trị mặc định lấy từ trang phí chính thức của
-Binance lúc triển khai (chưa tra — không đoán).
+Binance lúc triển khai (chưa tra — không đoán). **B0b/I7:** cộng thêm trượt giá theo cỡ lệnh =
+`COMMON.slippage.pctPerParticipation` × notional ÷ khối lượng giao dịch 1 phút (ước bằng TB `quoteVolume` 24 nến 1H ÷ 60;
+thiếu → lỗi, không coi là 0). Kế hoạch lập hai lần: lần đầu ra notional, lần hai cộng trượt giá của notional đó
+(`TradePlan.costPct`/`PatternPlan.costPct`). Notional bị giới hạn ≤ `maxParticipation` × khối lượng 1 phút trong
+`portfolio.canOpen`. Các hệ số là đề xuất, chưa backtest.
 
 Quy tắc dữ liệu:
 - Chỉ dùng **nến đã đóng** cho quyết định.
-- Nguồn lỗi → coin hiện “dữ liệu cũ”, không tạo tín hiệu.
+- Nguồn lỗi → coin hiện “dữ liệu cũ”, không tạo tín hiệu. **B0b/I3 (đã làm):** `runScan` kiểm chuỗi nến khung xu hướng và
+  khung vào lệnh (`candles.ts` `candleProblems`): nến cuối đóng trước thời điểm quét quá 1 khung + `COMMON.data.staleToleranceMinutes`
+  (5 phút) → “dữ liệu cũ”; thiếu nến giữa chuỗi; nến trùng/sai thứ tự → ghi lỗi theo mã, không chấm. Nến BTC hỏng → dừng cả lần quét.
+- **Giá hiện tại của kế hoạch = giá mark** (`premiumIndex.markPrice`) lúc quét (B0b/I3), cho cả lệnh vùng và lệnh mô hình — không
+  dùng giá đóng nến (có thể cũ tới 1 khung). Bot phải lấy lại giá mark ngay trước khi gửi lệnh.
 - Hợp đồng dạng `1000PEPEUSDT` (nhân 1000) → ghép CoinGecko đúng hệ số; kiểm chéo giá lệch > 5% → không chấm.
 - Phát hiện chuỗi giá gãy (đổi ticker, gộp hợp đồng) và nến dị thường.
 
@@ -150,11 +158,11 @@ Không dùng VPN/proxy để lách chặn (có thể vi phạm điều khoản B
 | G-01 | Hướng lệnh được phép theo chế độ thị trường; cầu dao không bật |
 | G-02 | Đủ dữ liệu: ≥ 250 nến khởi động; độ phủ dữ liệu ≥ 70% |
 | G-03 | Thanh khoản tối thiểu (khối lượng 24h) + spread tối đa — ngưỡng tự hiệu chỉnh theo phân bố thật |
-| G-04 | Không đang bị bơm/xả: biến động > 15%/1H kèm z-score khối lượng > 5 |
+| G-04 | Không đang bị bơm/xả: biến động > 15%/1H kèm z-score khối lượng > 5. **Thiếu dữ liệu 1H (biến động hoặc z = NaN) → trượt** (B0b/I4) |
 | G-05 | Hợp đồng niêm yết < 30 ngày: không vào Lướt nhanh; rủi ro tối thiểu “Cao” |
-| G-06 | Không hack 7 ngày, không có thông báo hủy niêm yết/đóng hợp đồng, stablecoin không lệch neo |
-| G-07 | Lướt nhanh: ngoài cửa sổ FOMC (−4h/+2h), CPI (±2h), BOJ; cả hai chế độ: cờ ±24h đáo hạn quyền chọn quý |
-| G-08 | **Giá thanh lý ước tính nằm xa hơn cắt lỗ ≥ 1 lần khoảng cắt lỗ** (P-04) |
+| G-06 | Không hack 7 ngày, không có thông báo hủy niêm yết/đóng hợp đồng, stablecoin không lệch neo. **B0b/I4:** hiện chỉ kiểm được `deliveryDate` — hợp đồng vĩnh cửu có ngày tất toán trước 2100 (`COMMON.perpetualDeliveryFloor`) → trượt (quan sát exchangeInfo 19/10/2026: 523/525 = 2100-12-25; EPICUSDT, VELODROMEUSDT có ngày thật; chưa có câu chữ tài liệu Binance xác nhận). Phần hack/hủy niêm yết/lệch neo **chưa đánh giá**, in rõ ở đầu bản in |
+| G-07 | Lướt nhanh: ngoài cửa sổ FOMC (−4h/+2h), CPI (±2h), BOJ; cả hai chế độ: cờ ±24h đáo hạn quyền chọn quý. **B0b/I4:** lịch `data/events/events.json` đã qua sự kiện cuối (hoặc rỗng) → G-07 trượt với mọi mã; còn < 14 ngày → cảnh báo `!!!` ở đầu bản in; đọc file sai định dạng → lỗi |
+| G-08 | **Giá thanh lý ước tính nằm xa hơn cắt lỗ ≥ 1 lần khoảng cắt lỗ** (P-04). **B0b/I4:** tính theo MMR của bậc ký quỹ của notional (`gates.liquidationCheck`) ở đòn bẩy sẽ dùng = min(trần chế độ, trần bậc, đòn bẩy an toàn); notional vượt bậc cuối → trượt |
 | G-09 | **Funding cùng chiều lệnh không cực đoan**: Long khi funding quá dương / Short khi funding quá âm (z-score so 30 ngày) → chặn |
 | G-10 | Không còn < 30 phút tới mốc thanh toán funding nếu funding bất lợi cho lệnh (Lướt nhanh) |
 
@@ -189,7 +197,12 @@ Không dùng VPN/proxy để lách chặn (có thể vi phạm điều khoản B
 - **“Đạt tiêu chí Long” / “Đạt tiêu chí Short”** = qua mọi cổng + điểm ≥ 70 + top 10% thứ hạng trong nhóm
   thanh khoản.
 - **Hysteresis**: vào ≥ 70, rời < 60. Mỗi hợp đồng × chế độ một tín hiệu mở; không đảo chiều Long↔Short
-  ngay — chờ 1 nến khung xu hướng.
+  ngay — chờ 1 nến khung xu hướng. **B0b/I5 (đã làm phần vào/rời và định danh):** `signal.ts` (thuần) —
+  `zoneQualifies` (tín hiệu vùng cùng chiều đang mở → giữ tới khi điểm < `COMMON.exitScore` 60), `zoneSignalId` =
+  `mã|chế độ|chiều|zone|openTime nến vào lệnh|SL`, `signalIdentity` (đã có trong trạng thái → giữ id cũ, không “MỚI”).
+  Trạng thái lần trước do nơi gọi giữ (`AnalyzeInput.prevSignal`, `ScanInput.prevSignals`): máy quét không giữ → như cũ;
+  bot/backtest truyền vào và khử trùng theo id. Tín hiệu đang giữ không bị hạ nhãn vì top 10%. Luật “chờ 1 nến khung
+  xu hướng trước khi đảo chiều” **chưa làm**.
 - Nhãn: **Đạt tiêu chí Long / Đạt tiêu chí Short / Theo dõi / Không đạt**; ghi “điểm xếp hạng, không phải
   xác suất thắng”.
 
@@ -201,7 +214,7 @@ Không dùng VPN/proxy để lách chặn (có thể vi phạm điều khoản B
 | P-02 | **Khối lượng = (vốn × % rủi ro) ÷ khoảng cách cắt lỗ** (đã cộng phí + trượt giá). Làm tròn theo step size của hợp đồng |
 | P-03 | **Đòn bẩy chỉ là hệ quả**: đòn bẩy cần = giá trị vị thế ÷ ký quỹ dự định. App hiện đòn bẩy tối thiểu cần dùng; **trần đòn bẩy gợi ý: Swing 5×, Lướt nhanh 10×** (đề xuất). Khuyên chế độ **isolated** |
 | P-04 | **Giá thanh lý ước tính phải xa hơn cắt lỗ ≥ 1 khoảng cắt lỗ**; không đạt → không đưa kế hoạch (G-08). Ghi rõ công thức gần đúng, người dùng đối chiếu trên Binance |
-| P-05 | **Trần danh mục: tối đa 10 lệnh mở cùng lúc** (`COMMON.portfolio.maxOpenTrades`, người dùng chốt 19/10/2026; thay các đề xuất cũ: tổng rủi ro mở ≤ 3%, 5 lệnh altcoin, 2 lệnh cùng ngành, 3 lệnh cùng chiều). Tổng rủi ro mở có thể tới 10 × 2% = 20%. Bot áp dụng trong `protections`; máy quét chỉ in nên chưa kiểm |
+| P-05 | **Trần danh mục: tối đa 10 lệnh mở cùng lúc VÀ tổng rủi ro đang mở ≤ 10% vốn** (lệnh đã qua TP1 tính 0) (`COMMON.portfolio.maxOpenTrades` / `maxOpenRiskPct`, người dùng chốt 19/10/2026 sau đánh giá độc lập C1). **Kiểm ký quỹ (C3):** tổng ký quỹ (notional ÷ đòn bẩy) các lệnh mở + lệnh mới ≤ vốn × `marginSafetyFactor` (0,8, đề xuất). Hàm thuần `portfolio.canOpen(lệnh mới, lệnh đang mở, vốn)` dùng chung cho máy quét (danh mục trống → chỉ thông tin, dòng “Danh mục/ký quỹ”), bộ mô phỏng kế hoạch 2 và bot: không đủ chỗ thì **giảm khối lượng tới mức tối đa cho phép** (in rõ rủi ro thực < 2%) hoặc bỏ; khối lượng sau giảm phải qua bộ lọc sàn; cùng hợp đồng đang mở → không mở thêm. Trần đòn bẩy giữ nguyên |
 | P-06 | Đủ 10 lệnh mở thì **không vào lệnh mới** (không còn xếp hạng “ưu tiên” khi vượt trần) |
 | P-07 | **Chi phí funding dự kiến** cho thời gian giữ lệnh được trừ vào R kỳ vọng |
 
@@ -229,6 +242,11 @@ Kế hoạch dựa trên **vùng hỗ trợ/kháng cự** (`packages/core/zones.
 Cổng liên quan: **G-11 giữ nguyên** (cắt lỗ không quá rộng); **G-12 mới** (kế hoạch theo vùng hợp lệ: có vùng đặt SL, TP1 đặt được và ≥ 1R). Hợp đồng chỉ số (INDEX) không phải coin giao dịch thật nên bị loại ngay khi đọc `exchangeInfo`.
 
 Giá in ra console theo `tickSize` của từng hợp đồng, dấu phẩy thập phân.
+
+**Bộ lọc sàn (B0b/I2):** `filters.ts` kiểm mọi dòng bảng khối lượng theo giá khớp: lệnh vào market theo MARKET_LOT_SIZE
+(minQty, maxQty — vượt là lỗi −4005, stepSize), lệnh limit theo LOT_SIZE, giá trị lệnh vào ≥ MIN_NOTIONAL (−4164);
+phần thoát (TP1, trailing — reduce-only, miễn MIN_NOTIONAL) ≥ minQty và ≤ MARKET_LOT_SIZE.maxQty; số lệnh cần (vào + SL +
+thoát) ≤ MAX_NUM_ORDERS. Vi phạm → kế hoạch không hợp lệ (G-12) kèm lý do; kế hoạch mô hình bị bỏ kèm ghi chú.
 
 **Lệnh đang mở gặp kịch bản xấu** (cầu dao, đổi chế độ thị trường, funding đảo chiều cực đoan, hack, lệch neo,
 thông báo hủy hợp đồng…): mỗi kịch bản có hành động cho lệnh đang mở — thoát / giảm / siết cắt lỗ.

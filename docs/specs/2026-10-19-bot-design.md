@@ -32,7 +32,7 @@ Không phải mục tiêu bản này: giao dịch sao chép, viết bài (giai �
 | D8 | **Chạy nền bằng systemd của người dùng** (tự khởi động khi bật máy, tự chạy lại khi lỗi) | Có sẵn trên Ubuntu (systemd 255), không cần quyền root |
 | D9 | **Cách thoát lệnh (người dùng chốt 19/10/2026) = TP1 chốt 50%, 50% còn lại theo trailing stop** (biến thể C2 của ma trận A/B; không còn TP2/TP3 cố định, không còn SL cố định sau TP1) | Người dùng: “đạt TP1 thì không cần SL, TP1 chốt 50% còn lại theo phương án trailing stop… TP dài hơn để ăn lợi nhuận” |
 | D10 | **Trailing đặt TRÊN SÀN** (`TRAILING_STOP_MARKET` qua Algo Order, kích hoạt tại TP1, theo MARK_PRICE), khoảng cách (callback %) do bot tính sao cho **mức dừng lúc kích hoạt ≥ giá khớp thật + phí** → phần 50% còn lại gần như hòa vốn (trừ trượt giá khi lệnh trailing khớp bằng market; đánh giá độc lập I8). Nếu khoảng cách cần thiết < mức tối thiểu sàn cho phép thì giữ thêm một lệnh dừng ở giá vào làm lưới an toàn; nếu khoảng cách theo ATR > mức tối đa sàn cho phép thì dùng mức tối đa và ghi rõ | Trailing là lệnh dừng nằm trên sàn → vị thế luôn được bảo vệ kể cả khi máy nhà tắt; tránh bẫy “trailing rộng hơn quãng tới TP1 → vẫn lỗ” |
-| D11 | **Rủi ro mỗi lệnh 2% vốn bot** (người dùng chốt 19/10/2026, “sẽ đánh vốn lớn”); **tối đa 10 lệnh mở cùng lúc — đủ 10 thì không vào lệnh mới**, **và tổng rủi ro đang mở ≤ 10% vốn** (lệnh đã qua TP1 tính 0) (người dùng chốt 19/10/2026 sau đánh giá độc lập C1); kiểm ký quỹ khả dụng trước mỗi lệnh (C3); đòn bẩy vẫn ≤ trần (Swing 5×, Lướt nhanh 10×) và giá thanh lý cách SL ≥ 1 khoảng SL — nếu đòn bẩy trần không đủ để vào khối lượng 2% thì vào khối lượng tối đa cho phép và báo rõ | Vào ít lệnh nhưng chặt; giữ khóa đòn bẩy và thanh lý |
+| D11 | **Rủi ro mỗi lệnh 2% vốn bot** (người dùng chốt 19/10/2026, “sẽ đánh vốn lớn”); **tối đa 10 lệnh mở cùng lúc — đủ 10 thì không vào lệnh mới**, **và tổng rủi ro đang mở ≤ 10% vốn** (lệnh đã qua TP1 tính 0) (người dùng chốt 19/10/2026 sau đánh giá độc lập C1); kiểm ký quỹ khả dụng trước mỗi lệnh (C3) — **cài ở `packages/core/portfolio.ts` `canOpen` (B0b), bot chỉ dùng hàm này** với danh mục thật (khối lượng giảm/bỏ, rủi ro thực in rõ, trần notional theo thanh khoản, khối lượng sau giảm qua bộ lọc sàn); đòn bẩy vẫn ≤ trần (Swing 5×, Lướt nhanh 10×) và giá thanh lý cách SL ≥ 1 khoảng SL — nếu đòn bẩy trần không đủ để vào khối lượng 2% thì vào khối lượng tối đa cho phép và báo rõ | Vào ít lệnh nhưng chặt; giữ khóa đòn bẩy và thanh lý |
 
 ## Kiến trúc
 
@@ -59,7 +59,7 @@ Binance WS (kline đóng nến, mark price, user data)        Binance REST (ký 
 | `packages/binance/stream.ts` | WebSocket: kline, mark price, user data + giữ listenKey (R16) |
 | `packages/bot/planner.ts` | `TradePlan` → danh sách lệnh mong muốn (vào, SL `closePosition`, TP1/2/3 reduce-only, trailing) |
 | `packages/bot/reconcile.ts` | Thuần: mong muốn × thật → hành động (đặt SL thiếu, hủy mồ côi, dời SL sau TP1, đóng khẩn cấp) (R2, R5, R8) |
-| `packages/bot/protections.ts` | Cầu chì theo người dùng (19/10/2026): **5 lệnh thua trong 24 giờ → dừng mở lệnh mới tới khi người dùng cho phép (`/tieptuc`)**; **lỗ trong ngày > 10% → dừng tới khi người dùng cho phép**; **sụt 30% từ đỉnh → chỉ cảnh báo** (không dừng); cooldown cặp + chiều vừa dính SL 2 nến; **trần 10 lệnh mở cùng lúc** |
+| `packages/bot/protections.ts` | Cầu chì theo người dùng (19/10/2026): **5 lệnh thua trong 24 giờ → dừng mở lệnh mới tới khi người dùng cho phép (`/tieptuc`)**; **lỗ trong ngày > 10% → dừng tới khi người dùng cho phép**; **sụt 30% từ đỉnh → chỉ cảnh báo** (không dừng); cooldown cặp + chiều vừa dính SL 2 nến; **trần 10 lệnh mở cùng lúc và tổng rủi ro mở ≤ 10%** (qua `canOpen`, B0b) |
 | `packages/bot/journal.ts` | Nhật ký JSONL + ảnh chụp; khôi phục khi khởi động |
 | `packages/bot/paper.ts` | Sàn giả lập cho chế độ `paper` (dùng chung mô phỏng của kế hoạch 2) |
 | `packages/bot/telegram.ts` | Gửi tin qua Bot API bằng `fetch`; không bao giờ gửi secret |
@@ -71,8 +71,11 @@ Binance WS (kline đóng nến, mark price, user data)        Binance REST (ký 
    futures, **không** có quyền rút (R15); kiểm One-way mode (R11) — sai thì dừng; đặt ISOLATED + đòn bẩy cho
    cặp khi cần (R12).
 2. **Đối chiếu** (R8) theo đúng thứ tự a–g; xong mới nghe tín hiệu.
-3. **Mỗi nến khung vào lệnh đóng** (15m Lướt nhanh / 4H Swing): `runScan` cho phạm vi; tín hiệu Hạng A MỚI qua
-   protections → planner → executor.
+3. **Mỗi nến khung vào lệnh đóng** (15m Lướt nhanh / 4H Swing): `runScan` cho phạm vi, truyền `openTrades` (danh mục thật)
+   và `prevSignals` (tín hiệu đang mở theo mã, từ nhật ký) để có hysteresis 70/60 và cờ MỚI đúng (B0b/I5); tín hiệu Hạng A
+   MỚI (`Analysis.signal.fresh`) qua protections → planner → executor; khử trùng theo `signal.id` trong nhật ký. Ngay trước
+   khi gửi lệnh: lấy lại giá mark (I3), tính lại kế hoạch và `canOpen`; dùng bậc ký quỹ thật từ `leverageBracket`
+   (`marginTier(notional, brackets)`, I7).
 4. **Vào lệnh:** market hoặc limit (GTD theo hạn) với `clientOrderId` tất định. Khớp (kể cả một phần) → **ngay**
    SL `closePosition` theo MARK_PRICE; thất bại → đóng market + Telegram khẩn (R2). Sau đó TP1/2/3 reduce-only.
 5. **Quản lý:** ngay khi vào lệnh đặt cùng lúc trên sàn: SL gốc (`closePosition`), TP1 reduce-only 50% khối
