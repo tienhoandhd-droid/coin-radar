@@ -305,7 +305,7 @@ export function report(res: Awaited<ReturnType<typeof runSimulation>>, o: Omit<R
       entryTypes: count((r) => r.entryType),
     },
     intrabar: {
-      gapStops: filled.filter((r) => r.flags.gap).length, resolvedBars: sumFlag((r) => r.flags.resolvedBars), unresolvedBars: sumFlag((r) => r.flags.unresolvedBars),
+      gapStops: filled.filter((r) => r.flags.gap).length, resolvedBars: sumFlag((r) => r.flags.resolvedBars), unresolvedBars: sumFlag((r) => r.flags.unresolvedBars), unresolvedTrailingBars: sumFlag((r) => r.flags.unresolvedTrailing),
       tradesWithUnresolved: filled.filter((r) => r.flags.unresolvedBars > 0).length, liquidations: filled.filter((r) => r.flags.liquidation).length,
     },
     costs: { gross: sumFlag((r) => r.gross), costs: sumFlag((r) => r.costs), funding: sumFlag((r) => r.funding) },

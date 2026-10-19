@@ -24,7 +24,14 @@
 //  7. Funding thật từng kỳ (data/cache/funding): mỗi kỳ chốt khi vị thế đang mở (khớp TRƯỚC giờ chốt): −dấu × KL × markPrice × rate
 //     (Long trả khi rate > 0). Giờ chốt làm tròn xuống phút (sàn ghi lệch vài ms).
 //  8. Dừng theo thời gian (plan-print): chưa đạt +1R (đỉnh có lợi ≥ giá vào TB + 1R) sau timeStopHours → đóng ở giá mở nến kế tiếp;
-//     giữ tối đa maxHoldHours. Thanh lý: giá thanh lý isolated ước tính (plan.ts) — chạm thì đóng ở giá đó và gắn cờ (không nên xảy ra).
+//     giữ tối đa maxHoldHours. Thanh lý: giá thanh lý isolated ước tính (plan.ts) — giá mở gap qua nó thì mất đúng ký quỹ (đóng ở giá
+//     phá sản) và gắn cờ (không nên xảy ra: planner giữ thanh lý cách SL ≥ 1 khoảng cắt lỗ).
+//  9. 1R = rủi ro định cỡ của planner cho khối lượng đã khớp (sizing.riskModel, không gồm đệm funding): |giá xấu nhất − SL| + phí nhóm
+//     hai chiều (vào ở giá xấu nhất, ra ở giá SL) + trượt theo cỡ → chạm SL đủ ở giá xấu nhất = −1R. Lãi lỗ USDT/% vốn là số thật.
+// 10. Thiên lệch đã biết (rà soát Task 3): lệnh limit (maker) vẫn trả nửa phí nhóm (gồm phần trượt) → BẤT LỢI ~0,05R/lệnh ở Lướt nhanh;
+//     limit khớp khi low = đúng giá limit (ràng buộc toàn cục) → LẠC QUAN về hàng chờ. Nến khớp limit giữa chừng: bỏ phía trên của nến đó.
+// 11. Mốc thời gian sự kiện trong nến = openTime của nến (hoặc nến 1m khi phân xử) — cầu chì/lỗ ngày có thể "bắt đầu" tại mốc đặt lệnh
+//     khi lần thua thứ 5 xảy ra ngay trong nến đầu tiên của lệnh vừa đặt.
 import { COMMON, CONFIG } from '../packages/core/config.ts';
 import { snapToTick, tickDecimals } from '../packages/core/price.ts';
 import { liquidationPrice, mmrFor, splitQuantity } from '../packages/core/plan.ts';
@@ -60,7 +67,7 @@ type State = {
 
 export type Exit = { role: string; qty: number; price: number; time: number };
 export type Flags = {
-  gap: boolean; resolvedBars: number; unresolvedBars: number; iocPartial: boolean; liquidation: boolean;
+  gap: boolean; resolvedBars: number; unresolvedBars: number; unresolvedTrailing: number; iocPartial: boolean; liquidation: boolean;
   limitCancelledUnresolved: number;
 };
 export type AfterTp1 = { rule: AfterTp1Rule; ruleIfMarketOnly: AfterTp1Rule | null } | null;
@@ -128,7 +135,7 @@ export function createTrade(a: {
     s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null },
     b: {
       gross: 0, costs: 0, funding: 0, exits: [], flows: [], firstFillAt: null, maxPosQty: 0, entryNotional: 0, nextT: a.placedAt, lastFundingT: a.placedAt,
-      closedAt: null, reason: null, flags: { gap: false, resolvedBars: 0, unresolvedBars: 0, iocPartial: false, liquidation: false, limitCancelledUnresolved: 0 },
+      closedAt: null, reason: null, flags: { gap: false, resolvedBars: 0, unresolvedBars: 0, unresolvedTrailing: 0, iocPartial: false, liquidation: false, limitCancelledUnresolved: 0 },
       liqX: null,
     },
   };
@@ -237,10 +244,10 @@ function fillEntry(tr: SimTrade, s: State, leg: EntryLeg, qty: number, priceX: n
 }
 
 // Đóng qty ở mức giá x (chưa trượt) — lệnh kiểu market: trừ trượt theo cỡ
-function exitQty(tr: SimTrade, s: State, qty: number, levelX: number, t: number, role: string, rec: boolean): void {
+function exitQty(tr: SimTrade, s: State, qty: number, levelX: number, t: number, role: string, rec: boolean, impact = true): void {
   if (!(qty > 0)) return;
   const px0 = realPx(tr, levelX);
-  const xExec = roundPx(levelX - Math.abs(px0) * avgImpact(tr.k.cost, qty * px0));
+  const xExec = roundPx(levelX - (impact ? Math.abs(px0) * avgImpact(tr.k.cost, qty * px0) : 0));
   s.posQty = qRound(tr, s.posQty - qty);
   if (!rec) return;
   const b = tr.b;
@@ -381,6 +388,16 @@ function applyOpen(tr: SimTrade, o: number, t: number): void {
       leg.status = 'nofill';
     }
   }
+  // Gap qua giá thanh lý (ước tính isolated): sàn thanh lý trước khi lệnh SL kịp khớp → mất đúng ký quỹ (đóng ở giá phá sản
+  // = giá vào TB × (1 ∓ 1/đòn bẩy)), gắn cờ. Không nên xảy ra (planner giữ thanh lý cách SL ≥ 1 khoảng cắt lỗ).
+  if (s.posQty > 0 && tr.b.liqX !== null && o <= tr.b.liqX) {
+    tr.b.flags.liquidation = true;
+    const bankrupt = toX(tr.k.d, realPx(tr, s.avgX) * (1 - tr.k.d / tr.k.leverage));
+    for (const p of s.parts) p.open = false;
+    exitQty(tr, s, s.posQty, bankrupt, t, 'LIQ', true, false);
+    finishIfFlat(tr, t);
+    return;
+  }
   const lows = lowEvents(tr, s).filter((e) => e.level >= o);
   if (lows.some((e) => e.kind === 'part' && e.level > o)) tr.b.flags.gap = true;
   runLow(tr, s, o, t, true, o);
@@ -421,6 +438,8 @@ async function feedBar(tr: SimTrade, bar: Candle, resolve: Resolver | null): Pro
       return;
     }
     tr.b.flags.unresolvedBars++;
+    // loại nến không phân xử được: có phần đang trailing (callback đã kích hoạt, hoặc ATR) — "bất lợi trước" với trailing KHÔNG chắc bất lợi
+    if (tr.s.posQty > 0 && tr.s.parts.some((p) => p.open && ((p.trail?.kind === 'callback' && p.trail.peakX !== null) || p.trail?.kind === 'atr'))) tr.b.flags.unresolvedTrailing++;
     if (tr.s.legs.some((x) => x.status === 'pending' && !x.ioc && x.cancelX !== null && x.cancelX <= h)) tr.b.flags.limitCancelledUnresolved++;
     // limit chờ + giá chạm TP1 cùng nến: hủy trước (không vào lệnh) — áp phía trên cho riêng lệnh chờ trước
     if (tr.s.posQty <= 0) {
@@ -428,11 +447,15 @@ async function feedBar(tr: SimTrade, bar: Candle, resolve: Resolver | null): Pro
     }
   }
   const s = tr.s;
+  const posAtStart = s.posQty;
   runLow(tr, s, l, bar.openTime, true, null);
-  runHigh(tr, s, h, bar.openTime, true, null);
+  // Vị thế mở giữa nến (khớp limit): không biết đỉnh của nến đến trước hay sau lúc khớp → bỏ phía trên của nến này (thận trọng:
+  // không TP, không nâng đỉnh/MFE). Nếu thứ tự quan trọng (có TP1/hủy limit trong tầm) thì nến đã được phân xử bằng 1m ở trên.
+  const filledMidBar = posAtStart <= 0 && s.posQty > 0;
+  if (!filledMidBar) runHigh(tr, s, h, bar.openTime, true, null);
   if (hadPos || s.posQty > 0) {
     if (s.troughX !== null) s.troughX = Math.min(s.troughX, l);
-    if (s.peakX !== null) s.peakX = Math.max(s.peakX, h);
+    if (s.peakX !== null && !filledMidBar) s.peakX = Math.max(s.peakX, h);
   }
   finishIfFlat(tr, bar.openTime);
 }

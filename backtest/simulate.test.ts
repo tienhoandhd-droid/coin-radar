@@ -136,12 +136,12 @@ test('Short: TP1 tại 75 rồi trailing 10% từ đáy 70 → thoát 77', async
   close(r.pnl, 9600 - (20 + 200 * 75 * 0.0005 + 200 * 77 * 0.0005));
 });
 
-test('Gap xuyên SL: Long mở cửa 90 → khớp 90, lỗ −4 038 USDT = −3,96% vốn (VƯỢT trần 2% — được đo và gắn cờ)', async () => {
-  const r = await run(trade(plan('long')), bars([[100, 100.5, 99.5, 100], [90, 91, 89, 90.5]]));
+test('Gap xuyên SL: Long mở cửa 92 (trên giá thanh lý 90) → khớp 92, lỗ −3 238,4 USDT = −3,18% vốn (VƯỢT trần 2% — được đo và gắn cờ)', async () => {
+  const r = await run(trade(plan('long')), bars([[100, 100.5, 99.5, 100], [92, 93, 91, 92.5]]));
   assert.equal(r.reason, 'stop_loss');
   assert.equal(r.flags.gap, true);
-  close(r.exits[0]!.price, 90);
-  close(r.pnl, -4000 - 20 - 400 * 90 * 0.0005);
+  close(r.exits[0]!.price, 92);
+  close(r.pnl, -3200 - 20 - 400 * 92 * 0.0005);
   assert.ok(r.pctEquity < -2);
 });
 
@@ -387,4 +387,59 @@ test('R: chạm SL đủ với trượt theo cỡ (KL mỏng) vẫn ≈ −1R �
   // limit khớp đúng giá xấu nhất 100 nhưng KHÔNG trượt chiều vào (lệnh chờ) trong khi 1R có dự trù trượt hai chiều → lỗ hơi dưới 1R
   assert.ok(r.R >= -1 - 1e-9 && r.R < -0.99, `R ${r.R}`);
   assert.ok(r.pctEquity >= -2 - 1e-9);
+});
+
+// ---- Rà soát Task 3, các mục nhỏ ----
+test('M5: nến khớp limit giữa chừng — đỉnh của nến (có thể trước lúc khớp) KHÔNG tính vào đỉnh có lợi / MFE', async () => {
+  const p = plan('long', { entryType: 'limit', limitPrice: 98 });
+  const tr = trade(p);
+  await advanceTrade(tr, bars([[99, 104, 97.9, 98.5]]), Infinity, { funding: [], resolve: null });
+  forceClose(tr, T0 + M5, 98.5, 'period_end');
+  const r = tradeRecord(tr);
+  close(r.avgEntry!, 98);
+  close(r.mfeR!, 0); // đỉnh có lợi = giá khớp 98 (không lấy đỉnh 104 của nến khớp)
+});
+
+test('M3: limit khớp khi low = đúng giá limit (ràng buộc toàn cục "low ≤ limit") — ghi nhận là giả định lạc quan về hàng chờ', async () => {
+  const p = plan('long', { entryType: 'limit', limitPrice: 98 });
+  const tr = trade(p);
+  await advanceTrade(tr, bars([[99, 99.5, 98, 98.5]]), Infinity, { funding: [], resolve: null });
+  assert.equal(tradeRecord(tr).legs[0]!.status, 'filled');
+});
+
+test('M7 trailing: một nến 5m vừa lập đỉnh mới vừa rút về dưới mức trailing mới → mơ hồ; 1m cho thấy đỉnh trước → thoát ở đỉnh × 0,9', async () => {
+  // sau TP1 (đỉnh 126, mức 113,4), nến 5m: lên 140 rồi xuống 120 → mức mới 126 nằm trong nến
+  const sub = bars([[128, 140, 128, 139], [139, 139.5, 120, 121]], T0 + 3 * M5, 60_000);
+  const resolve: Resolver = async (_s, bar) => (bar.openTime === T0 + 3 * M5 ? sub : null);
+  const r = await run(trade(plan('long')), bars([[100, 101, 99.5, 100.5], [100.5, 118, 100.4, 117], [118, 126, 117, 125.5], [128, 140, 120, 121]]), { resolve });
+  assert.deepEqual(r.exits.map((x) => [x.role, x.qty, x.price]), [['TP1', 200, 125], ['TR', 200, 126]]);
+  assert.equal(r.flags.resolvedBars, 1);
+});
+
+test('M7 trailing không phân xử được → đếm riêng loại "trailing"', async () => {
+  const r = await run(trade(plan('long')), bars([[100, 101, 99.5, 100.5], [100.5, 118, 100.4, 117], [118, 126, 117, 125.5], [128, 140, 120, 121]]), { resolve: async () => null });
+  assert.equal(r.flags.unresolvedBars, 1);
+  assert.equal(r.flags.unresolvedTrailing, 1);
+});
+
+test('M7 split: chân IOC khớp ngay, chân limit khớp sau → vị thế = tổng, TP1/trailing chia lại theo khối lượng đã khớp', async () => {
+  const p = plan('long', { entryType: 'split', limitPrice: 99, maxEntry: 100 });
+  const tr = trade(p);
+  const legs = tr.s.legs;
+  assert.deepEqual(legs.map((l) => [l.role, l.ioc]), [['E1', true], ['E2', false]]);
+  await advanceTrade(tr, bars([[100, 100.5, 99.5, 100], [99.8, 100, 98.8, 99.2]]), Infinity, { funding: [], resolve: null });
+  const r = tradeRecord(tr);
+  assert.deepEqual(r.legs.map((l) => [l.role, l.status, l.fillPrice]), [['E1', 'filled', 100], ['E2', 'filled', 99]]);
+  close(r.qty, legs[0]!.qty + legs[1]!.qty);
+  const parts = tr.s.parts.map((x) => [x.name, x.qty]);
+  assert.equal(parts.length, 2);
+  close((parts[0]![1] as number) + (parts[1]![1] as number), r.qty);
+});
+
+test('M7 thanh lý: gap qua cả SL lẫn giá thanh lý → thanh lý isolated (mất ký quỹ), gắn cờ', async () => {
+  // Long 400 coin giá 100, đòn bẩy 5× → MMR bậc 25–100k = 10% → thanh lý ≈ 100 × (1 − 0,2 + 0,1) = 90; mở cửa 70
+  const r = await run(trade(plan('long')), bars([[100, 100.5, 99.5, 100], [70, 71, 69, 70.5]]));
+  assert.equal(r.reason, 'liquidation');
+  assert.equal(r.flags.liquidation, true);
+  close(r.gross, -400 * 20); // isolated: mất đúng ký quỹ 400 × 100 / 5 = 8 000 (giá phá sản 80), không phải 400 × 30
 });
