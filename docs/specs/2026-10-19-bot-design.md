@@ -75,7 +75,8 @@ Binance WS (kline đóng nến, mark price, user data)        Binance REST (ký 
    và `prevSignals` (tín hiệu đang mở theo mã, từ nhật ký) để có hysteresis 70/60 và cờ MỚI đúng (B0b/I5); tín hiệu Hạng A
    MỚI (`Analysis.signal.fresh`) qua protections → planner → executor; khử trùng theo `signal.id` trong nhật ký. Ngay trước
    khi gửi lệnh: lấy lại giá mark (I3), tính lại kế hoạch và `canOpen`; dùng bậc ký quỹ thật từ `leverageBracket`
-   (`marginTier(notional, brackets)`, I7).
+   (`parseLeverageBrackets` → `ScanInput.leverageBrackets`, I7) — `demo`/`live` **từ chối chạy** khi chưa tải được bậc thật.
+   Sau mỗi lần quét cập nhật `prevSignals` bằng `advanceSignalState` (hysteresis theo chiều đang giữ, luật đảo chiều chờ 1 nến).
 4. **Vào lệnh:** market hoặc limit (GTD theo hạn) với `clientOrderId` tất định. Khớp (kể cả một phần) → **ngay**
    SL `closePosition` theo MARK_PRICE; thất bại → đóng market + Telegram khẩn (R2). Sau đó TP1/2/3 reduce-only.
 5. **Quản lý:** ngay khi vào lệnh đặt cùng lúc trên sàn: SL gốc (`closePosition`), TP1 reduce-only 50% khối

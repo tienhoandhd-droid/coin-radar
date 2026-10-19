@@ -234,17 +234,19 @@ export const COMMON = {
   },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
-  // Bậc ký quỹ duy trì (I7, đánh giá độc lập). Bậc THẬT của từng mã ở GET /fapi/v1/leverageBracket (CẦN API key: notionalCap,
-  // maintMarginRatio, initialLeverage — docs/reference/binance-usdm-api.md). Chưa có key → dùng bảng dưới đây:
-  // GIẢ ĐỊNH THẬN TRỌNG, KHÔNG phải số của Binance (MMR cao hơn và trần notional thấp hơn bậc thường gặp của BTC/ETH; altcoin nhỏ có thể còn chặt hơn).
-  // Bot có key PHẢI truyền bậc thật vào marginTier(notional, brackets). Vượt bậc cuối → G-08 trượt.
+  // Bậc ký quỹ duy trì (I7, đánh giá độc lập; rà soát B0b #3). Bậc THẬT của từng mã: GET /fapi/v1/leverageBracket (CẦN API key; trường
+  // bracket, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, cum — docs/reference/binance-usdm-api.md), truyền qua
+  // ScanInput.leverageBrackets → AnalyzeInput → buildPlan/buildPatternPlan/G-08. Chưa có key → bảng dưới đây:
+  // GIẢ ĐỊNH THẬN TRỌNG, KHÔNG phải số của Binance: với mỗi notional chọn MMR ≥ mức của bậc cao thường gặp ở altcoin thanh khoản thấp
+  // (bậc của BTC/ETH thấp hơn nhiều), trần đòn bẩy thấp, quá 3 triệu USDT coi như không mở được. Bản in ghi "bậc ký quỹ: giả định".
   margin: {
     defaultBrackets: [
-      { notionalCap: 10_000, maintMarginRatio: 0.025, maxLeverage: 20 },
-      { notionalCap: 50_000, maintMarginRatio: 0.05, maxLeverage: 10 },
-      { notionalCap: 250_000, maintMarginRatio: 0.1, maxLeverage: 5 },
-      { notionalCap: 1_000_000, maintMarginRatio: 0.125, maxLeverage: 4 },
-      { notionalCap: 5_000_000, maintMarginRatio: 0.25, maxLeverage: 2 },
+      { notionalCap: 5_000, maintMarginRatio: 0.025, initialLeverage: 20 },
+      { notionalCap: 25_000, maintMarginRatio: 0.05, initialLeverage: 10 },
+      { notionalCap: 100_000, maintMarginRatio: 0.1, initialLeverage: 5 },
+      { notionalCap: 250_000, maintMarginRatio: 0.125, initialLeverage: 4 },
+      { notionalCap: 1_000_000, maintMarginRatio: 0.25, initialLeverage: 2 },
+      { notionalCap: 3_000_000, maintMarginRatio: 0.5, initialLeverage: 1 },
     ],
   },
   // Trượt giá thêm theo cỡ lệnh (I7) — ĐỀ XUẤT, CHƯA BACKTEST. Khối lượng 1 phút ước bằng TB quoteVolume các nến 1H gần nhất ÷ 60
@@ -271,7 +273,7 @@ export const COMMON = {
   eventCalendarWarnDays: 14, // I4: lịch sự kiện còn < 14 ngày → cảnh báo đầu bản in; đã qua sự kiện cuối → G-07 trượt — brief B0b
   perpetualDeliveryFloor: Date.UTC(2100, 0, 1), // G-06: hợp đồng vĩnh cửu có deliveryDate TRƯỚC mốc này = có ngày tất toán thật (thường do lịch hủy niêm yết).
   // Quan sát exchangeInfo 19/10/2026: 523/525 hợp đồng = 2100-12-25; EPICUSDT 2026-10-20, VELODROMEUSDT 2026-10-28. Chưa có câu chữ tài liệu Binance xác nhận.
-    expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
+  expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
   fundingCutoffMinutes: 30, // G-10: Lướt nhanh không vào lệnh phải trả funding khi còn < 30 phút — đề xuất, chưa backtest
   risk: {
     perTradePct: 2, // % vốn bot rủi ro mỗi lệnh — người dùng chốt 19/10/2026. Không còn phân tầng 0,5%/0,25%; mức rủi ro (Thấp…Rất cao) chỉ để hiển thị/lọc Hạng A

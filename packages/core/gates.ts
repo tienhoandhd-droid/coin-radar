@@ -55,12 +55,12 @@ export function fundingNote(rate: number, intervalHours: number, isDefault: bool
 }
 
 // G-08 (P-04) theo bậc ký quỹ của notional (I4/I7): giá thanh lý ở đòn bẩy sẽ dùng = min(trần chế độ, trần bậc, đòn bẩy an toàn)
-// phải cách giá vào ≥ (1 + liquidationBufferStops) × khoảng SL. brackets = bậc thật (leverageBracket, cần key); không có → mặc định thận trọng.
+// phải cách giá vào ≥ (1 + liquidationBufferStops) × khoảng SL. brackets = bậc thật (leverageBracket, cần key); không có → bảng giả định thận trọng.
 export function liquidationCheck(a: { stopDistFrac: number; notional: number; leverageCap: number; brackets?: readonly MarginBracket[] }): { ok: boolean; note: string } {
   const tier = marginTier(a.notional, a.brackets);
   const usd = (x: number) => Math.round(x).toLocaleString('vi-VN');
   if (tier === null) {
-    return { ok: false, note: `Notional ${usd(a.notional)} USDT vượt bậc ký quỹ cao nhất (${a.brackets ? 'leverageBracket' : 'mặc định thận trọng'}) — không mở được cỡ này` };
+    return { ok: false, note: `Notional ${usd(a.notional)} USDT vượt bậc ký quỹ cao nhất (${a.brackets ? 'leverageBracket' : 'giả định'}) — không mở được cỡ này` };
   }
   const safe = maxSafeLeverage(a.stopDistFrac, tier.mmr, COMMON.liquidationBufferStops);
   const lev = Math.min(a.leverageCap, tier.maxLeverage, Math.floor(safe));

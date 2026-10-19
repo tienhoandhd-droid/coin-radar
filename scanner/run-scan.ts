@@ -8,6 +8,7 @@ import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } f
 import { liquidityRanks, applyTopRank } from './rank.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
 import type { SignalState } from '../packages/core/signal.ts';
+import type { MarginBracket } from '../packages/core/margin.ts';
 
 // Một lần quét, tách khỏi I/O (rà soát cuối 1c, B4): máy quét (scan.ts) và phát lại/backtest (kế hoạch 2) gọi CÙNG hàm này.
 // Mọi dữ liệu thị trường đến từ tham số; nến lấy qua `klines(symbol, interval, limit)` — chỉ được trả nến ĐÃ ĐÓNG tại `now`
@@ -30,6 +31,7 @@ export type ScanInput = {
   capital: number;
   limit: number | null; // --limit: chỉ quét N hợp đồng thanh khoản cao nhất
   openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3) — máy quét: [] (chỉ thông tin); bot/mô phỏng: danh mục thật tại `now`
+  leverageBrackets?: ReadonlyMap<string, MarginBracket[]>; // bậc ký quỹ thật theo mã (leverageBracket, cần key — bot); máy quét: không có → bảng giả định
   prevSignals: ReadonlyMap<string, SignalState>; // I5: tín hiệu gần nhất theo mã (đang mở hoặc đã kết thúc lúc nào) — cập nhật bằng advanceSignalState sau mỗi lần quét; máy quét: Map rỗng
 };
 
@@ -116,6 +118,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
         premium, fundingIntervalHours: input.fundingIntervals.get(c.symbol) ?? COMMON.defaultFundingIntervalHours,
         fundingIntervalDefault: !input.fundingIntervals.has(c.symbol), now: new Date(now), events: input.events, capital: input.capital, riskPct: COMMON.risk.perTradePct,
         patternData, openTrades: input.openTrades, prevSignal: input.prevSignals.get(c.symbol) ?? null,
+        ...(input.leverageBrackets ? { leverageBrackets: input.leverageBrackets.get(c.symbol) ?? [] } : {}),
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

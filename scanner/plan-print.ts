@@ -73,7 +73,7 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   if (!p.exit.trailing && trailPct > COMMON.binanceTrailMaxCallbackPct) {
     lines.push(`  LƯU Ý: lệnh trailing stop của Binance chỉ nhận callbackRate tối đa ${COMMON.binanceTrailMaxCallbackPct}% (khoảng cách này là ${num(trailPct, 1)}%) → không đặt được nguyên văn, hãy tự dời SL thủ công theo ${px(p.trailAtr)} ${long ? 'dưới giá cao' : 'trên giá thấp'} nhất.`);
   }
-  lines.push(`  Khối lượng: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)}`);
+  lines.push(`  Khối lượng: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)} (bậc ký quỹ: ${p.marginSource})`);
   lines.push(`  Bảng khối lượng theo giá khớp (ngân sách rủi ro giữ nguyên ${num(p.riskAmount, 2)} USDT, chia ${c2 ? `TP1 ${COMMON.zones.exitPcts[0]}% / trailing ${100 - COMMON.zones.exitPcts[0]}%` : COMMON.zones.exitPcts.join('/')}):`);
   for (const f of p.fillTable) {
     // Phần bằng 0 (chỉ xảy ra với phần trailing) không in số 0 mà nói rõ đã gộp vào TP3
@@ -96,7 +96,7 @@ export function headerWarningLines(calendar: CalendarStatus): string[] {
 // C1/C3/I7: khối lượng tối đa cho phép theo danh mục đang mở + ký quỹ + thanh khoản (portfolio.canOpen).
 // Máy quét không biết lệnh đang mở của anh (danh sách trống) → chỉ để thông tin; bot dùng danh mục thật.
 export function portfolioLines(r: CanOpenResult): string[] {
-  const open = `danh mục đang mở: ${r.openCount} lệnh, rủi ro mở ${num(r.openRiskPct, 2)}%, ký quỹ ${num(r.openMarginPct, 2)}% vốn`;
+  const open = `danh mục đang mở: ${r.openCount} lệnh (${r.sameSideOpen} cùng chiều), rủi ro mở ${num(r.openRiskPct, 2)}%, ký quỹ ${num(r.openMarginPct, 2)}% vốn`;
   if (!r.allowed) return [`  Danh mục/ký quỹ: KHÔNG VÀO — ${r.reasons.join('; ')} (${open})`];
   const money = `rủi ro thực ${num(r.riskPctActual, 2)}% vốn${r.riskPctActual < COMMON.risk.perTradePct - 1e-9 ? ` (< ${COMMON.risk.perTradePct}%)` : ''} = ${num(r.riskAmount, 2)} USDT, ký quỹ ≈ ${num(r.marginNeeded, 2)} USDT`;
   if (r.reasons.length === 0) return [`  Danh mục/ký quỹ: vào đủ khối lượng — ${money} (${open})`];
@@ -186,7 +186,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
     lines.push(`  LƯU Ý: lệnh trailing stop của Binance chỉ nhận callbackRate tối đa ${COMMON.binanceTrailMaxCallbackPct}% (khoảng cách này là ${num(trailPct, 1)}%) → không đặt được nguyên văn, hãy tự dời SL thủ công theo ${px(p.trailAtr)} ${long ? 'dưới giá cao' : 'trên giá thấp'} nhất.`);
   }
   lines.push(`  TP1 sau phí + funding: ${num(p.tp1NetR, 2)}R ở giá khớp xấu nhất | R = ${num(p.riskAtr, 2)}×A`);
-  lines.push(`  Khối lượng khi khớp mọi chân: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x (isolated) | Giá thanh lý ước tính: ${px(p.liquidationEstimate)} | Ký quỹ ≈ ${num(p.marginNeeded, 2)} USDT`);
+  lines.push(`  Khối lượng khi khớp mọi chân: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x (isolated) | Giá thanh lý ước tính: ${px(p.liquidationEstimate)} (bậc ký quỹ: ${p.marginSource}) | Ký quỹ ≈ ${num(p.marginNeeded, 2)} USDT`);
   lines.push(`  Bảng khối lượng theo giá khớp${p.entryType === 'limit' ? ' (chỉ chân limit)' : ' của chân market'} (ngân sách rủi ro ${num(p.riskAmount, 2)} USDT):`);
   for (const f of p.fillTable) {
     const legs = f.legs.length > 1 ? `${f.legs.map((l) => `${l.kind} ${qty(l.qty)}`).join(' + ')} = ` : '';

@@ -17,7 +17,7 @@ import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
 import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from './grade.ts';
 import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
-import { sizeSlippagePct } from './margin.ts';
+import { sizeSlippagePct, type MarginBracket } from './margin.ts';
 import { canOpen, type CanOpenResult, type OpenTrade } from './portfolio.ts';
 import { chooseZoneSide, flipAllowed, zoneSignalId, signalIdentity, type SignalState, type SignalIdentity } from './signal.ts';
 
@@ -64,6 +64,7 @@ export type AnalyzeInput = {
   riskPct: number;
   patternData: PatternData | null; // null = không tải (hợp đồng ngoài phạm vi P-G1); trong phạm vi mà null → ném lỗi
   openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3). Máy quét: [] hoặc danh sách người dùng đưa vào → chỉ để thông tin
+  leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật của mã (leverageBracket, cần key); không có → bảng giả định thận trọng
   prevSignal: SignalState | null; // I5: tín hiệu đang mở của hợp đồng × chế độ ở lần quét trước (bot/backtest giữ); máy quét: null
 };
 
@@ -163,7 +164,7 @@ export function analyze(i: AnalyzeInput): Analysis {
   const planFor = (side: Side) => {
     const build = (extraCostPct: number) => buildPlan({
       mode: i.mode, side, entry: i.entry, markPrice: i.premium.markPrice, dailyAtr, capital: i.capital, riskPct,
-      costTier: costTier(i.liquidityRankPct), extraCostPct, tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
+      costTier: costTier(i.liquidityRankPct), extraCostPct, leverageBrackets: i.leverageBrackets, tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
     });
     const p = build(extraFor(build(0).notional));
@@ -206,7 +207,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
       eventBlocked: ev.blocked, eventCalendarExpired: calendar.expired, deliveryDate: i.contract.deliveryDate,
       stopDistPct: stopDistPct * 100, stopDistAtr: p.riskPerUnit / dailyAtr,
-      liquidation: liquidationCheck({ stopDistFrac: stopDistPct, notional: p.notional, leverageCap: CONFIG[i.mode].maxLeverage }),
+      liquidation: liquidationCheck({ stopDistFrac: stopDistPct, notional: p.notional, leverageCap: CONFIG[i.mode].maxLeverage, brackets: i.leverageBrackets }),
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
       minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,
       planValid: p.valid, planNote: p.note,
@@ -271,7 +272,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       const multiMonth = context.multiMonth;
       const buildP = (extraCostPct: number) => buildPatternPlan({
         mode: i.mode, patternId: t.id, price: priceNow, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth,
-        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct), extraCostPct,
+        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct), extraCostPct, leverageBrackets: i.leverageBrackets,
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });
       const first = buildP(0);

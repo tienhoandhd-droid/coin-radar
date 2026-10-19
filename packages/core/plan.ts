@@ -3,7 +3,7 @@ import { CONFIG, COMMON } from './config.ts';
 import { stopSideZones, targetSideZones, zoneContaining, describeZone, type Zone } from './zones.ts';
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from './exit.ts';
-import { marginTier } from './margin.ts';
+import { marginTier, defaultBrackets, type MarginBracket, type MarginSource } from './margin.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
@@ -11,14 +11,14 @@ export type CostTier = 'high' | 'mid' | 'low';
 // roundStep nằm ở indicators.ts (để zones.ts dùng mà không tạo vòng import); re-export để import cũ vẫn chạy
 export { roundStep };
 
-// MMR + đòn bẩy tối đa theo bậc ký quỹ của notional (mặc định thận trọng khi chưa có leverageBracket). Notional vượt bậc cuối →
-// trả bậc cuối (chỉ để các số in ra hữu hạn); việc chặn do G-08 (analyze) làm.
-export function mmrFor(notional: number): { mmr: number; maxLeverage: number } {
-  const t = marginTier(notional);
+// MMR + đòn bẩy tối đa theo bậc ký quỹ của notional: bậc thật (leverageBracket) nếu có, không thì bảng giả định thận trọng.
+// Notional vượt bậc cuối → trả bậc cuối (chỉ để các số in ra hữu hạn); việc chặn do G-08 (analyze) làm.
+export function mmrFor(notional: number, brackets?: readonly MarginBracket[]): { mmr: number; maxLeverage: number; source: MarginSource } {
+  const t = marginTier(notional, brackets);
   if (t !== null) return t;
-  const list = COMMON.margin.defaultBrackets;
+  const list = brackets !== undefined && brackets.length > 0 ? [...brackets].sort((a, b) => a.notionalCap - b.notionalCap) : defaultBrackets();
   const lastB = list[list.length - 1]!;
-  return { mmr: lastB.maintMarginRatio, maxLeverage: lastB.maxLeverage };
+  return { mmr: lastB.maintMarginRatio, maxLeverage: lastB.initialLeverage, source: brackets !== undefined ? 'leverageBracket' : 'giả định' };
 }
 
 // Công thức gần đúng cho ký quỹ isolated (bỏ qua bậc ký quỹ thật — cần API key). P-04.
@@ -86,6 +86,7 @@ export type TradePlan = {
   fillTable: FillRow[]; // market: 3 dòng (giá hiện tại / giữa / giá tối đa); limit: 1 dòng (giá limit)
   riskPct: number; // % vốn rủi ro thực sự đã dùng để tính khối lượng (P-01)
   costPct: number; // phí + trượt giá khứ hồi đã dùng (%): theo nhóm thanh khoản + trượt thêm theo cỡ lệnh (I7)
+  marginSource: MarginSource; // nguồn bậc ký quỹ cho đòn bẩy/thanh lý: 'leverageBracket' (thật) hoặc 'giả định'
   safeLeverage: number;
   suggestedLeverage: number;
   liquidationEstimate: number;
@@ -105,6 +106,7 @@ export type PlanArgs = {
   riskPct: number;
   costTier: CostTier;
   extraCostPct: number; // trượt giá THÊM theo cỡ lệnh (% khứ hồi, I7 — sizeSlippagePct), cộng vào phí theo nhóm thanh khoản; 0 = không thêm
+  leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật của mã (leverageBracket); không có → bảng giả định thận trọng
   tickSize: number; // bước giá của hợp đồng: mọi giá trong kế hoạch là bội của số này
   stepSize: number;
   fundingRate: number; // mức MỖI KỲ funding của hợp đồng (không phải %/8h)
@@ -347,7 +349,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     }
   }
   // Bậc ký quỹ theo notional (I7): MMR và đòn bẩy tối đa của bậc; vượt bậc cuối → dùng bậc cuối để in số, G-08 sẽ trượt
-  const mmr = mmrFor(size.notional);
+  const mmr = mmrFor(size.notional, a.leverageBrackets);
   const safe = maxSafeLeverage(riskPerUnit / entry, mmr.mmr, COMMON.liquidationBufferStops);
   const suggested = Math.max(1, Math.min(cfg.maxLeverage, mmr.maxLeverage, Math.floor(safe)));
   // Số kỳ funding thật trong thời gian giữ dự kiến: 4h/kỳ → gấp đôi 8h/kỳ
@@ -378,6 +380,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     fillTable,
     riskPct: a.riskPct,
     costPct,
+    marginSource: mmr.source,
     safeLeverage: safe,
     suggestedLeverage: suggested,
     liquidationEstimate: liquidationPrice(entry, suggested, a.side, mmr.mmr),

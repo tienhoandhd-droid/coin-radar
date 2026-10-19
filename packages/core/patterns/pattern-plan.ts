@@ -5,6 +5,7 @@ import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
 import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, mmrFor, type CostTier, type Target, type FillRow } from '../plan.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from '../exit.ts';
+import type { MarginBracket, MarginSource } from '../margin.ts';
 import type { MultiMonthContext } from './context.ts';
 import { patternStopLevel, breakoutLevel, patternTargets, type StateResult } from './state.ts';
 import type { PatternGeometry, PatternKind } from './types.ts';
@@ -70,6 +71,7 @@ export type PatternPlan = {
   fillTable: PatternFillRow[];
   riskPct: number;
   costPct: number; // phí + trượt giá khứ hồi đã dùng (%), gồm trượt thêm theo cỡ lệnh (I7)
+  marginSource: MarginSource; // nguồn bậc ký quỹ: 'leverageBracket' hoặc 'giả định'
   safeLeverage: number;
   suggestedLeverage: number;
   liquidationEstimate: number;
@@ -109,6 +111,7 @@ export type PatternPlanArgs = {
   riskPct: number;
   costTier: CostTier;
   extraCostPct: number; // trượt giá THÊM theo cỡ lệnh (% khứ hồi, I7), cộng vào phí theo nhóm thanh khoản
+  leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật (leverageBracket); không có → bảng giả định thận trọng
   tickSize: number;
   stepSize: number;
   fundingRate: number; // mức MỖI KỲ funding
@@ -527,7 +530,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
 
   // ---- Đòn bẩy, thanh lý, funding (như plan.ts) ----
   const notional = Math.round(row0.legs.reduce((sum, l) => sum + l.qty * l.price, 0) * 1e8) / 1e8;
-  const mmr = mmrFor(notional); // bậc ký quỹ theo notional (I7)
+  const mmr = mmrFor(notional, a.leverageBrackets); // bậc ký quỹ theo notional (I7)
   const safe = maxSafeLeverage(riskPerUnit / entry, mmr.mmr, COMMON.liquidationBufferStops);
   const suggested = Math.max(1, Math.min(cfg.maxLeverage, mmr.maxLeverage, Math.floor(safe)));
   const fundingPerUnit = a.fundingRate * fundingEvents * entry;
@@ -583,6 +586,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     fillTable,
     riskPct: a.riskPct,
     costPct,
+    marginSource: mmr.source,
     safeLeverage: safe,
     suggestedLeverage: suggested,
     liquidationEstimate: liquidationPrice(entry, suggested, side, mmr.mmr),

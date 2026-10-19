@@ -97,7 +97,7 @@ duyệt gọi thẳng (`access-control-allow-origin: *`); nến futures có 12 c
 | 24h, spread | `/fapi/v1/ticker/24hr`, `/fapi/v1/ticker/bookTicker` (toàn bộ, 1 lệnh) | Thanh khoản |
 | Funding, mark price | `/fapi/v1/premiumIndex` (toàn bộ, 1 lệnh), `/fapi/v1/fundingInfo` (chu kỳ funding từng mã) | Chi phí giữ lệnh, cắt lỗ theo mark |
 | OI, long/short, taker | `/fapi/v1/openInterest`, `/futures/data/openInterestHist`, `globalLongShortAccountRatio`, `takerlongshortRatio` (Binance chỉ giữ 30 ngày → **tự lưu** vào `coin_market_history`) | Cờ phái sinh |
-| Bậc ký quỹ | `/fapi/v1/leverageBracket` **cần API key** → máy quét không dùng. **B0b/I7**: MMR và đòn bẩy tối đa lấy theo bậc của notional (`margin.ts` `marginTier(notional, brackets?)`); chưa có key thì dùng bảng `COMMON.margin.defaultBrackets` — **GIẢ ĐỊNH THẬN TRỌNG, không phải số Binance** (MMR 2,5% → 25%, trần notional 5 triệu USDT). Bot có key truyền bậc thật vào cùng hàm. Giá thanh lý vẫn là công thức gần đúng, ghi rõ “ước tính” | Kế hoạch lệnh, G-08 |
+| Bậc ký quỹ | `/fapi/v1/leverageBracket` **cần API key** → máy quét không dùng. **B0b/I7**: MMR và đòn bẩy tối đa lấy theo bậc của notional (`margin.ts` `marginTier(notional, brackets?)`); chưa có key thì dùng bảng `COMMON.margin.defaultBrackets` — **GIẢ ĐỊNH THẬN TRỌNG, không phải số Binance** (rà soát B0b: với mỗi notional chọn MMR ≥ bậc cao thường gặp của altcoin thanh khoản thấp: ≤ 5k 2,5%/20×, ≤ 25k 5%/10×, ≤ 100k 10%/5×, ≤ 250k 12,5%/4×, ≤ 1M 25%/2×, ≤ 3M 50%/1×; lớn hơn → không mở). Bậc thật (đúng dạng `leverageBracket`, `parseLeverageBrackets`) đi qua `ScanInput.leverageBrackets` (theo mã) → `AnalyzeInput.leverageBrackets` → kế hoạch và G-08; có bảng mà thiếu mã → G-08 trượt. Bản in ghi “bậc ký quỹ: giả định” hoặc “leverageBracket”. Giá thanh lý vẫn là công thức gần đúng, ghi rõ “ước tính” | Kế hoạch lệnh, G-08 |
 | Độ sâu | `/fapi/v1/depth?limit=100` chỉ cho coin đang đạt tiêu chí hoặc đang có lệnh | Độ dày vùng cản |
 | Vốn hóa, ngành, FDV | CoinGecko `/coins/markets` (Demo key), mỗi giờ, ghép theo ký hiệu | Rủi ro, nhóm ngành |
 | Bối cảnh | Coinbase premium, Fear & Greed, DefiLlama stablecoin, SMA200 tuần BTC | Bối cảnh, cờ |
@@ -113,7 +113,7 @@ thiếu → lỗi, không coi là 0). Kế hoạch lập hai lần: lần đầu
 Quy tắc dữ liệu:
 - Chỉ dùng **nến đã đóng** cho quyết định.
 - Nguồn lỗi → coin hiện “dữ liệu cũ”, không tạo tín hiệu. **B0b/I3 (đã làm):** `runScan` kiểm chuỗi nến khung xu hướng và
-  khung vào lệnh (`candles.ts` `candleProblems`): nến cuối đóng trước thời điểm quét quá 1 khung + `COMMON.data.staleToleranceMinutes`
+  khung vào lệnh, và (rà soát B0b) MỌI chuỗi khác của mã — Swing 1H, Lướt nhanh 1D, 4H mô hình (`candles.ts` `candleProblems`): nến cuối đóng trước thời điểm quét quá 1 khung + `COMMON.data.staleToleranceMinutes`
   (5 phút) → “dữ liệu cũ”; thiếu nến giữa chuỗi; nến trùng/sai thứ tự → ghi lỗi theo mã, không chấm. Nến BTC hỏng → dừng cả lần quét.
 - **Giá hiện tại của kế hoạch = giá mark** (`premiumIndex.markPrice`) lúc quét (B0b/I3), cho cả lệnh vùng và lệnh mô hình — không
   dùng giá đóng nến (có thể cũ tới 1 khung). Bot phải lấy lại giá mark ngay trước khi gửi lệnh.
@@ -201,8 +201,10 @@ Không dùng VPN/proxy để lách chặn (có thể vi phạm điều khoản B
   `zoneQualifies` (tín hiệu vùng cùng chiều đang mở → giữ tới khi điểm < `COMMON.exitScore` 60), `zoneSignalId` =
   `mã|chế độ|chiều|zone|openTime nến vào lệnh|SL`, `signalIdentity` (đã có trong trạng thái → giữ id cũ, không “MỚI”).
   Trạng thái lần trước do nơi gọi giữ (`AnalyzeInput.prevSignal`, `ScanInput.prevSignals`): máy quét không giữ → như cũ;
-  bot/backtest truyền vào và khử trùng theo id. Tín hiệu đang giữ không bị hạ nhãn vì top 10%. Luật “chờ 1 nến khung
-  xu hướng trước khi đảo chiều” **chưa làm**.
+  bot/backtest truyền vào và khử trùng theo id. Tín hiệu đang giữ không bị hạ nhãn vì top 10%. **Rà soát B0b:** hysteresis xét chiều ĐANG GIỮ trước
+  (`chooseZoneSide`: giữ khi ≥ 60 và qua cổng, dù chiều kia điểm cao hơn). Luật đảo chiều (`flipAllowed`): chiều ngược chỉ phát
+  khi tín hiệu cũ đã kết thúc (`SignalState.endedAt`, cập nhật bằng `advanceSignalState`) và đã đóng trọn 1 nến khung xu hướng
+  mở từ lúc kết thúc; tín hiệu cũ còn mở → chặn, ghi cờ “Chặn đảo chiều”.
 - Nhãn: **Đạt tiêu chí Long / Đạt tiêu chí Short / Theo dõi / Không đạt**; ghi “điểm xếp hạng, không phải
   xác suất thắng”.
 

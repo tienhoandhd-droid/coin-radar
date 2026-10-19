@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseKlines, parseContracts, parsePremium, parseFundingInfo } from './parse.ts';
+import { parseKlines, parseContracts, parsePremium, parseFundingInfo, parseLeverageBrackets } from './parse.ts';
 
 // Hàng kline Binance Futures: 12 cột (định dạng đã kiểm 19/10/2026: cột 10 = taker buy quote)
 // Bộ lọc thật của BTCUSDT (GET công khai /fapi/v1/exchangeInfo, 19/10/2026) — MIN_NOTIONAL dùng khóa "notional"
@@ -131,4 +131,16 @@ test('parseContracts: loại hợp đồng chỉ số (INDEX), giữ COIN', () =
 
 test('parseContracts: thiếu underlyingType → ném lỗi nêu tên mã', () => {
   assert.throws(() => parseContracts({ symbols: [perp('ETHUSDT')] }), /ETHUSDT.*underlyingType/);
+});
+
+test('I7 parseLeverageBrackets: đúng dạng tài liệu (symbol, brackets[]: bracket, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, cum); thiếu trường → ném lỗi', () => {
+  const raw = [{ symbol: 'BTCUSDT', notionalCoef: 1.5, brackets: [
+    { bracket: 1, initialLeverage: 150, notionalCap: 300000, notionalFloor: 0, maintMarginRatio: 0.004, cum: 0 },
+    { bracket: 2, initialLeverage: 100, notionalCap: 800000, notionalFloor: 300000, maintMarginRatio: 0.005, cum: 300 },
+  ] }];
+  const m = parseLeverageBrackets(raw);
+  assert.deepEqual(m.get('BTCUSDT')![1], { bracket: 2, initialLeverage: 100, notionalCap: 800000, notionalFloor: 300000, maintMarginRatio: 0.005, cum: 300 });
+  assert.throws(() => parseLeverageBrackets([{ symbol: 'BTCUSDT', brackets: [{ bracket: 1, initialLeverage: 150, notionalCap: 1, notionalFloor: 0, cum: 0 }] }]), /BTCUSDT.*maintMarginRatio/);
+  assert.throws(() => parseLeverageBrackets([{ symbol: 'BTCUSDT', brackets: [] }]), /BTCUSDT.*rỗng/);
+  assert.throws(() => parseLeverageBrackets({ code: -2015 }), /leverageBracket/);
 });

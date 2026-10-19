@@ -13,7 +13,7 @@ const base: TradePlan = {
     { name: 'TP3', price: null, pct: 20, qty: 7, r: null, reason: 'het vung' },
   ],
   afterTp1Stop: 0.6143, exit: { policy: 'A0', tp1Qty: 14, trailQty: 0, trailing: null }, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
-  riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, costPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
+  riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, costPct: 0.25, marginSource: 'giả định', safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
   fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2,
   fillTable: [
     { label: 'giá hiện tại', fill: 0.6143, qty: 29, q: [14, 8, 7], estLoss: 2.43 },
@@ -312,7 +312,7 @@ test('B0 mô hình chia 2 chân: bảo đảm không lỗ tính ở chân xấu 
 
 test('C1/C3 portfolioLines: vào đủ / giảm khối lượng (rủi ro thực < 2% in rõ) / không vào', async () => {
   const { portfolioLines } = await import('./plan-print.ts');
-  const base = { requestedQty: 100, openCount: 0, openRiskPct: 0, openMarginPct: 0 };
+  const base = { requestedQty: 100, openCount: 0, sameSideOpen: 0, openRiskPct: 0, openMarginPct: 0 };
   const full = portfolioLines({ ...base, allowed: true, adjustedQty: 100, riskAmount: 200, riskPctActual: 2, marginNeeded: 2000, reasons: [] }).join('\n');
   assert.match(full, /vào đủ khối lượng/);
   assert.match(full, /rủi ro thực 2,00% vốn/);
@@ -358,4 +358,15 @@ test('B0 rà soát lại: C2 có TP1 nhưng trailing = null (kế hoạch không
 test('I8: câu trailing nói rõ "chưa tính trượt giá khi lệnh trailing khớp market"', () => {
   const t = planLines(head, c2Long, 0.0001).join('\n');
   assert.match(t, /≥ giá vào \+ phí\); gần như hòa vốn, chưa tính trượt giá khi lệnh trailing khớp market/);
+});
+
+test('I7 rà soát B0b #3: bản in ghi nguồn bậc ký quỹ — "bậc ký quỹ: giả định" khi chưa có leverageBracket', () => {
+  assert.match(planLines(head, { ...base, marginSource: 'giả định' }, 0.0001).join('\n'), /bậc ký quỹ: giả định/);
+  assert.match(planLines(head, { ...base, marginSource: 'leverageBracket' }, 0.0001).join('\n'), /bậc ký quỹ: leverageBracket/);
+});
+
+test('C1 portfolioLines in số lệnh mở cùng chiều', async () => {
+  const { portfolioLines } = await import('./plan-print.ts');
+  const t = portfolioLines({ requestedQty: 1, openCount: 4, sameSideOpen: 3, openRiskPct: 6, openMarginPct: 20, allowed: true, adjustedQty: 1, riskAmount: 20, riskPctActual: 2, marginNeeded: 50, reasons: [] }).join('');
+  assert.match(t, /4 lệnh \(3 cùng chiều\)/);
 });

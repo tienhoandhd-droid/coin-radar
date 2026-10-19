@@ -26,6 +26,7 @@ export type CanOpenResult = {
   riskPctActual: number; // riskAmount / vốn × 100 — có thể < 2% khi bị giảm
   marginNeeded: number; // notional / đòn bẩy với adjustedQty
   openCount: number;
+  sameSideOpen: number; // số lệnh đang mở cùng chiều lệnh mới (altcoin thường chạy cùng chiều BTC — theo dõi sau đánh giá C1)
   openRiskPct: number; // tổng rủi ro đang mở (lệnh đã qua TP1 = 0), % vốn
   openMarginPct: number; // tổng ký quỹ đang dùng, % vốn
   reasons: string[]; // vì sao bị giảm / bị từ chối (rỗng = vào đủ)
@@ -50,7 +51,7 @@ export function canOpen(t: NewTrade, open: readonly OpenTrade[], capital: number
 
   const openRisk = openRiskAmount(open);
   const openMargin = open.reduce((s, o) => s + o.notional / o.leverage, 0);
-  const base = { requestedQty: t.qty, openCount: open.length, openRiskPct: (openRisk / capital) * 100, openMarginPct: (openMargin / capital) * 100 };
+  const base = { requestedQty: t.qty, openCount: open.length, sameSideOpen: open.filter((o) => o.side === t.side).length, openRiskPct: (openRisk / capital) * 100, openMarginPct: (openMargin / capital) * 100 };
   const reject = (reasons: string[]): CanOpenResult => ({ ...base, allowed: false, adjustedQty: 0, riskAmount: 0, riskPctActual: 0, marginNeeded: 0, reasons });
 
   if (open.length >= cfg.maxOpenTrades) return reject([`Đã có ${open.length} lệnh mở = trần ${cfg.maxOpenTrades} lệnh — không vào lệnh mới`]);

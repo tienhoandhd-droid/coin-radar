@@ -114,3 +114,14 @@ test('I3 runScan Lướt nhanh: nến 1D cũ → không chấm; nến 4H (phần
   assert.ok(scoped.length > 0, 'fixture cần ít nhất một mã trong phạm vi mô hình');
   for (const s of scoped) assert.match(h4.errors.find((e) => e.symbol === s)?.error ?? 'không lỗi', /4H/, s);
 });
+
+test('I7 runScan: leverageBrackets theo mã → dùng bậc thật; có bảng bậc nhưng thiếu mã → G-08 trượt (không âm thầm dùng giả định)', async () => {
+  const real = [{ bracket: 1, initialLeverage: 20, notionalCap: 1e9, notionalFloor: 0, maintMarginRatio: 0.004, cum: 0 }];
+  const r = await runScan(input({ leverageBrackets: new Map([['AAAUSDT', real]]) }));
+  const a = r.results.find((x) => x.symbol === 'AAAUSDT')!;
+  assert.match(a.gates.find((g) => g.code === 'G-08')!.note, /leverageBracket/);
+  const b = r.results.find((x) => x.symbol === 'BBBUSDT')!;
+  assert.equal(b.gates.find((g) => g.code === 'G-08')!.pass, false);
+  const none = await runScan(input());
+  assert.match(none.results.find((x) => x.symbol === 'AAAUSDT')!.gates.find((g) => g.code === 'G-08')!.note, /giả định/);
+});

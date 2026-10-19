@@ -475,3 +475,18 @@ test('I5 giữ Long qua analyze: chiều giữ được xét trước — tín h
   assert.equal(a.label, 'Đạt tiêu chí Long');
   assert.deepEqual([a.signal!.id, a.signal!.fresh, a.signal!.held], ['OLD', false, true]);
 });
+
+test('I7 rà soát B0b #3: có bậc thật (leverageBracket) → G-08 và kế hoạch dùng bậc đó; không có → bảng giả định, kế hoạch ghi nguồn', () => {
+  const real = [{ bracket: 1, initialLeverage: 3, notionalCap: 1e9, notionalFloor: 0, maintMarginRatio: 0.004, cum: 0 }];
+  const a = analyze({ ...base, leverageBrackets: real });
+  assert.ok(a.plan !== null);
+  assert.equal(a.plan.marginSource, 'leverageBracket');
+  assert.ok(a.plan.suggestedLeverage <= 3, 'trần đòn bẩy của bậc thật');
+  assert.match(a.gates.find((g) => g.code === 'G-08')!.note, /leverageBracket/);
+  const d = analyze(base);
+  assert.equal(d.plan!.marginSource, 'giả định');
+  assert.match(d.gates.find((g) => g.code === 'G-08')!.note, /giả định/);
+  // bậc thật quá nhỏ cho notional → G-08 trượt
+  const tiny = analyze({ ...base, leverageBrackets: [{ ...real[0]!, notionalCap: 1 }] });
+  assert.equal(tiny.gates.find((g) => g.code === 'G-08')!.pass, false);
+});

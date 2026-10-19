@@ -251,6 +251,7 @@ URL: [TRADE], [ACC] (mục 2).
 - Lưu ý chính thức trên trang vị thế: "Please use with user data stream ACCOUNT_UPDATE to meet your timeliness and accuracy needs." [TRADE#position-information-v3]
 - Phí giao dịch thực tế của từng fill: lấy từ `userTrades.commission`/`commissionAsset` hoặc `ORDER_TRADE_UPDATE` (`n`, `N`).
 - Giá trị `MIN_NOTIONAL`: tài liệu ví dụ là `"5.0"` và lỗi `-4164` nói "no smaller than 5.0 (unless you choose reduce only)", nhưng giá trị **thực tế trên server** BTCUSDT lúc kiểm tra (GET công khai `exchangeInfo`, 2026-10-19) là `"50"`. **[MÂU THUẪN]** giữa ví dụ trong tài liệu và dữ liệu thật; luôn đọc `exchangeInfo` từng symbol. Lệnh `reduceOnly` được miễn kiểm tra này. [ERR], [CD]
+- **`deliveryDate` của hợp đồng vĩnh cửu — [QUAN SÁT, CHƯA CÓ TÀI LIỆU]:** GET công khai `exchangeInfo` ngày 2026-10-19: 523/525 hợp đồng PERPETUAL USDT đang TRADING có `deliveryDate` = 4133404800000 (2100-12-25); EPICUSDT = 2026-10-20 09:00 UTC và VELODROMEUSDT = 2026-10-28 09:00 UTC (trùng mẫu hợp đồng sắp hủy niêm yết). Chưa tìm thấy câu chữ tài liệu Binance nói ý nghĩa này. Cổng G-06 của Coin Radar dùng quy tắc “`deliveryDate` trước 2100 → trượt” **chỉ để thêm điều kiện chặn**; KHÔNG coi `deliveryDate` = 2100 là bằng chứng hợp đồng an toàn.
 
 ---
 

@@ -1,4 +1,5 @@
 import type { BookTicker, Candle, Contract, MarketTicker, PremiumIndex } from '../core/types.ts';
+import type { MarginBracket } from '../core/margin.ts';
 import { isClosed } from '../core/candles.ts';
 
 // JSON.stringify(undefined) trả về undefined, nên phải có nhánh dự phòng
@@ -120,6 +121,28 @@ export function parseFundingInfo(raw: unknown): Map<string, number> {
     const hours = num(x.fundingIntervalHours, `${w} fundingIntervalHours`);
     if (hours <= 0) throw new Error(`Binance ${w}: fundingIntervalHours phải > 0, nhận ${show(x.fundingIntervalHours)}`);
     out.set(x.symbol, hours);
+  }
+  return out;
+}
+
+// GET /fapi/v1/leverageBracket (cần API key): mảng { symbol, notionalCoef?, brackets[] } — mỗi bậc: bracket, initialLeverage, notionalCap,
+// notionalFloor, maintMarginRatio, cum (docs/reference/binance-usdm-api.md). Thiếu trường hoặc mảng bậc rỗng → ném lỗi nêu tên mã.
+export function parseLeverageBrackets(raw: unknown): Map<string, MarginBracket[]> {
+  const out = new Map<string, MarginBracket[]>();
+  for (const t of arr(raw, 'leverageBracket')) {
+    const x = t as Record<string, unknown>;
+    if (typeof x?.symbol !== 'string' || x.symbol === '') throw new Error(`Binance leverageBracket: thiếu symbol (${show(t).slice(0, 120)})`);
+    const w = `leverageBracket ${x.symbol}`;
+    const list = arr(x.brackets, `${w} brackets`);
+    if (list.length === 0) throw new Error(`Binance ${w}: mảng bậc rỗng`);
+    out.set(x.symbol, list.map((b) => {
+      const y = b as Record<string, unknown>;
+      return {
+        bracket: num(y.bracket, `${w} bracket`), initialLeverage: num(y.initialLeverage, `${w} initialLeverage`),
+        notionalCap: num(y.notionalCap, `${w} notionalCap`), notionalFloor: num(y.notionalFloor, `${w} notionalFloor`),
+        maintMarginRatio: num(y.maintMarginRatio, `${w} maintMarginRatio`), cum: num(y.cum, `${w} cum`),
+      };
+    }));
   }
   return out;
 }

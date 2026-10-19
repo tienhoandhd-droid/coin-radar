@@ -90,3 +90,10 @@ test('C3 tham số sai → ném lỗi (vốn ≤ 0, đòn bẩy < 1, SL = giá v
   assert.throws(() => canOpen(trade({ leverage: 0 }), [], 10_000, CFG), /đòn bẩy/);
   assert.throws(() => canOpen(trade({ stop: 100 }), [], 10_000, CFG), /cắt lỗ/);
 });
+
+test('C1 (theo dõi sau rà soát): đếm số lệnh đang mở CÙNG CHIỀU với lệnh mới', () => {
+  const mixed = [...open(3), ...open(2, { side: 'short' }).map((t, j) => ({ ...t, symbol: `S${j}USDT` }))];
+  assert.equal(canOpen(trade(), mixed, 100_000, CFG).sameSideOpen, 3);
+  assert.equal(canOpen(trade({ side: 'short' }), mixed, 100_000, CFG).sameSideOpen, 2);
+  assert.equal(canOpen(trade(), open(10), 100_000, CFG).sameSideOpen, 10); // kể cả khi bị từ chối
+});

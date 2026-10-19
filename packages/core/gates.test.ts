@@ -273,12 +273,12 @@ test('P-C1: bối cảnh chặn đúng chiều; ngoài phạm vi thì qua kèm g
 test('I4/I7 G-08 theo bậc ký quỹ: notional nhỏ qua; vượt bậc cao nhất → trượt; bậc thật (leverageBracket) được dùng khi truyền vào', () => {
   const okSmall = liquidationCheck({ stopDistFrac: 0.02, notional: 5_000, leverageCap: 5 });
   assert.equal(okSmall.ok, true);
-  assert.match(okSmall.note, /mặc định thận trọng/);
+  assert.match(okSmall.note, /giả định/);
   const huge = liquidationCheck({ stopDistFrac: 0.02, notional: 1e9, leverageCap: 5 });
   assert.equal(huge.ok, false);
   assert.match(huge.note, /vượt bậc ký quỹ cao nhất/);
   // bậc thật: MMR 40% → thanh lý quá gần SL 35% ngay cả ở 1× → trượt
-  const real = liquidationCheck({ stopDistFrac: 0.35, notional: 1_000, leverageCap: 5, brackets: [{ notionalCap: 1e6, maintMarginRatio: 0.4, maxLeverage: 2 }] });
+  const real = liquidationCheck({ stopDistFrac: 0.35, notional: 1_000, leverageCap: 5, brackets: [{ bracket: 1, initialLeverage: 2, notionalCap: 1e6, notionalFloor: 0, maintMarginRatio: 0.4, cum: 0 }] });
   assert.equal(real.ok, false);
   assert.match(real.note, /leverageBracket/);
 });
