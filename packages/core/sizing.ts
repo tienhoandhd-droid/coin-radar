@@ -14,7 +14,7 @@ import type { Mode } from './types.ts';
 
 // Phí nhóm thanh khoản (% khứ hồi, COMMON.costRoundTripPct) + KL giao dịch 1 phút (USDT). quoteVolPerMin = Infinity: bỏ trượt theo cỡ.
 export type CostModel = { tierPct: number; quoteVolPerMin: number };
-// |funding| lớn nhất mỗi kỳ gần đây + chu kỳ funding (giờ).
+// |funding| lớn nhất mỗi kỳ gần đây (> 0 — thiếu lịch sử → fundingFallbackRate) + chu kỳ funding (giờ).
 export type FundingBuffer = { maxAbsRate: number; intervalHours: number };
 export type RiskModel = { a: number; b: number; fundingPerUnit: number; fundingSettlements: number; cost: CostModel };
 
@@ -27,15 +27,22 @@ export function costModelProblems(cm: CostModel | undefined): string[] {
 }
 
 export function fundingBufferProblems(fb: FundingBuffer | undefined): string[] {
-  if (fb === undefined || !(fb.intervalHours > 0 && Number.isFinite(fb.intervalHours)) || !(fb.maxAbsRate >= 0 && Number.isFinite(fb.maxAbsRate))) {
+  if (fb === undefined || !(fb.intervalHours > 0 && Number.isFinite(fb.intervalHours)) || !Number.isFinite(fb.maxAbsRate)) {
     return [`fundingBuffer không hợp lệ (${JSON.stringify(fb)})`];
   }
+  if (!(fb.maxAbsRate > 0)) return [`đệm funding = ${fb.maxAbsRate}: thiếu dữ liệu funding — dùng mức thận trọng fundingFallbackRate, không dùng 0`];
   return [];
 }
 
-// Số kỳ funding đệm = thời gian giữ dự kiến (CONFIG.fundingHoldHours) ÷ chu kỳ, làm tròn lên.
+// Số kỳ funding đệm = thời gian giữ TỐI ĐA chiến lược cho phép (CONFIG.maxHoldHours: Swing 504 giờ, Lướt nhanh 24 giờ) ÷ chu kỳ,
+// làm tròn lên (rà soát lại Task 3 vòng 2: thời gian giữ dự kiến 168/8 giờ không bảo vệ lệnh giữ lâu hơn).
 export function fundingSettlements(mode: Mode, intervalHours: number): number {
-  return Math.ceil(CONFIG[mode].fundingHoldHours / intervalHours - 1e-9);
+  return Math.ceil(CONFIG[mode].maxHoldHours / intervalHours - 1e-9);
+}
+
+// Mức funding thận trọng mỗi kỳ khi không có lịch sử (hoặc lịch sử toàn 0): COMMON.risk.fundingFallbackPer8h quy theo chu kỳ.
+export function fundingFallbackRate(intervalHours: number): number {
+  return (COMMON.risk.fundingFallbackPer8h * intervalHours) / 8;
 }
 
 export function riskModel(mode: Mode, entry: number, stop: number, cost: CostModel, fb: FundingBuffer): RiskModel {

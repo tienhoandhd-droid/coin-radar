@@ -12,6 +12,8 @@ const C: Contract = {
   marketMinQty: 0.001, marketMaxQty: 100_000, marketStepSize: 0.001, minNotional: 5, maxNumOrders: 200, deliveryDate: 4133894400000,
 };
 const NOW = 1_760_000_000_000;
+// đệm funding rất nhỏ nhưng > 0 (planner từ chối 0 = thiếu dữ liệu): 63 kỳ × 1e-15 × giá ≈ 6e-12 USDT/coin — không đổi số tính tay
+const FB0 = { maxAbsRate: 1e-15, intervalHours: 8 };
 const COST = 0.1; // % khứ hồi
 const step = 0.001;
 const sq = (x: number) => Number(x.toFixed(3));
@@ -48,7 +50,7 @@ function mkPlan(side: Side, entryType: 'market' | 'limit' | 'split', floor: bool
 function input(plan: PlannerPlan, over: Partial<PlannerInput> = {}): PlannerInput {
   return {
     plan, grade: 'A', signal: { id: 'AAAUSDT|swing|long|zone|1|98', fresh: true }, mode: 'swing', contract: C, capital: plan.capital,
-    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, ...over,
+    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, costModel: { tierPct: plan.costPct, quoteVolPerMin: Infinity }, fundingBuffer: FB0, ...over,
   };
 }
 
@@ -435,4 +437,14 @@ test('Bản in = planner: Short limit kiểu AKE (SL xa, funding chu kỳ 4 gi�
   // R của TP1 in ra có bản sau phí, nhỏ hơn R thô
   const t1 = plan.targets[0]!;
   assert.ok(t1.rNet != null && t1.r !== null && t1.rNet < t1.r, `${t1.rNet} < ${t1.r}`);
+});
+
+test('Fail closed (rà soát lại vòng 2): thiếu costModel hoặc đệm funding = 0 → planner từ chối, không định cỡ', () => {
+  const plan = mkPlan('long', 'market', false);
+  const noCost = planOrders({ ...input(plan), costModel: undefined } as unknown as PlannerInput);
+  assert.equal(noCost.allowed, false);
+  assert.match(noCost.reasons.join(' '), /costModel/);
+  const zeroFunding = planOrders(input(plan, { fundingBuffer: { maxAbsRate: 0, intervalHours: 8 } }));
+  assert.equal(zeroFunding.allowed, false);
+  assert.match(zeroFunding.reasons.join(' '), /thiếu dữ liệu funding/);
 });

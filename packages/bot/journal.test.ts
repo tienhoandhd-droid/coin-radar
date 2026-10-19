@@ -36,7 +36,7 @@ function plannedTrade(signalId = 'AAAUSDT|swing|long|zone|1|97'): TradeState {
   };
   const r = planOrders({
     plan, grade: 'A', signal: { id: signalId, fresh: true }, mode: 'swing', contract: C, capital: 100_000,
-    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 },
+    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, costModel: { tierPct: 0.1, quoteVolPerMin: Infinity }, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 },
   });
   assert.equal(r.allowed, true, r.reasons.join('; '));
   return tradeFromPlan({ signalId, runId: 'r1', now: NOW, result: r, costPct: 0.1 });

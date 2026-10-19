@@ -503,3 +503,10 @@ test('I7 (rà soát Task 3 kế hoạch 2, I1): trượt theo cỡ ước trên 
   const capExtra = COMMON.slippage.pctPerParticipation * COMMON.slippage.maxParticipation;
   assert.ok(t.plan.costPct <= COMMON.costRoundTripPct[tier] + capExtra + 1e-12, `costPct ${t.plan.costPct} > nhóm ${COMMON.costRoundTripPct[tier]} + ${capExtra}`);
 });
+
+test('Đệm funding (rà soát lại vòng 2): funding kỳ gần nhất = 0 và không có lịch sử → dùng mức thận trọng, vẫn lập kế hoạch (không ném lỗi)', () => {
+  const a = analyze({ ...base, premium: { ...base.premium, lastFundingRate: 0 } });
+  assert.ok(a.plan !== null);
+  const withHist = analyze({ ...base, fundingMaxAbsRate: 0.00001 });
+  assert.ok(withHist.plan !== null && a.plan.qty <= withHist.plan.qty, `${a.plan.qty} ≤ ${withHist.plan!.qty}`);
+});

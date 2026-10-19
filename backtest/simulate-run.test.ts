@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Analysis } from '../packages/core/analyze.ts';
-import { pickCandidates, settle, cooldownMs, maxAbsFunding, type PickState, type SettleMarks } from './simulate-run.ts';
+import { pickCandidates, settle, cooldownMs, maxAbsFunding, fundingBufferAt, type PickState, type SettleMarks } from './simulate-run.ts';
 import { createBook, type SimTrade } from './simulate.ts';
 
 const T = Date.UTC(2026, 6, 1, 12);
@@ -75,4 +75,12 @@ test('maxAbsFunding: |funding| lớn nhất trong 30 ngày tới t, chỉ kỳ �
   ];
   assert.equal(maxAbsFunding(rows, T), 0.0007);
   assert.equal(maxAbsFunding([], T), 0);
+});
+
+test('fundingBufferAt: không có kỳ funding nào trong 30 ngày (hoặc toàn 0) → mức thận trọng theo chu kỳ, gắn cờ fallback (không dùng 0)', async () => {
+  const { COMMON } = await import('../packages/core/config.ts');
+  const D = 86_400_000;
+  assert.deepEqual(fundingBufferAt([], T, 8), { maxAbsRate: COMMON.risk.fundingFallbackPer8h, intervalHours: 8, fallback: true });
+  assert.deepEqual(fundingBufferAt([{ fundingTime: T - D, fundingRate: 0, markPrice: 1 }], T, 4), { maxAbsRate: COMMON.risk.fundingFallbackPer8h / 2, intervalHours: 4, fallback: true });
+  assert.deepEqual(fundingBufferAt([{ fundingTime: T - D, fundingRate: -0.0003, markPrice: 1 }], T, 8), { maxAbsRate: 0.0003, intervalHours: 8, fallback: false });
 });

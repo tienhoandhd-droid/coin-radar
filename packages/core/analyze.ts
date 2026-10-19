@@ -18,6 +18,7 @@ import type { PatternState } from './patterns/state.ts';
 import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from './grade.ts';
 import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
 import type { MarginBracket } from './margin.ts';
+import { fundingFallbackRate } from './sizing.ts';
 import { canOpen, type CanOpenResult, type OpenTrade } from './portfolio.ts';
 import { chooseZoneSide, flipAllowed, zoneSignalId, signalIdentity, type SignalState, type SignalIdentity } from './signal.ts';
 
@@ -160,8 +161,9 @@ export function analyze(i: AnalyzeInput): Analysis {
   }
   // Định cỡ kế hoạch = CÙNG công thức với planner của bot (core/sizing.ts): trượt theo cỡ (I7) của chính khối lượng in, phí kế hoạch ước trên
   // notional SAU trần thanh khoản (rà soát Task 3 kế hoạch 2, I1), đệm funding. |funding| lớn nhất gần đây: nơi gọi truyền từ lịch sử
-  // (fundingMaxAbsRate); không có → |funding kỳ gần nhất| (máy quét chưa tải lịch sử funding).
-  const fundingBuffer = { maxAbsRate: i.fundingMaxAbsRate ?? Math.abs(i.premium.lastFundingRate), intervalHours: i.fundingIntervalHours };
+  // (fundingMaxAbsRate); không có → |funding kỳ gần nhất| (máy quét chưa tải lịch sử funding); vẫn = 0 → mức thận trọng (không dùng 0).
+  const fundingRaw = i.fundingMaxAbsRate ?? Math.abs(i.premium.lastFundingRate);
+  const fundingBuffer = { maxAbsRate: fundingRaw > 0 ? fundingRaw : fundingFallbackRate(i.fundingIntervalHours), intervalHours: i.fundingIntervalHours };
 
   // I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL, LOT_SIZE/MARKET_LOT_SIZE, MAX_NUM_ORDERS) → không hợp lệ kèm lý do
   const planFor = (side: Side) => {

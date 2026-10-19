@@ -30,6 +30,7 @@ import type { Analysis } from '../packages/core/analyze.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { createReplay, decisionTimes, signalDedupeKey, loadContracts, DEV_PERIOD, type FundingRow, type Window } from './replay.ts';
+import { fundingFallbackRate } from '../packages/core/sizing.ts';
 import { loadCandles, createFetcher, fetchWindow1m, HOUR, MINUTE, DAY, type Interval, type Fetcher } from './data.ts';
 import {
   createTrade, advanceTrade, forceClose, tradeRecord, portfolioView, createBook, bookFlow, bookClose, isPaused, summarize, groupStats, isDone,
@@ -72,6 +73,13 @@ export function maxAbsFunding(rows: readonly FundingRow[], t: number): number {
   let m = 0;
   for (const r of rows) if (r.fundingTime > from && r.fundingTime <= t) m = Math.max(m, Math.abs(r.fundingRate));
   return m;
+}
+
+// Đệm funding cho planner tại t: |funding| lớn nhất 30 ngày; không có kỳ nào (hoặc toàn 0) → mức thận trọng theo chu kỳ (KHÔNG dùng 0,
+// planner từ chối 0) và gắn cờ fallback để đếm.
+export function fundingBufferAt(rows: readonly FundingRow[], t: number, intervalHours: number): { maxAbsRate: number; intervalHours: number; fallback: boolean } {
+  const m = maxAbsFunding(rows, t);
+  return m > 0 ? { maxAbsRate: m, intervalHours, fallback: false } : { maxAbsRate: fundingFallbackRate(intervalHours), intervalHours, fallback: true };
 }
 
 export type SettleMarks = Map<SimTrade, { flows: number; closed: boolean }>;
@@ -128,7 +136,7 @@ export async function runSimulation(o: RunOptions) {
   const pathIntervalOf = new Map<string, Interval>(); // độ phủ: khung đã dùng cho từng mã
   const fundingOf = new Map<string, FundingRow[]>();
   const stats = { steps: 0, scanErrors: 0, signalsDat: 0, signalsA: 0, pausedSignals: 0, plannerRejected: 0, opened: 0,
-    m1Asked: 0, m1FromCache: 0, m1Fetched: 0, m1Missing: 0, m1FetchErrors: 0, m1FetchDisabled: false as boolean, forcedPeriodEnd: 0 };
+    fundingFallback: 0, m1Asked: 0, m1FromCache: 0, m1Fetched: 0, m1Missing: 0, m1FetchErrors: 0, m1FetchDisabled: false as boolean, forcedPeriodEnd: 0 };
   const m1Errors: string[] = [];
 
   function path(symbol: string): { interval: Interval; candles: Candle[] } {
@@ -229,12 +237,14 @@ export async function runSimulation(o: RunOptions) {
       const h1 = (await input.klines(a.symbol, '1h', COMMON.slippage.volumeBars1h + 1)).slice(-COMMON.slippage.volumeBars1h);
       const vol1m = h1.reduce((s, c) => s + c.quoteVolume, 0) / h1.length / 60;
       if (!(vol1m > 0)) throw new Error(`${a.symbol}: không ước được khối lượng 1 phút tại ${new Date(t).toISOString()}`);
+      const fb = fundingBufferAt(funding(a.symbol), t, input.fundingIntervals.get(a.symbol) ?? COMMON.defaultFundingIntervalHours);
+      if (fb.fallback) stats.fundingFallback++;
       const pr = planOrders({
         plan: pick.plan, grade: o.filter === 'all' ? 'A' : (a.grade?.grade ?? null), signal: { id: a.signal!.id, fresh: a.signal!.fresh },
         mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t,
         costModel: { tierPct: COMMON.costRoundTripPct[tierOf(r.ranks.get(a.symbol) ?? 1)], quoteVolPerMin: vol1m },
-        fundingBuffer: { maxAbsRate: maxAbsFunding(funding(a.symbol), t), intervalHours: input.fundingIntervals.get(a.symbol) ?? COMMON.defaultFundingIntervalHours },
+        fundingBuffer: { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours },
       });
       if (!pr.allowed) {
         stats.plannerRejected++;

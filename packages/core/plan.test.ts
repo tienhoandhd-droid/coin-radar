@@ -23,7 +23,7 @@ test('đòn bẩy an toàn tối đa: cắt lỗ 2%, buffer 1 → 1/(0,04+0,01) 
   assert.equal(r6(maxSafeLeverage(0.02, 0.01, 1)), 20);
 });
 
-const NO_FB = { maxAbsRate: 0, intervalHours: 8 };
+const NO_FB = { maxAbsRate: 1e-15, intervalHours: 8 };
 test('khối lượng (core/sizing.ts, như planner): vốn 1000, rủi ro 0,5%, vào 100, cắt 98, phí 0,5% (nửa ở 100, nửa ở SL 98) → 5 / 2,495 = 2,004', () => {
   const s = positionSize({ mode: 'swing', capital: 1000, riskPct: 0.5, entry: 100, stop: 98, stepSize: 0.001, cost: { tierPct: 0.5, quoteVolPerMin: Infinity }, fundingBuffer: NO_FB });
   assert.equal(s.qty, 2.004); // 2 + (100 + 98) × 0,25% = 2,495 USDT/coin
@@ -42,7 +42,7 @@ function flat(price: number, n = 60): Candle[] {
   return Array.from({ length: n }, (_, i) => k(i, price, price + 0.5, price - 0.5));
 }
 const baseArgs = { mode: 'swing' as const, dailyAtr: 1, tickSize: 0.001, capital: 1000, riskPct: 0.5, costTier: 'high' as const,
-  stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8 };
+  stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8 };
 const supports = [zone(95, 96, 3)];
 const resistances = [zone(99, 100), zone(102, 103), zone(106, 107)];
 
@@ -167,28 +167,28 @@ test('Swing: khoảng cắt lỗ không nhỏ hơn 1×ATR ngày; funding Long tr
 test('buildPlan báo lỗi khi nến phẳng (ATR = 0), không trả giá trị vô nghĩa', () => {
   const flat = Array.from({ length: 60 }, (_, i) => k(i, 100, 100, 100));
   const args = { mode: 'fast' as const, side: 'long' as const, entry: flat, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
   assert.throws(() => buildPlan(args), /ATR/);
 });
 
 test('buildPlan báo lỗi khi dữ liệu dưới 15 nến (ATR chưa tính được)', () => {
   const short = Array.from({ length: 10 }, (_, i) => k(i, 100 + i));
   const args = { mode: 'fast' as const, side: 'long' as const, entry: short, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
   assert.throws(() => buildPlan(args), /ATR/);
 });
 
 test('buildPlan Swing báo lỗi khi ATR ngày là NaN', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const args = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: NaN, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
   assert.throws(() => buildPlan(args), /ATR ngày/);
 });
 
 test('buildPlan: funding tính theo số kỳ thật — hợp đồng 4h trả gấp đôi hợp đồng 8h cùng mức/kỳ, 1h gấp 8 lần', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const base = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, zones: [] };
   const p8 = buildPlan({ ...base, fundingIntervalHours: 8 });
   const p4 = buildPlan({ ...base, fundingIntervalHours: 4 });
   const p1 = buildPlan({ ...base, fundingIntervalHours: 1 });
@@ -199,7 +199,7 @@ test('buildPlan: funding tính theo số kỳ thật — hợp đồng 4h trả 
 test('buildPlan: ghi lại riskPct đã dùng và riskAmount theo đó', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const p = buildPlan({ mode: 'swing', side: 'long', entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.25, costTier: 'high',
-    tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] });
+    tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] });
   assert.equal(p.riskPct, 0.25);
   assert.equal(p.riskAmount, 2.5);
 });

@@ -132,7 +132,7 @@ function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: 
   const a: PatternPlanArgs = { mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', price: { close: c[c.length - 1]!.close, time: c[c.length - 1]!.closeTime, tf: '4h' }, geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     state: { state: 'breakout', breakoutIndex: 30, side: 'up', breakoutLine: 110, distanceAtr: 0, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
     zones: [z(118, 118.5), z(121, 122), z(126, 127)], multiMonth: null, btcSma200ReclaimedAt: null,
-    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
   const r = buildPatternPlan(a);
   if (r.status !== 'ready' || !r.plan) throw new Error(`fixture không ready: ${r.reason}`);
   return r.plan;

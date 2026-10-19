@@ -281,7 +281,8 @@ export const COMMON = {
     lowLiquidityRank: 0.5, // hạng thanh khoản > mức này thì tăng 1 bậc rủi ro
     maxDrawdown90Pct: 60, // sụt > mức này (%) trong 90 ngày thì tăng 1 bậc
     newListingDays: 90, // tuổi < mức này (ngày) thì tối thiểu 'Cao'
-    fundingBufferLookbackDays: 30, // đệm funding trong định cỡ (ràng buộc lỗ ≤ 2%): |funding| lớn nhất mỗi kỳ trong N ngày gần nhất × số kỳ trong CONFIG.fundingHoldHours — đề xuất, chưa backtest
+    fundingBufferLookbackDays: 30, // đệm funding trong định cỡ (ràng buộc lỗ ≤ 2%): |funding| lớn nhất mỗi kỳ trong N ngày gần nhất × số kỳ trong CONFIG.maxHoldHours — đề xuất, chưa backtest
+    fundingFallbackPer8h: 0.001, // thiếu lịch sử funding (hoặc toàn 0) → đệm theo mức thận trọng này mỗi 8 giờ (= ngưỡng cực đoan G-09 0,1%/8h), KHÔNG dùng 0 — đề xuất, chưa backtest
   }, // đề xuất, chưa backtest
   // ĐIỂM S-01/S-02/S-03 — ĐỀ XUẤT, CHƯA BACKTEST:
   score: {

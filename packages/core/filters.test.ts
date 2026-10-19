@@ -32,7 +32,7 @@ const k = (i: number, c: number): Candle => ({ openTime: i, closeTime: i, open: 
 const flat = (p: number) => Array.from({ length: 60 }, (_, i) => k(i, p));
 const zone = (low: number, high: number, strength = 2): Zone => ({ low, high, strength, touches: 1, sources: ['test'] });
 const plan = () => buildPlan({ mode: 'swing', side: 'long', entry: flat(96.3), markPrice: 96.3, dailyAtr: 1, capital: 1000, riskPct: 0.5, costTier: 'high',
-  tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8,
+  tickSize: 0.001, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 1e-15, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8,
   zones: [zone(95, 96, 3), zone(99, 100), zone(102, 103), zone(106, 107)] });
 
 test('I2 kế hoạch vùng hợp lệ với bộ lọc thật → không có vấn đề; vi phạm → nêu lý do, đánh dấu không hợp lệ, bỏ trailing', () => {
