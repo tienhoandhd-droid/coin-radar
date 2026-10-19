@@ -7,7 +7,7 @@ export type Zone = { low: number; high: number; strength: number; touches: numbe
 type Point = { price: number; weight: number; label: string };
 
 // Số kiểu Việt Nam: dấu phẩy thập phân, 5 chữ số có nghĩa (giá ≥ 100.000 thì làm tròn nguyên)
-function fmt(x: number): string {
+export function formatPrice(x: number): string {
   const s = Math.abs(x) >= 100_000 ? x.toFixed(0) : x.toPrecision(5);
   return s.replace('.', ',');
 }
@@ -70,7 +70,7 @@ export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: str
     const k = Math.ceil(from / step - 1e-9);
     if (k * step <= to + 1e-9) {
       z.strength += cfg.roundBonus;
-      z.sources.push(`số tròn ${fmt(k * step)}`);
+      z.sources.push(`số tròn ${formatPrice(k * step)}`);
     }
   }
 
@@ -103,5 +103,5 @@ export function targetSideZones(zones: Zone[], price: number, side: Side): Zone[
 }
 
 export function describeZone(z: Zone): string {
-  return `${fmt(z.low)}–${fmt(z.high)} (${z.sources.join(', ')})`;
+  return `${formatPrice(z.low)}–${formatPrice(z.high)} (${z.sources.join(', ')})`;
 }

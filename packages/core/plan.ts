@@ -1,6 +1,6 @@
 import { atr, pivotHighs, pivotLows, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
-import { stopSideZones, targetSideZones, describeZone, type Zone } from './zones.ts';
+import { stopSideZones, targetSideZones, describeZone, formatPrice, type Zone } from './zones.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
@@ -155,9 +155,12 @@ export function buildPlan(a: PlanArgs): TradePlan {
 
   // Mục tiêu: trước mép vùng cản, tính từ giá dùng để vào lệnh
   const found: Target[] = [];
-  for (const z of targetSideZones(a.zones, entry, a.side)) {
+  let blockedBy: Zone | null = null; // vùng cản đầu tiên nằm sát giá vào, không còn chỗ đặt TP1
+  const candidates = targetSideZones(a.zones, entry, a.side);
+  for (const z of candidates) {
     if (found.length >= zc.exitPcts.length) break;
     const tp = (a.side === 'long' ? z.low : z.high) - dir * zc.tpBufferAtr * atrEntry;
+    if (found.length === 0 && z === candidates[0] && dir * (tp - entry) <= 0) { blockedBy = z; break; }
     const prev = found.length ? found[found.length - 1]!.price! : entry;
     if (dir * (tp - prev) <= 0) continue;
     found.push({ name: `TP${found.length + 1}` as Target['name'], price: tp, pct: 0, r: (dir * (tp - entry)) / riskPerUnit,
@@ -171,7 +174,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
     return { name, price: null, pct, r: null,
       reason: found.length === 0 ? 'Không có vùng cản phía trên (giá ở vùng đỉnh mới) — để trailing stop' : 'Không còn vùng cản — phần này để trailing stop (3×ATR)' };
   });
-  if (a.side === 'short' && found.length === 0) {
+  if (blockedBy !== null) {
+    targets.forEach((t) => { t.reason = `Không có chỗ đặt TP1: vùng ${describeZone(blockedBy!)} sát giá vào`; });
+  } else if (a.side === 'short' && found.length === 0) {
     targets.forEach((t) => { t.reason = 'Không có vùng đỡ phía dưới (giá ở vùng đáy mới) — để trailing stop'; });
   }
 
@@ -180,6 +185,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
   if (support === null) {
     valid = false;
     invalidReason = `Không có vùng ${sideWord} đủ mạnh phía ${dirWord} để đặt SL`;
+  } else if (blockedBy !== null) {
+    valid = false;
+    invalidReason = `${a.side === 'long' ? 'Kháng cự' : 'Hỗ trợ'} ngay sát ${a.side === 'long' ? 'trên' : 'dưới'} giá vào ${describeZone(blockedBy)} — không có chỗ đặt TP1`;
   } else if (targets[0]!.r !== null && targets[0]!.r < zc.minTp1R) {
     valid = false;
     invalidReason = `Kháng cự đầu tiên quá gần: TP1 chỉ ${vn(targets[0]!.r, 2)}R < ${zc.minTp1R}R`;
@@ -193,7 +201,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
   if (entryType === 'limit' && support !== null) {
     entryZone = a.side === 'long' ? { low: nearEdge, high: entry } : { low: entry, high: nearEdge };
     limitExpiryHours = zc.limitExpiryBars[a.mode] * ENTRY_BAR_HOURS[a.mode];
-    entryReason = `Giá đã chạy xa vùng ${sideWord} ${vn(distAtr, 1)}×ATR — đặt limit ${vn(entry, 4)} chờ hồi về vùng ${describeZone(support)}; hủy nếu sau ${limitExpiryHours} giờ chưa khớp hoặc giá chạm TP1 trước`;
+    entryReason = `Giá đã chạy xa vùng ${sideWord} ${vn(distAtr, 1)}×ATR — đặt limit ${formatPrice(entry)} chờ hồi về vùng ${describeZone(support)}; hủy nếu sau ${limitExpiryHours} giờ chưa khớp hoặc giá chạm TP1 trước`;
   } else {
     const inner = support === null ? marketPrice : a.side === 'long' ? Math.max(support.high, stop + 0.5 * atrEntry) : Math.min(support.low, stop - 0.5 * atrEntry);
     // vùng luôn chứa giá thị trường (giá có thể đang nằm trong vùng hỗ trợ)
@@ -202,7 +210,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
       : { low: maxEntry, high: Math.max(inner, marketPrice) };
     entryReason = support === null
       ? invalidReason!
-      : `Giá đang sát vùng ${sideWord} ${describeZone(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${vn(maxEntry, 4)}`;
+      : `Giá đang sát vùng ${sideWord} ${describeZone(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${formatPrice(maxEntry)}`;
   }
 
   const costPct = COMMON.costRoundTripPct[a.costTier];

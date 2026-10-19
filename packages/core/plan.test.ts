@@ -207,3 +207,28 @@ test('buildPlan: ghi lại riskPct đã dùng và riskAmount theo đó', () => {
   assert.equal(p.riskPct, 0.25);
   assert.equal(p.riskAmount, 2.5);
 });
+
+test('kháng cự/hỗ trợ ngay sát giá vào (TP ≤ entry) → không hợp lệ, không nhảy sang vùng xa', () => {
+  const L = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, zone(96.4, 97), zone(102, 103)] });
+  assert.equal(L.valid, false);
+  assert.match(L.invalidReason!, /sát/);
+  assert.ok(L.targets.every((t) => t.price === null));
+  const S = buildPlan({ ...baseArgs, side: 'short', entry: flat(103.7), zones: [zone(104, 105, 3), zone(102.9, 103.6), zone(98, 99)] });
+  assert.equal(S.valid, false);
+  assert.match(S.invalidReason!, /Hỗ trợ ngay sát dưới/);
+});
+
+test('lệnh limit: vùng cản ngay trên giá limit → không hợp lệ', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(100), zones: [...supports, zone(96.2, 97), zone(103, 104)] });
+  assert.equal(p.entryType, 'limit');
+  assert.equal(p.valid, false);
+  assert.match(p.invalidReason!, /sát/);
+});
+
+test('giá rất nhỏ: lý do vào lệnh hiển thị đủ chữ số có nghĩa', () => {
+  const zones = [zone(0.00095, 0.00096, 3), zone(0.00103, 0.00104)];
+  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'long', entry: flat(0.00100).map((c) => ({ ...c, high: c.close * 1.005, low: c.close * 0.995 })), zones });
+  assert.equal(p.entryType, 'limit');
+  assert.match(p.entryReason, /0,00096100/);
+  assert.doesNotMatch(p.entryReason, /0,0010\b/);
+});
