@@ -149,6 +149,28 @@ export const COMMON = {
       confirmCloses: 2, // hoặc số nến 1D liên tiếp đóng ngoài biên — đề xuất, chưa backtest
       nearAtr: 1, // 'ngay dưới/trên biên' = trong khoảng này (×A 1D) — đề xuất, chưa backtest
     },
+    // Kế hoạch lệnh theo mô hình (báo cáo mục (2) đệm cắt lỗ, (3), (4); quyết định người dùng 19/10/2026) — ĐỀ XUẤT, CHƯA BACKTEST
+    plan: {
+      stopBufferAtr: 0.5, // SL = mức cắt lỗ của mô hình ± đệm (×A); báo cáo cho khoảng 0,25–0,5, chọn mức rộng — đề xuất, chưa backtest
+      maxRiskAtr: 3, // R = |giá vào − SL| > mức này (×A khung vào lệnh) → bỏ lệnh — đề xuất, chưa backtest
+      targetRatio: { asc_triangle: 0.7, double_bottom: 0.73, head_shoulders: 0.51 }, // p của Bulkowski: T_ngắn = đường phá ± h×p — đề xuất, chưa backtest
+      defaultTargetRatio: 0.5, // p khi không có số liệu — đề xuất, chưa backtest
+      flagPoleRatio: 0.46, // cờ: T_đủ = đáy cờ (Short: đỉnh cờ) ± cán × mức này — đề xuất, chưa backtest
+      flagShortFraction: 0.5, // cờ: T_ngắn = đường phá ± mức này × (T_đủ − đường phá), tức nửa quãng còn lại tới T_đủ (đọc nguyên văn 'đáy cờ + nửa của cán×0,46' thường rơi vào trong cờ) — đề xuất, chưa backtest
+      tp2NearAtr: 1, // TP2: vùng S/R trong ±mức này (×A) quanh T_đủ — đề xuất, chưa backtest
+      minTp1R: 1, // TP1 ≥ mức này (R) sau phí khứ hồi + funding dự kiến — đề xuất, chưa backtest
+      flagMinTp1R: 1.5, // cờ: TP1 ≥ 1,5R vì thất bại hòa vốn 44–45% — đề xuất, chưa backtest
+      marketMaxAtr: 1, // d ≤ mức này (×A) → vào trực tiếp 100% — đề xuất, chưa backtest
+      splitMaxAtr: 2, // 1 < d ≤ mức này → 50% trực tiếp + 50% limit; > mức này → chỉ limit 50% — đề xuất, chưa backtest
+      splitMarketPct: 50, // phần vào trực tiếp khi chia (% tổng khối lượng) — đề xuất, chưa backtest
+      limitOnlyPct: 50, // d quá xa: chỉ đặt limit cho % này của khối lượng đủ — đề xuất, chưa backtest
+      limitOffsetAtr: 0.25, // giá limit = đường phá ± mức này (×A), phía ngoài mô hình — đề xuất, chưa backtest
+      limitExpiryBars: 10, // hủy limit sau số nến này (khung nhận diện) — đề xuất, chưa backtest
+      waitRangeAtr1h: 3, // biên độ nến phá > mức này × ATR(1H) → chờ thêm 1 nến đóng — đề xuất, chưa backtest
+      afterTp1NearAtr: 0.5, // giá vào cách đường phá < mức này (×A) → sau TP1 SL về đường phá ∓ afterTp1StopAtr — đề xuất, chưa backtest
+      afterTp1StopAtr: 0.5, // khoảng lùi khỏi đường phá cho SL sau TP1 (×A), đúng ngưỡng failed — đề xuất, chưa backtest
+      reversalShortBlockDays: 30, // Short hai đỉnh / vai-đầu-vai: không vào trực tiếp trong số ngày này sau khi BTC lấy lại SMA200 ngày — đề xuất, chưa backtest
+    },
     maxSignalAgeBars: 10, // breakout/retested cũ hơn mức này (nến khung nhận diện) → signalStale, không lập kế hoạch lệnh — đề xuất, chưa backtest
     state: {
       confirmAtr: { '15m': 0.5, '1h': 0.5, '4h': 0.25, '1d': 0.25 }, // đóng cửa vượt đường phá ≥ mức này (×A) mới là phá vỡ; 0 đến mức này → breakout_pending — đề xuất, chưa backtest

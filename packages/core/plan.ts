@@ -102,7 +102,7 @@ export function tp1R(plan: TradePlan): number | null {
 }
 
 // Số kiểu Việt Nam cho thông báo: dấu phẩy thập phân
-function vn(x: number, digits: number): string {
+export function vn(x: number, digits: number): string {
   return x.toFixed(digits).replace('.', ',');
 }
 
