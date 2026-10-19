@@ -41,7 +41,11 @@
 
 `backtest/replay.ts`: với mỗi mốc giờ t (và mỗi lần đóng nến 15m cho Lướt nhanh), cắt dữ liệu đã đóng ≤ t, gọi đúng hàm phân tích như `scanner/scan.ts`, ghi tín hiệu (Đạt / Hạng A / Hạng B, vùng hay mô hình). Một tín hiệu mở cho mỗi hợp đồng × chế độ; cooldown sau khi đóng. **Khử trùng tín hiệu mô hình theo `patternId` + `breakoutTime`** (một lần phá chỉ vào một lệnh — máy quét có thể in lại kế hoạch “MỚI” nhiều lần trong một nến khung nhận diện). Gọi `runScan` (scanner/run-scan.ts) với `klines` đồng bộ đọc từ bộ nhớ đệm, đúng như máy quét thật. Bài kiểm: tại 5 mốc ngẫu nhiên, kết quả phát lại = kết quả `analyze` gọi độc lập trên cùng dữ liệu.
 
+**Chuyển sang Task 3 (điều phối quyết định sau rà soát Task 2, 19/10/2026):** “một tín hiệu mở cho mỗi hợp đồng × chế độ”, cooldown sau khi đóng và khử trùng tín hiệu mô hình cần trạng thái lệnh → thuộc bộ mô phỏng (Task 3). Task 2 chỉ cung cấp `replayStep(t, state)` (state = openTrades + prevSignals do nơi gọi giữ) và hàm khóa khử trùng `signalDedupeKey` (backtest/replay.ts, đã có test: mô hình theo mã + `patternId` + `breakoutTime`, vùng theo signalId) để Task 3 dùng lại.
+
 ### Task 3: Bộ mô phỏng lệnh
+
+**Nhận từ Task 2:** một tín hiệu mở cho mỗi hợp đồng × chế độ, cooldown sau khi đóng, khử trùng tín hiệu mô hình bằng `signalDedupeKey` (backtest/replay.ts) — một lần phá chỉ vào một lệnh.
 
 `backtest/simulate.ts`: market/limit/split, khối lượng & đòn bẩy & thanh lý (dùng lại `plan.ts`), SL trên sàn theo mark price (xấp xỉ bằng giá nến — ghi rõ), TP1/TP2/TP3 50/30/20, luật sau TP1 (vùng: về giá khớp thật; mô hình: đường phá ∓ 0,5×A hoặc giá khớp), trailing, dừng theo thời gian, phí, funding thật, phân xử trong nến bằng 5m/1m. Đầu ra mỗi lệnh: R thực, các mốc khớp, lý do đóng. Test tính tay từng nhánh.
 

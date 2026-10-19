@@ -5,23 +5,28 @@
 //   Kỳ mù B chỉ chạy được với: --period blind --blind --lock docs/verification/khoa-luat-mo-phong-mu.md (tệp phải tồn tại).
 //
 // QUY ƯỚC THAY THẾ (không có lịch sử thật — ghi rõ để đọc kết quả đúng):
-//  1. Nến: chỉ nến có closeTime < t (isClosed — cùng ranh giới với máy quét), tối đa `limit` nến gần nhất.
+//  1. Nến: chỉ nến có closeTime < t (isClosed — cùng ranh giới với máy quét), tối đa `limit − 1` nến gần nhất: máy quét gọi
+//     /fapi/v1/klines?limit=N, sàn trả cả nến ĐANG CHẠY, parseKlines bỏ nến đó → còn N − 1 nến đã đóng. Phát lại trả đúng số đó.
 //  2. tickers (khối lượng quote 24h, % đổi giá 24h): tính từ nến 1H lịch sử đã đóng trong [t − 24h, t) — KHÔNG dùng thứ hạng hôm nay
 //     (đánh giá độc lập I6). Hạng thanh khoản = liquidityRanks của chính các tickers này (như máy quét).
-//  3. Spread (bookTicker): KHÔNG có lịch sử sổ lệnh → mô hình thận trọng REPLAY_ASSUMPTIONS.spread: max(sàn theo nhóm thanh khoản,
+//  3. Spread (bookTicker): KHÔNG có lịch sử sổ lệnh → mô hình xấp xỉ REPLAY_ASSUMPTIONS.spread: max(sàn theo nhóm thanh khoản,
 //     hệ số × trung vị biên độ (high − low)/close của 24 nến 1H gần nhất). Đề xuất, chưa kiểm chứng; chỉ ảnh hưởng cổng G-03.
+//     KHÔNG chứng minh được là thận trọng: sàn nhóm thấp 0,10% < maxSpreadPct 0,15% → mã chỉ bị chặn khi trung vị biên độ 1H > 3%,
+//     nên phần spread của G-03 gần như VÔ HIỆU trong phát lại (phần hạng thanh khoản của G-03 vẫn hoạt động).
 //  4. Giá mark: ≈ giá đóng của nến đã đóng gần nhất (Swing: 1H; Lướt nhanh: 15m, thiếu thì 1H). t nằm trên lưới khung nên giá này
 //     trùng giá đóng nến 1m/5m cuối trước t; bỏ qua chênh lệch mark − last (thường < 0,1%).
 //  5. Funding: lastFundingRate = kỳ ĐÃ CHỐT gần nhất (fundingTime ≤ t) từ /fapi/v1/fundingRate; premiumIndex thật trả tỉ lệ ƯỚC TÍNH
 //     của kỳ đang chạy → phát lại trễ 1 kỳ. Chu kỳ = khoảng cách 2 kỳ chốt gần nhất (làm tròn giờ); chưa đủ 2 kỳ → mặc định của máy quét.
-//     nextFundingTime = kỳ chốt gần nhất + chu kỳ.
+//     nextFundingTime = kỳ chốt gần nhất + chu kỳ. Khi sàn đổi chu kỳ, phát lại biết muộn 1 kỳ (máy quét đọc ngay từ fundingInfo).
 //  6. Sự kiện vĩ mô: lịch FOMC/CPI là lịch công bố TRƯỚC → đưa cả lịch (data/events/events.json, đã bổ sung kỳ D/B có nguồn).
 //  7. Vũ trụ: hợp đồng HIỆN TẠI (exchangeInfo hôm nay) có onboardDate ≤ t và có trong bộ nhớ đệm → THIÊN LỆCH SỐNG SÓT: mã đã bị
 //     gỡ niêm yết trong kỳ không có mặt. Bộ lọc sàn (tickSize, minQty…) là của hôm nay.
 //  8. Lướt nhanh: 15m chỉ tải cho 150 mã thanh khoản nhất HÔM NAY; mã lọt top 150 tại t mà không có 15m → lỗi "thiếu tệp đệm" (đếm riêng).
-//  9. Nến 1D: bộ đệm có ~300 nến trước D; máy quét lấy 400 nến 1D của BTC → SMA200 và mốc BTC lấy lại SMA200 chỉ nhìn được ~100 ngày.
+//  9. Nến 1D: bộ đệm có 302 nến BTC tại 21/6 (391 tại 18/9) thay vì 400 của máy quét. Rà soát Task 2 đã đo: chế độ thị trường (SMA200,
+//     sụt từ đỉnh 365 ngày — đỉnh 06/10/2025 nằm trong đệm) trùng 120/120 ngày; luật cấm Short 30 ngày sau khi BTC lấy lại SMA200
+//     không đổi (nhìn được ≥ 102 ngày). Chỉ trường hiển thị ScanResult.btcReclaim có thể là null thay vì một mốc cũ hơn.
 // 10. OI: runScan không dùng OI → phát lại không đưa vào. Bậc ký quỹ thật (leverageBrackets): không có, như máy quét (bảng giả định).
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join, normalize, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -82,7 +87,7 @@ export function decisionTimes(mode: Mode, w: Window): number[] {
 // ---- Quy ước thay thế (đề xuất, chưa kiểm chứng) ----
 export const REPLAY_ASSUMPTIONS = {
   spread: {
-    rangeFraction: 0.05, // spread ≈ 5% trung vị biên độ nến 1H (thận trọng: spread thật mã thanh khoản cao thường < 0,01%)
+    rangeFraction: 0.05, // spread ≈ 5% trung vị biên độ nến 1H (xấp xỉ, chưa kiểm chứng; xem quy ước 3 — G-03 gần như vô hiệu)
     floorPct: { high: 0.02, mid: 0.05, low: 0.1 }, // sàn spread (%) theo nhóm thanh khoản COMMON.costTierRank
     bars: 24,
   },
@@ -263,7 +268,8 @@ export function createReplay(o: ReplayOptions) {
         if (!(interval in INTERVAL_MS)) throw new Error(`khung không hỗ trợ: ${interval}`);
         const s = series(symbol, interval as Interval);
         const i = lastClosedIndex(s, t);
-        return s.slice(Math.max(0, i + 1 - limit), i + 1);
+        const n = Math.max(0, limit - 1); // như máy quét: limit nến gồm 1 nến đang chạy bị bỏ (quy ước 1)
+        return s.slice(Math.max(0, i + 1 - n), i + 1);
       },
     };
   }
@@ -274,6 +280,20 @@ export function createReplay(o: ReplayOptions) {
   }
 
   return { buildInput, replayStep, stats };
+}
+
+// Khóa khử trùng tín hiệu (brief Task 2; bộ mô phỏng Task 3 dùng lại): mô hình theo mã + patternId + breakoutTime — một lần phá
+// chỉ một lệnh dù máy quét in lại kế hoạch nhiều lần trong một nến khung nhận diện; vùng theo mã + signalId (hysteresis I5 giữ id).
+export function signalDedupeKey(s: { symbol: string; signalId: string | null; pattern: { patternId: string; breakoutTime: number } | null }): string {
+  if (s.pattern !== null) return `${s.symbol}|pattern|${s.pattern.patternId}|${s.pattern.breakoutTime}`;
+  if (s.signalId === null) throw new Error(`${s.symbol}: tín hiệu vùng thiếu signalId — không khử trùng được`);
+  return `${s.symbol}|zone|${s.signalId}`;
+}
+
+// Kỳ mù chỉ chạy ĐÚNG MỘT LẦN mỗi chế độ: đã có thư mục đầu ra replay-<mode>-blind-* → từ chối lần chạy sau.
+export function previousBlindRuns(outRoot: string, mode: Mode): string[] {
+  if (!existsSync(outRoot)) return [];
+  return readdirSync(outRoot).filter((n) => n.startsWith(`replay-${mode}-blind-`)).sort();
 }
 
 // ---- CLI ----
@@ -298,7 +318,7 @@ function stepSignals(r: ScanResult): StepSignal[] {
     });
 }
 
-async function loadContracts(dir: string): Promise<Contract[]> {
+export async function loadContracts(dir: string): Promise<Contract[]> {
   const { parseContracts } = await import('../packages/binance/parse.ts');
   const path = join(dir, 'exchange-info.json');
   if (!existsSync(path)) {
@@ -334,6 +354,10 @@ async function main() {
   const capital = Number(v.capital);
   if (!Number.isFinite(capital) || capital <= 0) throw new Error(`--capital không hợp lệ: "${v.capital}"`);
   const period = resolvePeriod(v.period!, { blind: v.blind!, lockFile: v.lock ?? null });
+  if (period.name === 'blind') {
+    const prior = previousBlindRuns(resolve(REPO_ROOT, 'output/backtest'), mode);
+    if (prior.length > 0) throw new Error(`Từ chối: kỳ mù chỉ chạy đúng một lần, đã có ${prior.join(', ')}`);
+  }
   const parseIso = (raw: string, name: string) => {
     const t = Date.parse(raw);
     if (!Number.isFinite(t)) throw new Error(`--${name} không hợp lệ: "${raw}"`);
@@ -387,7 +411,7 @@ async function main() {
     const sigs = stepSignals(r);
     for (const s of sigs) {
       inc(`occ|${s.side}|${s.label}|${s.grade}|${s.kind}`);
-      const key = s.pattern !== null ? `${s.symbol}|pattern|${s.pattern.patternId}|${s.pattern.breakoutTime}` : `${s.symbol}|zone|${s.signalId}`;
+      const key = signalDedupeKey(s);
       if (!distinct.has(key)) distinct.set(key, { ...s, t });
     }
     appendFileSync(stepsFile, JSON.stringify({

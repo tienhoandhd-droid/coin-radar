@@ -8,7 +8,7 @@ import { liquidityRanks } from '../scanner/rank.ts';
 import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { HOUR, MINUTE, INTERVAL_MS, loadCandles, type Interval } from './data.ts';
 import {
-  DEV_PERIOD, BLIND_PERIOD, LOCK_FILE, resolvePeriod, createReplay, decisionTimes, fundingAt, tickersAt, spreadPctAt, booksAt, markAt,
+  previousBlindRuns, signalDedupeKey, DEV_PERIOD, BLIND_PERIOD, LOCK_FILE, resolvePeriod, createReplay, decisionTimes, fundingAt, tickersAt, spreadPctAt, booksAt, markAt,
   type FundingRow,
 } from './replay.ts';
 
@@ -38,7 +38,9 @@ function genSeries(symbol: string, interval: Interval, from: number, to: number)
   const iv = INTERVAL_MS[interval];
   const r = rng(symbol.length * 7919 + iv / 60_000);
   const base = 50 + SYMBOLS.indexOf(symbol) * 30;
-  const vol = 2e6 / (SYMBOLS.indexOf(symbol) + 1);
+  // Khối lượng AAA/BBB/CCC cùng mức nền (nhiễu ±50%) → thứ hạng thanh khoản giữa chúng đổi chỗ theo thời gian: dùng nhầm dữ liệu
+  // 1H sau t (dù vài giờ) là hạng đổi. BTC cao hơn hẳn.
+  const vol = symbol === 'BTCUSDT' ? 3e6 : 1e6;
   const out: Candle[] = [];
   let price = base;
   for (let t = from, i = 0; t < to; t += iv, i++) {
@@ -81,13 +83,13 @@ function genFunding(symbol: string): FundingRow[] {
   return rows;
 }
 
-type Mutate = ((c: Candle) => Candle) | null;
+type Mutate = ((c: Candle, symbol: string) => Candle) | null;
 function buildCache(mutate: { candle: Mutate; funding: ((r: FundingRow) => FundingRow) | null } = { candle: null, funding: null }): string {
   const dir = mkdtempSync(join(tmpdir(), 'replay-test-'));
   for (const s of SYMBOLS) {
     for (const iv of FIXTURE_INTERVALS) {
       let series = genSeries(s, iv, DATA_FROM[iv], DATA_TO);
-      if (mutate.candle) series = series.map(mutate.candle);
+      if (mutate.candle) { const m = mutate.candle; series = series.map((c) => m(c, s)); }
       writeSeries(dir, s, iv, series, DATA_FROM[iv], DATA_TO);
     }
     let rows = genFunding(s);
@@ -180,41 +182,77 @@ test('tickersAt / markAt / spreadPctAt / booksAt: chỉ dùng nến 1h đã đó
 });
 
 // ---------- (a) Khớp với runScan gọi độc lập trên cùng lát dữ liệu ----------
-async function independentScan(dir: string, mode: Mode, t: number): Promise<ReturnType<typeof runScan>> {
-  const load = (s: string, iv: Interval) => loadCandles(dir, s, iv, DATA_FROM[iv], t).candles; // cắt độc lập qua isClosed(c, t)
+// Đầu vào dựng ĐỘC LẬP với replay.ts: nến đọc lại từ tệp qua loadCandles(to = t) (isClosed), tickers cộng tay, vũ trụ lọc tay.
+function independentInput(dir: string, mode: Mode, t: number): ScanInput {
+  const load = (s: string, iv: Interval) => loadCandles(dir, s, iv, DATA_FROM[iv], t).candles;
   const contracts = CONTRACTS.filter((c) => c.onboardDate <= t);
-  const tickers = tickersAt(contracts.map((c) => ({ symbol: c.symbol, hourly: load(c.symbol, '1h') })), t);
+  const tickers = contracts.flatMap((c) => {
+    const day = load(c.symbol, '1h').filter((k) => k.openTime >= t - 24 * HOUR && k.closeTime < t);
+    if (day.length === 0) return [];
+    let qv = 0;
+    for (const k of day) qv += k.quoteVolume;
+    return [{ symbol: c.symbol, quoteVolume24h: qv, priceChangePct24h: ((day[day.length - 1]!.close - day[0]!.open) / day[0]!.open) * 100 }];
+  });
   const ranks = liquidityRanks(tickers);
   const books = new Map(), premiums = new Map(), fundingIntervals = new Map<string, number>();
   for (const c of contracts) {
-    const fine = mode === 'fast' ? [load(c.symbol, '15m'), load(c.symbol, '1h')] : [load(c.symbol, '1h')];
-    const mark = markAt(fine, t)!;
     const h = load(c.symbol, '1h');
+    const finest = mode === 'fast' ? load(c.symbol, '15m') : h; // t trên lưới 15m: nến 15m cuối đóng muộn nhất
+    const mark = finest[finest.length - 1]!.close;
     books.set(c.symbol, booksAt(c.symbol, mark, spreadPctAt(h.slice(-24), ranks.get(c.symbol) ?? 1)));
-    const f = fundingAt(genFunding(c.symbol), t)!;
-    premiums.set(c.symbol, { symbol: c.symbol, markPrice: mark, lastFundingRate: f.lastFundingRate, nextFundingTime: f.nextFundingTime });
-    if (f.intervalHours !== null) fundingIntervals.set(c.symbol, f.intervalHours);
+    const settled = genFunding(c.symbol).filter((r) => r.fundingTime <= t);
+    const last = settled[settled.length - 1]!, prev = settled[settled.length - 2];
+    const ih = prev === undefined ? null : Math.round((last.fundingTime - prev.fundingTime) / HOUR);
+    let next = Math.floor(last.fundingTime / HOUR) * HOUR + (ih ?? 8) * HOUR;
+    while (next <= t) next += (ih ?? 8) * HOUR;
+    premiums.set(c.symbol, { symbol: c.symbol, markPrice: mark, lastFundingRate: last.fundingRate, nextFundingTime: next });
+    if (ih !== null) fundingIntervals.set(c.symbol, ih);
   }
-  const input: ScanInput = {
+  return {
     mode, contracts, tickers, books, premiums, fundingIntervals, now: t, events: EVENTS, capital: 1000, limit: null, openTrades: [], prevSignals: new Map(),
-    klines: (s, iv, limit) => load(s, iv as Interval).slice(-limit),
+    klines: (s, iv, limit) => load(s, iv as Interval).slice(-(limit - 1)), // máy quét: limit gồm 1 nến đang chạy bị bỏ
   };
-  return runScan(input);
+}
+
+const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+function assertSameInput(got: ScanInput, want: ScanInput, at: string) {
+  assert.deepStrictEqual(got.contracts.map((c) => c.symbol), want.contracts.map((c) => c.symbol), `vũ trụ lệch tại ${at}`);
+  assert.deepStrictEqual(got.tickers.map((x) => x.symbol), want.tickers.map((x) => x.symbol), `tickers lệch tại ${at}`);
+  got.tickers.forEach((x, j) => {
+    const w = want.tickers[j]!;
+    assert.ok(close(x.quoteVolume24h, w.quoteVolume24h) && close(x.priceChangePct24h, w.priceChangePct24h), `ticker ${x.symbol} lệch tại ${at}: ${JSON.stringify(x)} ≠ ${JSON.stringify(w)}`);
+  });
+  assert.deepStrictEqual(liquidityRanks(got.tickers), liquidityRanks(want.tickers), `hạng thanh khoản lệch tại ${at}`);
+  assert.deepStrictEqual(got.books, want.books, `books lệch tại ${at}`);
+  assert.deepStrictEqual(got.premiums, want.premiums, `premiums lệch tại ${at}`);
+  assert.deepStrictEqual(got.fundingIntervals, want.fundingIntervals, `chu kỳ funding lệch tại ${at}`);
+  const frames: Array<[Interval, number]> = [['1h', 300], ['4h', 500], ['1d', 300]];
+  if (want.mode === 'fast') frames.push(['15m', 500]);
+  for (const c of want.contracts) {
+    for (const [iv, limit] of frames) {
+      assert.deepStrictEqual(got.klines(c.symbol, iv, limit), want.klines(c.symbol, iv, limit), `nến ${c.symbol} ${iv} lệch tại ${at}`);
+    }
+  }
 }
 
 for (const mode of ['swing', 'fast'] as const) {
-  test(`(a) ${mode}: tại 5 mốc ngẫu nhiên, replayStep = runScan độc lập trên cùng lát dữ liệu`, async () => {
+  test(`(a) ${mode}: tại 5 mốc ngẫu nhiên + 2 mốc sát niêm yết, đầu vào và replayStep = runScan độc lập trên cùng lát dữ liệu`, async () => {
     const dir = buildCache();
     try {
       const times = decisionTimes(mode, WIN);
       const r = rng(mode === 'swing' ? 11 : 13);
-      const picks = new Set<number>([times[times.length - 1]!]); // gồm mốc sau khi CCCUSDT niêm yết và BBB đổi chu kỳ funding
-      while (picks.size < 5) picks.add(times[Math.floor(r() * times.length)]!);
+      const onboard = CONTRACTS.find((c) => c.symbol === 'CCCUSDT')!.onboardDate;
+      // gồm mốc cuối (sau khi BBB đổi chu kỳ funding) và hai mốc sát lúc CCCUSDT niêm yết (−1 giờ: chưa có; +1 giờ: đã có)
+      const picks = new Set<number>([times[times.length - 1]!, onboard - HOUR, onboard + HOUR]);
+      while (picks.size < 7) picks.add(times[Math.floor(r() * times.length)]!);
       const rep = createReplay(OPTS(dir, mode));
       let analysed = 0;
       for (const t of picks) {
+        const at = new Date(t).toISOString();
+        const wantInput = independentInput(dir, mode, t);
+        assertSameInput(rep.buildInput(t, EMPTY), wantInput, at);
         const got = await rep.replayStep(t, EMPTY);
-        const want = await independentScan(dir, mode, t);
+        const want = await runScan(wantInput);
         assert.deepStrictEqual(got, want, `lệch tại ${new Date(t).toISOString()}`);
         analysed += got.results.length;
       }
@@ -229,6 +267,11 @@ test('replayStep: vũ trụ = hợp đồng có onboardDate ≤ t (CCCUSDT chưa
   const dir = buildCache();
   try {
     const rep = createReplay(OPTS(dir, 'swing'));
+    const onboard = CONTRACTS.find((c) => c.symbol === 'CCCUSDT')!.onboardDate;
+    assert.equal(rep.buildInput(onboard - HOUR, EMPTY).contracts.some((c) => c.symbol === 'CCCUSDT'), false, 'chưa niêm yết 1 giờ trước onboardDate');
+    assert.equal(rep.buildInput(onboard + HOUR, EMPTY).contracts.some((c) => c.symbol === 'CCCUSDT'), true);
+    assert.equal(rep.buildInput(onboard + HOUR, EMPTY).tickers.some((x) => x.symbol === 'CCCUSDT'), true);
+    assert.equal(rep.buildInput(onboard - HOUR, EMPTY).tickers.some((x) => x.symbol === 'CCCUSDT'), false);
     const early = rep.buildInput(WIN.start + 2 * HOUR, EMPTY);
     assert.deepEqual(early.contracts.map((c) => c.symbol).sort(), ['AAAUSDT', 'BBBUSDT', 'BTCUSDT']);
     const late = rep.buildInput(WIN.start + 40 * HOUR, EMPTY);
@@ -247,7 +290,12 @@ for (const mode of ['swing', 'fast'] as const) {
     const t = WIN.start + 29 * HOUR + (mode === 'fast' ? 45 * MINUTE : 0);
     const clean = buildCache();
     const dirty = buildCache({
-      candle: (c) => (c.closeTime >= t ? { ...c, open: c.open * 3, high: c.high * 3.5, low: c.low * 2, close: c.close * 3.2, quoteVolume: c.quoteVolume * 50, takerBuyQuote: c.takerBuyQuote * 50 } : c),
+      // khối lượng sau t đổi BẤT ĐỐI XỨNG (AAA/CCC ×50, BTC/BBB ÷50) → nếu hạng thanh khoản dùng dữ liệu sau t thì thứ hạng đảo
+      candle: (c, s) => {
+        if (c.closeTime < t) return c;
+        const f = s === 'AAAUSDT' || s === 'CCCUSDT' ? 50 : 1 / 50;
+        return { ...c, open: c.open * 3, high: c.high * 3.5, low: c.low * 2, close: c.close * 3.2, volume: c.volume * f, quoteVolume: c.quoteVolume * f, takerBuyQuote: c.takerBuyQuote * f };
+      },
       funding: (r) => (r.fundingTime > t ? { ...r, fundingRate: 0.05 } : r),
     });
     try {
@@ -281,3 +329,29 @@ test('replayStep: mã thiếu tệp đệm của một khung → ghi lỗi cho m
   }
 });
 
+
+test('signalDedupeKey: mô hình theo mã + patternId + breakoutTime (một lần phá = một lệnh); vùng theo signalId', () => {
+  const p = (patternId: string, breakoutTime: number) => ({ symbol: 'AAAUSDT', signalId: 'AAAUSDT|swing|long|pattern|' + patternId, pattern: { patternId, breakoutTime } });
+  assert.equal(signalDedupeKey(p('pid1', 1000)), signalDedupeKey({ ...p('pid1', 1000), signalId: 'khác' })); // in lại nhiều lần → cùng khóa
+  assert.notEqual(signalDedupeKey(p('pid1', 1000)), signalDedupeKey(p('pid1', 2000))); // lần phá khác → lệnh khác
+  assert.notEqual(signalDedupeKey(p('pid1', 1000)), signalDedupeKey(p('pid2', 1000)));
+  assert.notEqual(signalDedupeKey(p('pid1', 1000)), signalDedupeKey({ ...p('pid1', 1000), symbol: 'BBBUSDT' }));
+  const z = { symbol: 'AAAUSDT', signalId: 'AAAUSDT|swing|short|zone|1|2', pattern: null };
+  assert.equal(signalDedupeKey(z), signalDedupeKey({ ...z }));
+  assert.notEqual(signalDedupeKey(z), signalDedupeKey({ ...z, signalId: 'AAAUSDT|swing|short|zone|5|2' }));
+  assert.throws(() => signalDedupeKey({ ...z, signalId: null }), /thiếu signalId/);
+});
+
+test('previousBlindRuns: kỳ mù chỉ chạy một lần mỗi chế độ', () => {
+  const root = mkdtempSync(join(tmpdir(), 'replay-out-'));
+  try {
+    assert.deepEqual(previousBlindRuns(join(root, 'khong-co'), 'swing'), []);
+    mkdirSync(join(root, 'replay-swing-dev-2026'));
+    assert.deepEqual(previousBlindRuns(root, 'swing'), []);
+    mkdirSync(join(root, 'replay-swing-blind-2026'));
+    assert.deepEqual(previousBlindRuns(root, 'swing'), ['replay-swing-blind-2026']);
+    assert.deepEqual(previousBlindRuns(root, 'fast'), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
