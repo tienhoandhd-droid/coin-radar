@@ -28,6 +28,15 @@ test('thiếu dữ liệu (<200 nến) → sideways kèm lý do', () => {
   assert.match(r.reasons.join(' '), /Thiếu dữ liệu/);
 });
 
+test('đúng 200 nến tăng đều → sideways kèm "Thiếu dữ liệu" (cần 201 nến)', () => {
+  const r = marketRegime(series(Array.from({ length: 200 }, (_, i) => 100 + i)));
+  assert.equal(r.regime, 'sideways');
+  assert.match(r.reasons.join(' '), /Thiếu dữ liệu/);
+});
+test('201 nến tăng đều (100..300) → up', () => {
+  assert.equal(marketRegime(series(Array.from({ length: 201 }, (_, i) => 100 + i))).regime, 'up');
+});
+
 test('cầu dao: BTC giảm 5% trong 4 nến 1H → bật', () => {
   const closes = [...Array.from({ length: 30 }, () => 100), 99, 97, 96, 95];
   assert.equal(circuitBreaker(series(closes, 0.002)).tripped, true);

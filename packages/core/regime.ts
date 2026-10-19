@@ -5,8 +5,9 @@ import type { Candle, Side } from './types.ts';
 export type Regime = 'up' | 'sideways' | 'down';
 
 export function marketRegime(btcDaily: Candle[]): { regime: Regime; reasons: string[] } {
-  if (btcDaily.length < 200) {
-    return { regime: 'sideways', reasons: [`Thiếu dữ liệu BTC 1D (${btcDaily.length}/200 nến) — coi là đi ngang`] };
+  // SMA200 chỉ có giá trị từ nến thứ 200; cần 201 nến để đọc được SMA200 của hai nến cuối.
+  if (btcDaily.length < 201) {
+    return { regime: 'sideways', reasons: [`Thiếu dữ liệu BTC 1D (${btcDaily.length}/201 nến) — coi là đi ngang`] };
   }
   const closes = btcDaily.map((k) => k.close);
   const s200 = sma(closes, 200);
