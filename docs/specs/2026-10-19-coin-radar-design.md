@@ -36,7 +36,10 @@ lý do chấm điểm của từng coin, và trang “Nguyên tắc” trên web
 | Hướng lệnh | **Long và Short** |
 | Chế độ | **Lướt nhanh** (xu hướng 1H, vào lệnh 15m) và **Swing** (xu hướng 1D, vào lệnh 4H) |
 | Lướt nhanh chạy ở đâu | **Trên trình duyệt** khi mở web (IP Việt Nam, không trễ) |
-| Swing chạy ở đâu | Máy quét nền GitHub Actions, ~15 phút/lần, 24/7 |
+| Swing chạy ở đâu | ~~GitHub Actions~~ — **đổi 19/10/2026**: runner GitHub (Mỹ) bị Binance trả 451 (`docs/verification/probe-2026-10-19.md`). Swing tính **trên trình duyệt** khi mở web; ghi sổ 24/7 bằng **lịch chạy trên máy Ubuntu của người dùng** khi máy bật (IP Việt Nam) |
+| Cắt lỗ quá rộng (19/10) | Không “Đạt tiêu chí” khi khoảng cắt lỗ > 2×ATR ngày **hoặc** > 20% giá vào (cổng G-11) |
+| Lệnh ngược xu hướng (19/10) | Chỉ khi điểm ≥ 80 **và** sức mạnh so BTC rõ ngược chiều (z ≤ −1,5 cho Short / ≥ +1,5 cho Long) **và** rủi ro không “Rất cao”; thiếu z → không cho. Lướt nhanh: bắt buộc cùng phía SMA200 1H của BTC, không ngoại lệ |
+| Top 10% (19/10) | Chỉ xếp hạng trong các hợp đồng đã qua mọi cổng và điểm ≥ 70, tách Long/Short, theo nhóm thanh khoản (khuyến nghị của rà soát cuối) |
 | Web | Độc lập, repo public `tienhoandhd-droid/coin-radar`, GitHub Pages |
 | Ai xem | Chỉ admin đăng nhập; dữ liệu khóa RLS |
 | Supabase | Dùng chung dự án Pháp Sư, bảng `coin_*`, không đụng bảng game |
