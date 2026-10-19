@@ -74,6 +74,12 @@ Người dùng: “lệnh quá ngắn thì khả năng biên độ lợi nhuận
 
 `packages/binance/stream.ts` (kline đóng nến, markPrice, user data + listenKey; URL mới theo tài liệu; nối lại; nến cũ → không vào lệnh), `bot/main.ts` (vòng đời theo thiết kế), `deploy/coin-radar-bot.service` (systemd user), `docs/runbook-bot.md` (cài, tạo key Demo/thật đúng quyền, IP, bật/tắt, đọc Telegram, xử lý sự cố). Chạy `paper` thật trên máy nhà ≥ 1 giờ, dán log.
 
+**Nghĩa vụ B8b — giữ lỗ thật ≤ 2% khi chạy (từ rà soát lại Task 3 kế hoạch 2, vòng 2; ràng buộc cứng người dùng):**
+- Gọi `planOrders` với `costModel` (phí nhóm thanh khoản + KL 1 phút) và `fundingBuffer` (|funding| lớn nhất `COMMON.risk.fundingBufferLookbackDays` = 30 ngày từ `/fapi/v1/fundingRate`, chu kỳ thật). Planner từ chối khi thiếu (fail closed); thiếu lịch sử thì dùng `fundingFallbackRate`, không bao giờ dùng 0.
+- Định cỡ đã đệm funding cho thời gian giữ TỐI ĐA (`CONFIG.maxHoldHours`) × |funding| lớn nhất 30 ngày. Funding thật vẫn có thể vượt mức này. Vì vậy mỗi kỳ funding chốt, bot phải cộng dồn funding đã trả của từng vị thế (lấy từ `/fapi/v1/income` loại FUNDING_FEE, hoặc tính bằng giá mark × khối lượng × tỉ lệ) rồi kiểm: **lỗ nếu chạm SL bây giờ** (khối lượng còn lại × |giá vào − SL| + phí ra ở giá SL + trượt) **+ funding đã trả** > 2% vốn lúc vào lệnh?
+- Nếu vượt: đưa SL lại gần, đúng mức để tổng ≤ 2%. Nếu SL mới phải vượt qua giá mark hiện tại thì đóng vị thế ngay (market, reduceOnly). Ghi nhật ký và báo Telegram.
+- Có bài kiểm tính tay cho cả Long lẫn Short.
+
 ### Task B9: Kịch bản kiểm cơ khí trên Demo (cần key Demo của người dùng)
 
 `bot/demo-checks.ts`: đặt/khớp/hủy lệnh nhỏ, SL/TP/trailing qua Algo, hai `closePosition` cùng tồn tại?, countdown cancel có hủy algo?, khởi động lại giữa chừng, rút mạng giả. Ghi biên nhận. Chỉ chạy khi người dùng đã đặt key Demo vào `.env`.
