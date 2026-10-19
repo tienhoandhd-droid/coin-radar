@@ -160,7 +160,7 @@ export const COMMON = {
       tp2NearAtr: 1, // TP2: vùng S/R trong ±mức này (×A) quanh T_đủ — đề xuất, chưa backtest
       minTp1R: 1, // TP1 ≥ mức này (R) sau phí khứ hồi + funding dự kiến — đề xuất, chưa backtest
       flagMinTp1R: 1.5, // cờ: TP1 ≥ 1,5R vì thất bại hòa vốn 44–45% — đề xuất, chưa backtest
-      marketMaxAtr: 1, // d ≤ mức này (×A) → vào trực tiếp 100% — đề xuất, chưa backtest
+      marketMaxAtr: 1, // d ≤ mức này (×A) → vào trực tiếp 100%. d đo từ giá đóng nến CUỐI (giá sẽ khớp market) tới đường phá tại nến cuối, không phải từ nến phá — đề xuất, chưa backtest
       splitMaxAtr: 2, // 1 < d ≤ mức này → 50% trực tiếp + 50% limit; > mức này → chỉ limit 50% — đề xuất, chưa backtest
       splitMarketPct: 50, // phần vào trực tiếp khi chia (% tổng khối lượng) — đề xuất, chưa backtest
       limitOnlyPct: 50, // d quá xa: chỉ đặt limit cho % này của khối lượng đủ — đề xuất, chưa backtest

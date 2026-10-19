@@ -24,7 +24,9 @@ export type PatternPlan = {
   side: Side;
   entryType: 'market' | 'split' | 'limit'; // split = 50% market + 50% limit
   marketPrice: number; // giá đóng nến gần nhất
-  breakoutLine: number; // giá đường phá tại nến phá (mức cố định dùng cho limit và luật sau TP1)
+  breakoutLine: number; // giá đường phá tại nến phá (chỉ để hiển thị)
+  lineNow: number; // giá đường phá tại nến đóng cuối — dùng cho d, giá limit, mục tiêu, SL sau TP1 (như state.ts)
+  lineSlope: number; // độ dốc đường phá (giá mỗi nến); 0 với mô hình ngang
   atr: number; // A = ATR khung nhận diện tại nến cuối
   distanceAtr: number; // d = (giá hiện tại − đường phá) / A, dương = ngoài mô hình
   entry: number; // giá DÙNG ĐỂ TÍNH: market = giá hiện tại; limit = giá limit; split = giá TB khi khớp cả hai chân
@@ -42,8 +44,10 @@ export type PatternPlan = {
   targets: Target[]; // 3 phần tử; qty = khi mọi chân khớp
   targetsIfMarketOnly: [number, number, number] | null; // split: khối lượng TP nếu chỉ khớp chân market
   tp1NetR: number; // TP1 tính bằng R sau phí khứ hồi + funding phải trả, ở giá khớp xấu nhất
-  afterTp1Stop: number;
+  afterTp1Stop: number; // ước tính tại giá vào dùng để tính
   afterTp1StopIfMarketOnly: number | null;
+  afterTp1Rule: AfterTp1Rule; // market: dải [giá hiện tại, giá tối đa]; split: khi khớp cả hai; limit: giá limit
+  afterTp1RuleIfMarketOnly: AfterTp1Rule | null; // split: khi chỉ khớp chân market
   afterTp1Reason: string;
   valid: boolean;
   invalidReason: string | null;
@@ -64,6 +68,11 @@ export type PatternPlan = {
   maxHoldHours: number;
   notes: string[];
 };
+
+// Luật dời SL sau TP1 (quyết định người dùng 19/10/2026), tính trên cả DẢI giá khớp cho phép.
+// Long: khớp < threshold (cách đường phá < 0,5×A) → SL = nearStop; khớp ≥ threshold → SL = đúng giá khớp thật. Short đối xứng (> / ≤).
+// applies: 'near' / 'far' = cả dải nằm một phía (in một luật); 'both' = dải vắt qua ngưỡng (in cả hai điều kiện).
+export type AfterTp1Rule = { threshold: number; nearStop: number; applies: 'near' | 'far' | 'both' };
 
 export type PatternPlanResult = {
   status: 'ready' | 'wait_confirm' | 'rejected';
@@ -147,7 +156,10 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const toward = side === 'long' ? 'down' : 'up'; // TP vào gần giá vào; giá limit Long xuống / Short lên
   const pm = side === 'long' ? '+' : '−';
   const mp = side === 'long' ? '−' : '+';
-  const line = s.breakoutLine;
+  // Đường phá tại nến đóng cuối (đường nghiêng thì kéo dài), giống cách state.ts xét failed — đề xuất, chưa backtest
+  const lineAt = (i: number) => (side === 'long' ? g.upper(i) : g.lower(i));
+  const line = lineAt(last);
+  const lineSlope = lineAt(last) - lineAt(last - 1);
   const marketPrice = c[last]!.close;
 
   // ---- Chờ thêm 1 nến khi nến phá quá dài (biên độ > 3×ATR 1H) ----
@@ -410,33 +422,55 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const limitExpiryHours = hasLimit ? P.limitExpiryBars * tfHours : null;
 
   // ---- Sau TP1 (quyết định người dùng 19/10/2026) ----
-  const afterTp1For = (fill: number, estimate: boolean): { stop: number; text: string } => {
-    const dist = (dir * (fill - line)) / A;
-    if (dist < P.afterTp1NearAtr) {
-      let x = snapToTick(line - dir * P.afterTp1StopAtr * A, tick, away);
-      let text = `giá vào ${fp(fill)} cách đường phá ${vn(dist, 2)}×A < ${num(P.afterTp1NearAtr)}×A → sau TP1 dời SL về đường phá ${fp(line)} ${mp} ${num(P.afterTp1StopAtr)}×A = ${fp(x)}`;
-      if (dir * (x - stop) < 0) {
-        x = stop;
-        text += ` (xa hơn SL gốc nên giữ SL ${fp(stop)})`;
-      }
-      return { stop: x, text };
+  // Ngưỡng theo tick: giá khớp f (bội tick) gần đường phá ⇔ Long f < line + 0,5×A ⇔ f < ceilTick(line + 0,5×A); Short đối xứng.
+  const threshold = snapToTick(line + dir * P.afterTp1NearAtr * A, tick, side === 'long' ? 'up' : 'down');
+  const nearRaw = snapToTick(line - dir * P.afterTp1StopAtr * A, tick, away);
+  const nearStop = dir * (nearRaw - stop) < 0 ? stop : nearRaw; // không bao giờ nới SL ra xa hơn SL gốc
+  let nearTxt = `sau TP1 dời SL về đường phá ${fp(line)} ${mp} ${num(P.afterTp1StopAtr)}×A = ${fp(nearRaw)}`;
+  if (nearStop !== nearRaw) nearTxt += ` (xa hơn SL gốc nên giữ SL ${fp(stop)})`;
+  const isNear = (f: number) => dir * (threshold - f) > 0;
+  const lt = side === 'long' ? '<' : '>';
+  const ge = side === 'long' ? '≥' : '≤';
+  const fillStop = (f: number) => snapToTick(f, tick, side === 'long' ? 'up' : 'down'); // về phía không lỗ
+  const ruleFor = (lo: number, hi: number, est: number, estimate: boolean): { rule: AfterTp1Rule; stop: number; text: string } => {
+    const a = isNear(lo);
+    const b = isNear(hi);
+    const applies: AfterTp1Rule['applies'] = a && b ? 'near' : !a && !b ? 'far' : 'both';
+    const rangeTxt = fp(lo) === fp(hi) ? fp(lo) : `${fp(lo)}–${fp(hi)}`;
+    const estTxt = `(ước tính ${fp(fillStop(est))}${estimate ? ' theo giá hiện tại — dùng giá khớp thật trên sàn' : ''})`;
+    let text: string;
+    if (applies === 'near') {
+      text = `Giá khớp ${rangeTxt} ${lt} ${fp(threshold)} (cách đường phá < ${num(P.afterTp1NearAtr)}×A) → ${nearTxt}`;
+    } else if (applies === 'far') {
+      text = `Giá khớp ${rangeTxt} ${ge} ${fp(threshold)} (cách đường phá ≥ ${num(P.afterTp1NearAtr)}×A) → sau TP1 dời SL về đúng giá khớp thật ${estTxt}`;
+    } else {
+      text = `Nếu giá khớp ${lt} ${fp(threshold)}: ${nearTxt}; nếu khớp ${ge} ${fp(threshold)}: dời SL về đúng giá khớp thật`;
     }
-    const x = snapToTick(fill, tick, side === 'long' ? 'up' : 'down');
-    return { stop: x, text: `giá vào cách đường phá ${vn(dist, 2)}×A ≥ ${num(P.afterTp1NearAtr)}×A → sau TP1 dời SL về giá khớp thật ${fp(x)}${estimate ? ' (ước tính theo giá hiện tại — dùng giá khớp thật trên sàn)' : ''}` };
+    if (applies !== 'far' && Math.abs(lineSlope) > 1e-12) {
+      const slopeTxt = `${lineSlope < 0 ? '−' : '+'}${Math.abs(lineSlope).toFixed(tickDecimals(tick) + 2).replace('.', ',')}`;
+      text += `; đường phá nghiêng: dịch ${slopeTxt} mỗi nến — khi chạm TP1, SL = giá trị đường phá lúc đó ${mp} ${num(P.afterTp1StopAtr)}×A (ước tính hiện tại: ${fp(nearStop)})`;
+    }
+    return { rule: { threshold, nearStop, applies }, stop: isNear(est) ? nearStop : fillStop(est), text };
   };
   let afterTp1Stop: number;
   let afterTp1StopIfMarketOnly: number | null = null;
+  let afterTp1Rule: AfterTp1Rule;
+  let afterTp1RuleIfMarketOnly: AfterTp1Rule | null = null;
   let afterTp1Reason: string;
   if (entryType === 'split') {
-    const both = afterTp1For(row0.avgEntry, false);
-    const mOnly = afterTp1For(marketPrice, true);
+    const lastRow = fillTable[fillTable.length - 1]!;
+    const both = ruleFor(row0.avgEntry, lastRow.avgEntry, row0.avgEntry, false);
+    const mOnly = ruleFor(marketPrice, maxEntry, marketPrice, true);
     afterTp1Stop = both.stop;
+    afterTp1Rule = both.rule;
     afterTp1StopIfMarketOnly = mOnly.stop;
+    afterTp1RuleIfMarketOnly = mOnly.rule;
     afterTp1Reason = `Nếu khớp cả hai chân (giá TB ${fp(row0.avgEntry)}): ${both.text}. Nếu chỉ khớp chân market: ${mOnly.text}`;
   } else {
-    const r = afterTp1For(entry, entryType === 'market');
+    const r = entryType === 'market' ? ruleFor(marketPrice, maxEntry, marketPrice, true) : ruleFor(limitPrice!, limitPrice!, limitPrice!, false);
     afterTp1Stop = r.stop;
-    afterTp1Reason = r.text.charAt(0).toUpperCase() + r.text.slice(1);
+    afterTp1Rule = r.rule;
+    afterTp1Reason = r.text;
   }
 
   // ---- Lý do vào lệnh ----
@@ -467,7 +501,9 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     side,
     entryType,
     marketPrice,
-    breakoutLine: line,
+    breakoutLine: s.breakoutLine,
+    lineNow: line,
+    lineSlope,
     atr: A,
     distanceAtr: d,
     entry,
@@ -487,6 +523,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     tp1NetR,
     afterTp1Stop,
     afterTp1StopIfMarketOnly,
+    afterTp1Rule,
+    afterTp1RuleIfMarketOnly,
     afterTp1Reason,
     valid,
     invalidReason,

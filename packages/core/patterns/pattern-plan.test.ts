@@ -116,6 +116,52 @@ test('sau TP1: giá vào cách đường phá < 0,5×A → SL về đường ph�
   assert.match(p.afterTp1Reason, /đường phá 110,00 − 0,5×A = 109,50/);
 });
 
+test('sau TP1: dải giá khớp 110,30–110,60 vắt qua ngưỡng 110,50 → in cả hai điều kiện, có dữ liệu cấu trúc', () => {
+  const p = ready(args({ close: 110.3 }));
+  assert.equal(p.maxEntry, 110.6);
+  assert.deepEqual(p.afterTp1Rule, { threshold: 110.5, nearStop: 109.5, applies: 'both' });
+  assert.match(p.afterTp1Reason, /Nếu giá khớp < 110,50: sau TP1 dời SL về đường phá 110,00 − 0,5×A = 109,50; nếu khớp ≥ 110,50: dời SL về đúng giá khớp thật/);
+});
+
+test('sau TP1: cả dải giá khớp dưới ngưỡng → một luật (đường phá − 0,5×A); cả dải trên ngưỡng → một luật (giá khớp thật)', () => {
+  const near = ready(args({ close: 110.1 }));
+  assert.equal(near.maxEntry, 110.4);
+  assert.deepEqual(near.afterTp1Rule, { threshold: 110.5, nearStop: 109.5, applies: 'near' });
+  assert.doesNotMatch(near.afterTp1Reason, /Nếu giá khớp/);
+  const far = ready(args());
+  assert.deepEqual(far.afterTp1Rule, { threshold: 110.5, nearStop: 109.5, applies: 'far' });
+  assert.doesNotMatch(far.afterTp1Reason, /Nếu giá khớp/);
+  // limit: giá đã biết → một luật
+  const lim = ready(args({ close: 112.5, geometry: geom({ stopRef: { up: 109, down: 101 } }) }));
+  assert.equal(lim.afterTp1Rule.applies, 'near');
+});
+
+test('Short: dải giá khớp 109,40–109,70 vắt qua ngưỡng 109,50 → in cả hai điều kiện (đối xứng)', () => {
+  const g = geom({ upper: () => 120, lower: () => 110, stopRef: { up: 118, down: 111.5 } });
+  const p = ready(args({ close: 109.7, side: 'short', geometry: g, state: st({ side: 'down' }), zones: [zone(101.5, 102), zone(98, 99), zone(93, 94)] }));
+  assert.equal(p.maxEntry, 109.4);
+  assert.deepEqual(p.afterTp1Rule, { threshold: 109.5, nearStop: 110.5, applies: 'both' });
+  assert.match(p.afterTp1Reason, /Nếu giá khớp > 109,50: sau TP1 dời SL về đường phá 110,00 \+ 0,5×A = 110,50; nếu khớp ≤ 109,50: dời SL về đúng giá khớp thật/);
+});
+
+test('cờ có đường phá nghiêng: d và SL sau TP1 dùng giá trị đường tại nến cuối, in độ dốc', () => {
+  // đường trên của cờ: 110 tại nến phá 30, giảm 0,1 mỗi nến → 109,7 tại nến cuối 33
+  const g = geom({ kind: 'bull_flag', breakoutSide: 'up', height: 30, stopRef: { up: 108, down: 110 },
+    upper: (i: number) => 110 - 0.1 * (i - 30), lower: (i: number) => 108 - 0.1 * (i - 30) });
+  const c = [...candles(110.5), k(31, 110.1, 109.6, 109.85), k(32, 110.1, 109.6, 109.85), k(33, 110.1, 109.6, 109.85)];
+  const p = ready(args({ candles: c, geometry: g, zones: [] }));
+  assert.equal(p.breakoutLine, 110);
+  assert.equal(r6(p.lineNow), 109.7);
+  assert.equal(r6(p.lineSlope), -0.1);
+  assert.equal(r6(p.distanceAtr), 0.15);
+  assert.equal(p.afterTp1Stop, 109.2);
+  assert.equal(p.afterTp1Rule.applies, 'near');
+  assert.match(p.afterTp1Reason, /đường phá nghiêng: dịch −0,1000 mỗi nến/);
+  assert.match(p.afterTp1Reason, /ước tính hiện tại: 109,20/);
+  // đường ngang: không in câu nghiêng
+  assert.doesNotMatch(ready(args({ close: 110.3 })).afterTp1Reason, /nghiêng/);
+});
+
 // ---------- d trong (1, 2]×A: 50% market + 50% limit ----------
 
 test('Long d = 1,4×A: 50% market + 50% limit tại đường phá + 0,25×A; tổng rủi ro theo giá vào trung bình', () => {
