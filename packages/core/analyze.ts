@@ -1,4 +1,5 @@
 import { atr, last } from './indicators.ts';
+import { isClosed } from './candles.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
@@ -237,7 +238,8 @@ export function analyze(i: AnalyzeInput): Analysis {
       // ATR(1H) tại nến 1H đóng cùng lúc (hoặc ngay trước) nến phá của khung nhận diện
       const breakClose = c[r.breakoutIndex]!.closeTime;
       let j = -1;
-      for (let q = pd.c1h.length - 1; q >= 0; q--) if (pd.c1h[q]!.closeTime <= breakClose) { j = q; break; }
+      // nến 1H đã đóng tại thời điểm ngay sau khi nến phá đóng (breakClose + 1 ms = mở nến kế tiếp), cùng ranh giới isClosed
+      for (let q = pd.c1h.length - 1; q >= 0; q--) if (isClosed(pd.c1h[q]!, breakClose + 1)) { j = q; break; }
       const atr1h = j >= 0 ? atr1hAll[j]! : NaN;
       if (!Number.isFinite(atr1h) || atr1h <= 0 || breakClose - pd.c1h[j]!.closeTime >= FRAME_HOURS[tf] * 3_600_000) {
         info.notes.push('Kế hoạch mô hình: bỏ — thiếu ATR(1H) tại nến phá (dữ liệu 1H không phủ tới nến phá)');

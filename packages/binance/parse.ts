@@ -1,4 +1,5 @@
 import type { BookTicker, Candle, Contract, MarketTicker, PremiumIndex } from '../core/types.ts';
+import { isClosed } from '../core/candles.ts';
 
 // JSON.stringify(undefined) trả về undefined, nên phải có nhánh dự phòng
 const show = (v: unknown): string => JSON.stringify(v) ?? String(v);
@@ -31,7 +32,7 @@ export function parseKlines(raw: unknown, now: number): Candle[] {
         volume: num(x[5], `${w} volume`), quoteVolume: num(x[7], `${w} quoteVolume`), takerBuyQuote: num(x[10], `${w} takerBuyQuote`),
       };
     })
-    .filter((k) => k.closeTime < now);
+    .filter((k) => isClosed(k, now));
 }
 
 type RawSymbol = {
