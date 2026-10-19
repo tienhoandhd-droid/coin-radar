@@ -103,7 +103,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   } else {
     lines.push(`  Kiểu vào lệnh: CHỈ ĐẶT LIMIT ${P.limitOnlyPct}% khối lượng tại ${px(p.limitPrice!)}, ${cancel} — ${p.entryReason}`);
   }
-  lines.push(`  Giá hiện tại: ${px(p.marketPrice)} | Giá vào dùng để tính: ${px(p.entry)}${p.entryType === 'split' ? ' (giá trung bình khi khớp cả hai chân)' : ''}`);
+  lines.push(`  Giá hiện tại: ${px(p.marketPrice)} (đóng nến ${p.priceTf.toUpperCase()} lúc ${utc(p.priceTime)}) | Giá vào dùng để tính: ${px(p.entry)}${p.entryType === 'split' ? ' (giá trung bình khi khớp cả hai chân)' : ''}`);
   lines.push(`  SL: ${px(p.stop)} — ${p.stopReason}`);
 
   const trailPct = (p.trailAtr / p.entry) * 100;

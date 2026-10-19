@@ -42,7 +42,9 @@ const longZones = [zone(118, 118.5), zone(121, 122), zone(126, 127)];
 function args(over: Partial<PatternPlanArgs> & { close?: number; side?: 'long' | 'short' } = {}): PatternPlanArgs {
   const { close = 110.5, side = 'long', ...rest } = over;
   const c = rest.candles ?? candles(close, side);
+  const lastBar = c[c.length - 1]!;
   return {
+    price: { close: lastBar.close, time: lastBar.closeTime, tf: '4h' },
     mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', geometry: geom(), state: st(), candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     zones: longZones, multiMonth: null, btcSma200ReclaimedAt: null,
     capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8,
@@ -476,6 +478,7 @@ test('M1 dữ liệu thật SOLUSDT 4H (rà soát cuối 1c): cờ giảm 3 nế
   assert.equal(isTracked(flag.result), false);
   // Kể cả ép trạng thái 'breakout', kế hoạch tính từ mức phá cố định cũng bị bỏ
   const r = buildPatternPlan({ ...args(), patternId: flag.id, geometry: flag.geometry, state: { ...flag.result, state: 'breakout' }, candles: c, atr: flag.atr,
+    price: { close: c[c.length - 1]!.close, time: c[c.length - 1]!.closeTime, tf: '4h' },
     atr1h: 0.9969957896813947, zones: [], capital: 1000, stepSize: 0.001 });
   // Tính từ mức phá cố định 104,044: giá 99,93 đã qua T_ngắn 102,32 (cờ: mức phá + ½ quãng tới T_đủ) → bỏ, không còn "ready"
   assert.equal(r.status, 'rejected');
@@ -524,4 +527,27 @@ test('M2: TP1 sau phí in và chấm hạng ở giá khớp XẤU NHẤT cho ph�
   const lo = ready(args({ close: 112.5, geometry: geom({ stopRef: { up: 109, down: 101 } }) }));
   assert.equal(lo.entryType, 'limit');
   assert.equal(r6(lo.tp1NetR), r6(net(lo, lo.limitPrice!)));
+});
+
+test('M3: mô hình 1D lấy giá hiện tại = giá đóng nến đóng gần nhất của khung vào lệnh (4H), ghi rõ thời điểm; giá cũ hơn nến 1D cuối → lỗi', () => {
+  const D = 86_400_000;
+  const c1d = candles(110.5).map((x, i) => ({ ...x, openTime: T0 + i * D, closeTime: T0 + (i + 1) * D - 1 }));
+  const g = geom({ timeframe: '1d' });
+  const lastClose = c1d[c1d.length - 1]!.closeTime;
+  const p = ready(args({ candles: c1d, geometry: g, price: { close: 110.8, time: lastClose + 16 * H4 / 4, tf: '4h' } }));
+  assert.equal(p.marketPrice, 110.8);
+  assert.equal(p.priceTf, '4h');
+  assert.equal(p.priceTime, lastClose + 4 * H4);
+  assert.equal(r6(p.distanceAtr), 0.8);
+  assert.throws(() => buildPatternPlan(args({ candles: c1d, geometry: g, price: { close: 110.8, time: lastClose - 1, tf: '4h' } })), /cũ hơn nến đóng cuối/);
+});
+
+test('M3: dải giá vào có CẬN DƯỚI (Long) / CẬN TRÊN (Short) = mức phá cố định; in "chỉ vào khi giá trong …"', () => {
+  const p = ready(args());
+  assert.equal(p.minEntry, 110);
+  assert.match(p.entryReason, /chỉ vào khi giá trong \[110,00; 110,80\]; ngoài khoảng này bỏ lệnh/);
+  const g = geom({ upper: () => 120, lower: () => 110, stopRef: { up: 118, down: 111.5 } });
+  const s = ready(args({ close: 109.5, side: 'short', geometry: g, state: st({ side: 'down' }), zones: [zone(101.5, 102), zone(98, 99), zone(93, 94)] }));
+  assert.equal(s.minEntry, 110);
+  assert.match(s.entryReason, /chỉ vào khi giá trong \[109,20; 110,00\]; ngoài khoảng này bỏ lệnh/);
 });

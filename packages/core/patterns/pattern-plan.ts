@@ -30,7 +30,10 @@ export type PatternPlan = {
   timeframe: string;
   side: Side;
   entryType: 'market' | 'split' | 'limit'; // split = 50% market + 50% limit
-  marketPrice: number; // giá đóng nến gần nhất
+  marketPrice: number; // "giá hiện tại" = giá đóng nến ĐÃ ĐÓNG gần nhất của KHUNG VÀO LỆNH (args.price), không phải nến 1D (M3)
+  priceTime: number; // closeTime (ms) của nến cho giá hiện tại
+  priceTf: string; // khung của nến cho giá hiện tại (Swing: 4H; Lướt nhanh: 15m)
+  minEntry: number; // biên phía mô hình của dải vào lệnh = mức phá cố định (Long: không vào DƯỚI; Short: không vào TRÊN)
   breakoutLine: number; // MỨC PHÁ CỐ ĐỊNH = giá đường phá tại nến phá (breakoutLevel) — dùng cho d, giá limit, mục tiêu, SL sau TP1, như state.ts
   atr: number; // A = ATR khung nhận diện tại nến cuối
   distanceAtr: number; // d = (giá hiện tại − đường phá) / A, dương = ngoài mô hình
@@ -88,6 +91,9 @@ export type PatternPlanResult = {
 export type PatternPlanArgs = {
   mode: Mode;
   patternId: string; // patternId(symbol, geometry, candles)
+  // Giá hiện tại: giá đóng nến ĐÃ ĐÓNG gần nhất của khung vào lệnh (Swing 4H, Lướt nhanh 15m) — với mô hình 1D, nến ngày cuối có thể cũ tới 24 giờ.
+  // time = closeTime nến đó; phải ≥ closeTime nến cuối của `candles`.
+  price: { close: number; time: number; tf: string };
   geometry: PatternGeometry;
   state: StateResult; // evaluateState tại nến cuối của `candles`
   candles: Candle[]; // nến ĐÃ ĐÓNG của khung nhận diện, cùng chỉ số với geometry/state
@@ -169,7 +175,11 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   if (Math.abs(line - s.breakoutLine) > 1e-9 * Math.max(1, Math.abs(line))) {
     throw new Error(`buildPatternPlan: mức phá của trạng thái (${s.breakoutLine}) khác breakoutLevel tại nến phá (${line})`);
   }
-  const marketPrice = c[last]!.close;
+  if (!Number.isFinite(a.price.close) || a.price.close <= 0) throw new Error(`buildPatternPlan: giá hiện tại không hợp lệ (${a.price.close})`);
+  if (a.price.time < c[last]!.closeTime) {
+    throw new Error(`buildPatternPlan: giá hiện tại (nến ${a.price.tf} đóng ${a.price.time}) cũ hơn nến đóng cuối của khung nhận diện (${c[last]!.closeTime})`);
+  }
+  const marketPrice = a.price.close;
 
   // ---- Chờ thêm 1 nến khi nến phá quá dài (biên độ > 3×ATR 1H) ----
   const range = c[bi]!.high - c[bi]!.low;
@@ -192,7 +202,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   // ---- Kiểu vào lệnh theo d ----
   let entryType: PatternPlan['entryType'] = d <= P.marketMaxAtr ? 'market' : d <= P.splitMaxAtr ? 'split' : 'limit';
   const notes = [...s.notes];
-  const now = c[last]!.closeTime;
+  const now = a.price.time;
   const reversalShort = side === 'short' && g.kind === 'head_shoulders';
   let blockedMarket = false;
   if (reversalShort && a.btcSma200ReclaimedAt !== null) {
@@ -484,6 +494,11 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     afterTp1Reason = r.text;
   }
 
+  // ---- Dải giá được vào (chân market): [mức phá cố định; giá tối đa] (Long), [giá tối đa; mức phá] (Short) ----
+  const minEntry = snapToTick(line, tick, side === 'long' ? 'up' : 'down');
+  const bandTxt = side === 'long' ? `[${fp(minEntry)}; ${fp(maxEntry)}]` : `[${fp(maxEntry)}; ${fp(minEntry)}]`;
+  const band = `chỉ vào khi giá trong ${bandTxt}; ngoài khoảng này bỏ lệnh`;
+
   // ---- Lý do vào lệnh ----
   const dTxt = `Giá đóng ${fp(marketPrice)} cách đường phá ${fp(line)} ${vn(d, 2)}×A`;
   const chase = side === 'long' ? 'mua cao' : 'bán thấp';
@@ -491,9 +506,9 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const limitTxt = `limit ${fp(limitPrice ?? 0)} = đường phá ${pm} ${num(P.limitOffsetAtr)}×A`;
   let entryReason: string;
   if (entryType === 'market') {
-    entryReason = `${dTxt} ≤ ${num(P.marketMaxAtr)}×A — vào trực tiếp 100%, không ${chase} hơn ${fp(maxEntry)}${maxNote}`;
+    entryReason = `${dTxt} ≤ ${num(P.marketMaxAtr)}×A — vào trực tiếp 100%, không ${chase} hơn ${fp(maxEntry)}${maxNote}; ${band}`;
   } else if (entryType === 'split') {
-    entryReason = `${dTxt} trong (${num(P.marketMaxAtr)}; ${num(P.splitMaxAtr)}]×A — ${mPct}% vào trực tiếp (không ${chase} hơn ${fp(maxEntry)}) + ${100 - mPct}% ${limitTxt}; giá TB nếu khớp cả hai ${fp(row0.avgEntry)}; ${cancelTxt}${maxNote}`;
+    entryReason = `${dTxt} trong (${num(P.marketMaxAtr)}; ${num(P.splitMaxAtr)}]×A — ${mPct}% vào trực tiếp (không ${chase} hơn ${fp(maxEntry)}) + ${100 - mPct}% ${limitTxt}; giá TB nếu khớp cả hai ${fp(row0.avgEntry)}; ${cancelTxt}${maxNote}; chân market ${band}`;
   } else if (blockedMarket) {
     entryReason = `${dTxt} — Short theo mô hình đảo chiều trong ${P.reversalShortBlockDays} ngày sau khi BTC lấy lại SMA200 ngày: không vào trực tiếp; chỉ đặt ${limitTxt} cho ${P.limitOnlyPct}% khối lượng; ${cancelTxt}`;
   } else {
@@ -519,6 +534,9 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     side,
     entryType,
     marketPrice,
+    priceTime: a.price.time,
+    priceTf: a.price.tf,
+    minEntry,
     breakoutLine: line,
     atr: A,
     distanceAtr: d,

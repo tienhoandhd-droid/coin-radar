@@ -214,6 +214,12 @@ export function analyze(i: AnalyzeInput): Analysis {
     }
     tracked.sort((x, y) => TF_ORDER[x.tf]! - TF_ORDER[y.tf]! || x.t.geometry.endIndex - y.t.geometry.endIndex);
     const atr1hAll = atr(pd.c1h, 14);
+    // M3: "giá hiện tại" của kế hoạch mô hình = nến ĐÃ ĐÓNG gần nhất của khung vào lệnh (Swing: 4H = pd.c4h, cũng là nến nhận diện 4H;
+    // Lướt nhanh: 15m = i.entry), kể cả mô hình 1D — nến ngày cuối có thể cũ tới 24 giờ.
+    const priceBars = i.mode === 'swing' ? pd.c4h : i.entry;
+    const lastEntry = priceBars[priceBars.length - 1];
+    if (!lastEntry) throw new Error(`${i.contract.symbol}: không có nến khung vào lệnh để lấy giá hiện tại`);
+    const priceNow = { close: lastEntry.close, time: lastEntry.closeTime, tf: CONFIG[i.mode].entryInterval };
     for (const { t, c, tf } of tracked) {
       const g = t.geometry;
       const r = t.result;
@@ -247,7 +253,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       }
       // Mức cắt lỗ (chữ nhật: pivot nhỏ phía trong) do patternStopLevel tính chung cho kế hoạch và máy trạng thái
       const res = buildPatternPlan({
-        mode: i.mode, patternId: t.id, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
+        mode: i.mode, patternId: t.id, price: priceNow, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
         btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct),
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });

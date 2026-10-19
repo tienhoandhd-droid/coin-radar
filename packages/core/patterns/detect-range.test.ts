@@ -164,7 +164,7 @@ test('P1: chữ nhật h = 5A với pivot phía trong sát biên → kế hoạc
   const c = innerSeries();
   const st = { state: 'breakout' as const, breakoutIndex: 60, side: 'up' as const, breakoutLine: 110, distanceAtr: 0.3, retest: null, notes: [], signalStale: false, inBreakoutWindow: null };
   const args = (g: PatternGeometry) => ({
-    mode: 'swing' as const, patternId: 'X|4h|rectangle|1|2', geometry: g, state: st, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1, zones: [], multiMonth: null,
+    mode: 'swing' as const, patternId: 'X|4h|rectangle|1|2', price: { close: c[c.length - 1]!.close, time: c[c.length - 1]!.closeTime, tf: '4h' }, geometry: g, state: st, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1, zones: [], multiMonth: null,
     btcSma200ReclaimedAt: null, capital: 10_000, riskPct: 0.5, costTier: 'high' as const, tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8,
   });
   const inner = rectangleStopRef(c, rectG, 'up', 60, ones(61)).price;
