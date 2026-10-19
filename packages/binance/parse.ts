@@ -35,7 +35,7 @@ export function parseKlines(raw: unknown, now: number): Candle[] {
 }
 
 type RawSymbol = {
-  symbol: string; baseAsset: string; quoteAsset: string; contractType: string; status: string; onboardDate: number;
+  symbol: string; baseAsset: string; quoteAsset: string; contractType: string; status: string; underlyingType?: string; onboardDate: number;
   filters: Array<{ filterType: string; tickSize?: string; stepSize?: string }>;
 };
 
@@ -52,6 +52,13 @@ export function parseContracts(raw: unknown): Contract[] {
   const symbols = (raw as { symbols?: unknown } | null | undefined)?.symbols;
   return (arr(symbols, 'exchangeInfo.symbols') as RawSymbol[])
     .filter((s) => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
+    .filter((s) => {
+      // Thiếu underlyingType → ném lỗi (không âm thầm giữ). Chỉ giữ 'COIN', loại hợp đồng chỉ số (INDEX) như BTCDOMUSDT.
+      if (typeof s.underlyingType !== 'string' || s.underlyingType === '') {
+        throw new Error(`Binance exchangeInfo ${s.symbol}: thiếu underlyingType`);
+      }
+      return s.underlyingType === 'COIN';
+    })
     .map((s) => ({
       symbol: s.symbol,
       baseAsset: s.baseAsset,

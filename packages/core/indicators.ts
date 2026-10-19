@@ -116,3 +116,8 @@ export function stdev(values: number[]): number {
   const v = values.reduce((a, b) => a + (b - mean) ** 2, 0) / (values.length - 1);
   return Math.sqrt(v);
 }
+
+// Bước số tròn theo độ lớn giá (giá 82.000 → 1000; giá 0,5 → 0,01)
+export function roundStep(price: number): number {
+  return 10 ** (Math.floor(Math.log10(price)) - 1);
+}

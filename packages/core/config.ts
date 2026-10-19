@@ -67,6 +67,23 @@ export const COMMON = {
   regimeBandPct: 2,
   regimeDrawdownPct: 20,
   pivotConfirmBars: 3,
+  // Vùng hỗ trợ/kháng cự — ĐỀ XUẤT, CHƯA BACKTEST
+  zones: {
+    entryWeight: 1, // mỗi đỉnh/đáy khung vào lệnh
+    trendWeight: 2, // mỗi đỉnh/đáy khung xu hướng (khung lớn mạnh hơn)
+    mergeAtr: 0.5, // gộp các mức cách nhau ≤ 0,5×ATR khung vào lệnh
+    maxWidthAtr: 1.5, // một vùng rộng tối đa 1,5×ATR
+    roundBonus: 0.5, // vùng chứa số tròn
+    volumeBonus: 1, // vùng thuộc nhóm 25% khối lượng giao dịch cao nhất
+    minSlStrength: 2, // vùng dùng để đặt SL phải có độ mạnh ≥ 2
+    slBufferAtr: 0.3, // SL nằm ngoài mép vùng 0,3×ATR
+    tpBufferAtr: 0.2, // TP đặt trước mép vùng cản 0,2×ATR
+    minTp1R: 1, // TP1 phải lời ≥ 1R, nếu không bỏ lệnh
+    exitPcts: [50, 30, 20], // TP1 / TP2 / TP3 (% vị thế) — người dùng chốt 19/10/2026
+    directEntryMaxAtr: 0.5, // giá cách mép vùng hỗ trợ (Long) ≤ 0,5×ATR → vào trực tiếp; xa hơn → đặt limit chờ hồi
+    limitBufferAtr: 0.1, // giá limit = mép trên vùng hỗ trợ + 0,1×ATR (Short: mép dưới vùng kháng cự − 0,1×ATR)
+    limitExpiryBars: { fast: 8, swing: 6 }, // limit hết hiệu lực sau 8 nến 15m (2h) / 6 nến 4H (24h)
+  },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
   maintenanceMarginRate: 0.01,

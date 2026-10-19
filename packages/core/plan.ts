@@ -1,12 +1,11 @@
-import { atr, pivotHighs, pivotLows, last } from './indicators.ts';
+import { atr, pivotHighs, pivotLows, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
 
-export function roundStep(price: number): number {
-  return 10 ** (Math.floor(Math.log10(price)) - 1);
-}
+// roundStep nằm ở indicators.ts (để zones.ts dùng mà không tạo vòng import); re-export để import cũ vẫn chạy
+export { roundStep };
 
 export function nearestLevels(entry: Candle[], confirm: number): { above: number | null; below: number | null } {
   const price = last(entry.map((k) => k.close));
