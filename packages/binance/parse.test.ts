@@ -29,3 +29,41 @@ test('parsePremium: funding và mark price', () => {
   const out = parsePremium([{ symbol: 'BTCUSDT', markPrice: '82000.5', lastFundingRate: '0.00010000', nextFundingTime: 1760889600000 }]);
   assert.deepEqual(out, [{ symbol: 'BTCUSDT', markPrice: 82000.5, lastFundingRate: 0.0001, nextFundingTime: 1760889600000 }]);
 });
+
+test('parseKlines: hàng thiếu cột (6 cột) → ném lỗi nêu số cột', () => {
+  assert.throws(() => parseKlines([[0, '1', '2', '3', '4', '5']], 0), /klines.*cột/);
+});
+
+test('parseKlines: trường số là null → ném lỗi, không thành NaN/0', () => {
+  const bad = row(0, 999);
+  bad[1] = null as unknown as string;
+  assert.throws(() => parseKlines([bad], 1500), /giá trị số không hợp lệ/);
+});
+
+test('parseContracts: thiếu LOT_SIZE → ném lỗi nêu tên mã', () => {
+  const raw = { symbols: [
+    { symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', contractType: 'PERPETUAL', status: 'TRADING', onboardDate: 0,
+      filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.10' }] },
+  ] };
+  assert.throws(() => parseContracts(raw), /BTCUSDT/);
+});
+
+test('parseContracts: tickSize = 0 → ném lỗi nêu tên mã', () => {
+  const raw = { symbols: [
+    { symbol: 'ETHUSDT', baseAsset: 'ETH', quoteAsset: 'USDT', contractType: 'PERPETUAL', status: 'TRADING', onboardDate: 0,
+      filters: [{ filterType: 'PRICE_FILTER', tickSize: '0' }, { filterType: 'LOT_SIZE', stepSize: '0.001' }] },
+  ] };
+  assert.throws(() => parseContracts(raw), /ETHUSDT/);
+});
+
+test('parseContracts: payload null hoặc thiếu symbols → lỗi thân thiện', () => {
+  assert.throws(() => parseContracts(null), /exchangeInfo.*kỳ vọng mảng/);
+  assert.throws(() => parseContracts({}), /exchangeInfo.*kỳ vọng mảng/);
+});
+
+test('parsePremium: markPrice null → ném lỗi, không thành 0', () => {
+  assert.throws(
+    () => parsePremium([{ symbol: 'BTCUSDT', markPrice: null, lastFundingRate: '0', nextFundingTime: 1 }]),
+    /giá trị số không hợp lệ/,
+  );
+});
