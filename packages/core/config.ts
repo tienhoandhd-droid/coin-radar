@@ -103,6 +103,27 @@ export const COMMON = {
       minDepthAtr: 2.5, // đáy giữa (đỉnh giữa) sâu tối thiểu (×A) — đề xuất, chưa backtest
       minGapBars: 10, // hai đỉnh/đáy cách nhau tối thiểu (nến) — đề xuất, chưa backtest
     },
+    triangle: {
+      minLongSide: 3, // số pivot tối thiểu ở cạnh dài hơn — đề xuất, chưa backtest
+      minShortSide: 2, // số pivot tối thiểu ở cạnh còn lại — đề xuất, chưa backtest
+      flatSlopeAtr: 0.03, // cạnh 'phẳng' khi |độ dốc| ≤ mức này (×A mỗi nến) — đề xuất, chưa backtest
+      minConvergence: 0.3, // độ rộng thu hẹp tối thiểu từ đầu đến cuối (tỷ lệ) — đề xuất, chưa backtest
+      apexMinRatio: 0.5, // apex cách pivot cuối ≥ mức này × chiều dài mô hình — đề xuất, chưa backtest
+      apexMaxRatio: 3, // apex cách pivot cuối ≤ mức này × chiều dài mô hình — đề xuất, chưa backtest
+      maxCloseBreachAtr: 0.25, // close vượt đường tối đa (×A) — đề xuất, chưa backtest
+      minBars: 15, // thời lượng tối thiểu (nến) — đề xuất, chưa backtest
+      maxPivots: 10, // số pivot tối đa trong một cửa sổ xét (giới hạn chi phí tính) — đề xuất, chưa backtest
+    },
+    flag: {
+      minPoleAtr: 3, // cán cờ tối thiểu (×A) — đề xuất, chưa backtest
+      maxPoleBars: 15, // cán cờ tối đa (nến) — đề xuất, chưa backtest
+      maxWidthRatio: 0.5, // bề rộng cờ (nến từ tip) ≤ mức này × số nến của cán — đề xuất, chưa backtest
+      maxHeightRatio: 0.5, // chiều cao cờ ≤ mức này × chiều cao cán — đề xuất, chưa backtest
+      minBarsFromTip: 5, // tối thiểu nến kể từ tip — đề xuất, chưa backtest
+      maxBars: 20, // tối đa nến kể từ tip (quá hạn) — đề xuất, chưa backtest
+      minConvergence: 0.3, // độ rộng thu hẹp từ đầu đến cuối ≥ mức này → cờ đuôi nheo — đề xuất, chưa backtest
+      flatSlopeAtr: 0.03, // cờ không hội tụ chỉ được trôi thuận chiều cán tối đa mức này (×A mỗi nến) — đề xuất, chưa backtest
+    },
   },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
