@@ -71,3 +71,18 @@ test('chỉ còn S-03 khả dụng (dữ liệu quá ngắn) → điểm 0 và c
   assert.ok(s.coverage < 0.7);
   assert.ok(s.reasons.some((r) => r.code === 'S-01' && /Độ phủ dữ liệu \d+% < 70% — không chấm điểm/.test(r.text)));
 });
+
+test('rsZ: coin mạnh hơn BTC → z dương, coin yếu hơn → z âm, cùng một z cho cả hai chiều', () => {
+  const strong = input(rising(300, 1), rising(500, 0.2), rising(300, 0.1));
+  const l = scoreSide(strong, 'long', 5);
+  const s = scoreSide(strong, 'short', 5);
+  assert.ok(l.rsZ !== null && l.rsZ > 0, String(l.rsZ));
+  assert.equal(l.rsZ, s.rsZ);
+  const weak = input(falling(300, 1), rising(500, 0.2), rising(300, 0.1));
+  assert.ok((scoreSide(weak, 'long', 5).rsZ ?? 0) < 0);
+});
+
+test('rsZ = null khi coin kém thanh khoản (không đo RS)', () => {
+  const inp = { ...input(rising(300, 1), rising(500, 0.2), rising(300, 0.1)), liquid: false };
+  assert.equal(scoreSide(inp, 'long', 5).rsZ, null);
+});

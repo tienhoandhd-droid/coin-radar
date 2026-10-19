@@ -17,8 +17,8 @@ test('liquidityRanks: khối lượng cao nhất = 0, thấp nhất = 1', () => 
 test('applyTopRank: chỉ giữ “Đạt tiêu chí” cho top 10% điểm trong nhóm', () => {
   const mk = (symbol: string, score: number): Analysis => ({
     symbol, mode: 'swing', price: 1, label: 'Đạt tiêu chí Long',
-    best: { side: 'long', score, coverage: 1, reasons: [] }, long: { side: 'long', score, coverage: 1, reasons: [] },
-    short: { side: 'short', score: 0, coverage: 1, reasons: [] }, gates: [], plan: null, risk: { tier: 'Vừa', notes: [] }, flags: [],
+    best: { side: 'long', score, coverage: 1, reasons: [], rsZ: null }, long: { side: 'long', score, coverage: 1, reasons: [], rsZ: null },
+    short: { side: 'short', score: 0, coverage: 1, reasons: [], rsZ: null }, gates: [], plan: null, risk: { tier: 'Vừa', notes: [] }, flags: [],
   });
   const list = Array.from({ length: 20 }, (_, i) => mk(`S${i}`, 70 + i));
   const ranks = new Map(list.map((a, i) => [a.symbol, i / 100])); // cả 20 cùng nhóm thanh khoản cao

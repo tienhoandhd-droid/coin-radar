@@ -34,6 +34,7 @@ test('cầu dao bật → không Đạt tiêu chí Long', () => {
 test('thị trường xuống nhưng điểm ≥ 80 → vẫn Đạt tiêu chí Long (ngoại lệ ngược xu hướng, spec 3.2)', () => {
   const a = analyze({ ...base, regime: 'down' });
   assert.ok(a.best.score >= 80, `điểm ${a.best.score}`);
+  assert.ok((a.best.rsZ ?? 0) >= 1.5, `z ${a.best.rsZ}`);
   assert.equal(a.label, 'Đạt tiêu chí Long');
 });
 
@@ -116,4 +117,22 @@ test('D1: cắt lỗ rộng hơn 2×ATR ngày → G-11 trượt, không còn nh�
 test('D1: kế hoạch thường → G-11 qua', () => {
   const a = analyze(base);
   assert.equal(a.gates.find((x) => x.code === 'G-11')?.pass, true, a.gates.find((x) => x.code === 'G-11')?.note);
+});
+
+test('D2: thị trường xuống, Long điểm cao nhưng RS z chưa đủ mạnh → G-01 trượt, note nêu RS z', () => {
+  const a = analyze({ ...base, regime: 'down', btcTrend: up(300, 0.99) });
+  assert.equal(a.best.side, 'long');
+  assert.ok(a.best.score >= 80, `điểm ${a.best.score}`);
+  assert.ok(a.best.rsZ !== null && a.best.rsZ < 1.5, `z ${a.best.rsZ}`);
+  const g = a.gates.find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /RS z/);
+  assert.ok(!a.label.startsWith('Đạt'));
+});
+
+test('D2: coin kém thanh khoản (không có RS) ngược xu hướng → G-01 trượt', () => {
+  const a = analyze({ ...base, regime: 'down', liquidityRankPct: 0.9 });
+  const g = a.gates.find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /thiếu RS/);
 });

@@ -102,7 +102,7 @@ export function analyze(i: AnalyzeInput): Analysis {
   const move1hPct = h.length >= 2 ? (last(h.map((k) => k.close)) / h[h.length - 2]!.close - 1) * 100 : 0;
   const stopDistPct = plan.riskPerUnit / plan.entry;
   const gates = evaluateGates({
-    mode: i.mode, side: best.side, score: best.score, regime: i.regime, breakerTripped: i.breakerTripped, breakerNote: i.breakerNote,
+    mode: i.mode, side: best.side, score: best.score, regime: i.regime, rsZ: best.rsZ, riskTier: risk.tier, breakerTripped: i.breakerTripped, breakerNote: i.breakerNote,
     warmupBars: Math.min(i.trend.length, i.entry.length), coverage: best.coverage,
     liquidityRankPct: i.liquidityRankPct, spreadPct: i.spreadPct,
     move1hPct, volumeZ1h: volumeZ(h, 20),

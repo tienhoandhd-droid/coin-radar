@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { marketRegime, circuitBreaker, allowedSide } from './regime.ts';
+import { marketRegime, circuitBreaker, regimeCheck } from './regime.ts';
 import type { Candle } from './types.ts';
 
 function series(closes: number[], rangePct = 0.01): Candle[] {
@@ -46,12 +46,38 @@ test('cầu dao: biến động bình thường → không bật', () => {
   assert.equal(circuitBreaker(series(closes, 0.002), 12).tripped, false);
 });
 
-test('allowedSide: up chỉ Long, Short cần điểm ≥ 80', () => {
-  assert.equal(allowedSide('up', 'long', 70), true);
-  assert.equal(allowedSide('up', 'short', 75), false);
-  assert.equal(allowedSide('up', 'short', 80), true);
-  assert.equal(allowedSide('down', 'long', 79), false);
-  assert.equal(allowedSide('sideways', 'short', 70), true);
+test('regimeCheck: cùng xu hướng và đi ngang luôn được phép', () => {
+  assert.equal(regimeCheck('up', 'long', 70, null, 'Rất cao').ok, true);
+  assert.equal(regimeCheck('down', 'short', 70, null, 'Rất cao').ok, true);
+  assert.equal(regimeCheck('sideways', 'short', 70, null, 'Rất cao').ok, true);
+});
+
+test('regimeCheck: Short ngược xu hướng (up) cần điểm ≥ 80 VÀ z ≤ −1,5 VÀ rủi ro không "Rất cao"', () => {
+  assert.equal(regimeCheck('up', 'short', 80, -1.5, 'Cao').ok, true);
+  assert.equal(regimeCheck('up', 'short', 79, -2, 'Cao').ok, false);
+  assert.equal(regimeCheck('up', 'short', 85, -1.4, 'Cao').ok, false);
+  assert.equal(regimeCheck('up', 'short', 85, 2, 'Cao').ok, false); // z sai chiều
+  assert.equal(regimeCheck('up', 'short', 85, -2, 'Rất cao').ok, false);
+});
+
+test('regimeCheck: Long ngược xu hướng (down) cần z ≥ +1,5', () => {
+  assert.equal(regimeCheck('down', 'long', 80, 1.5, 'Vừa').ok, true);
+  assert.equal(regimeCheck('down', 'long', 85, 1.2, 'Vừa').ok, false);
+  assert.equal(regimeCheck('down', 'long', 85, -2, 'Vừa').ok, false);
+});
+
+test('regimeCheck: không có z (coin kém thanh khoản) → ngược xu hướng bị chặn, note nói rõ', () => {
+  const r = regimeCheck('up', 'short', 90, null, 'Thấp');
+  assert.equal(r.ok, false);
+  assert.match(r.note, /thiếu RS/);
+});
+
+test('regimeCheck: note nêu từng điều kiện trượt', () => {
+  const r = regimeCheck('up', 'short', 75, -0.53, 'Rất cao');
+  assert.equal(r.ok, false);
+  assert.match(r.note, /điểm 75/);
+  assert.match(r.note, /RS z = −0,53/);
+  assert.match(r.note, /Rất cao/);
 });
 
 test('cầu dao: nhánh biên độ nến cuối > 3×ATR → bật', () => {

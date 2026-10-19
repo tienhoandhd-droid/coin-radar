@@ -1,5 +1,6 @@
 import { sma, atr, last } from './indicators.ts';
 import { COMMON } from './config.ts';
+import type { RiskTier } from './risk.ts';
 import type { Candle, Side } from './types.ts';
 
 export type Regime = 'up' | 'sideways' | 'down';
@@ -59,8 +60,21 @@ export function circuitBreaker(btcHourly: Candle[], pauseHours: number): { tripp
   return { tripped: false, reason: null };
 }
 
-export function allowedSide(regime: Regime, side: Side, score: number): boolean {
-  if (regime === 'sideways') return true;
+const z2 = (z: number) => (z < 0 ? '−' : z > 0 ? '+' : '') + Math.abs(z).toFixed(2).replace('.', ',');
+
+// G-01 (D2/M3): Short trong 'up' hoặc Long trong 'down' là lệnh NGƯỢC xu hướng. Chỉ được phép khi đủ CẢ BA:
+// điểm ≥ counterTrendScore, RS so BTC rõ ràng ủng hộ lệnh (Short: z ≤ −ngưỡng; Long: z ≥ +ngưỡng; không đo được z → không cho),
+// và mức rủi ro không phải "Rất cao". 'sideways' không hạn chế.
+export function regimeCheck(regime: Regime, side: Side, score: number, rsZ: number | null, tier: RiskTier): { ok: boolean; note: string } {
   const withTrend = (regime === 'up' && side === 'long') || (regime === 'down' && side === 'short');
-  return withTrend || score >= COMMON.counterTrendScore;
+  if (regime === 'sideways' || withTrend) return { ok: true, note: `Chế độ ${regime}` };
+  const dir = side === 'long' ? 1 : -1;
+  const need = COMMON.counterTrendRsZ;
+  const failed: string[] = [];
+  if (score < COMMON.counterTrendScore) failed.push(`điểm ${score} < ${COMMON.counterTrendScore}`);
+  if (rsZ === null) failed.push('thiếu RS so BTC (coin kém thanh khoản, không đo được)');
+  else if (dir * rsZ < need) failed.push(`RS z = ${z2(rsZ)} chưa đạt ${side === 'long' ? '≥ +' : '≤ −'}${String(need).replace('.', ',')}`);
+  if (tier === 'Rất cao') failed.push('mức rủi ro Rất cao');
+  if (failed.length > 0) return { ok: false, note: `Chế độ ${regime}, lệnh ngược xu hướng bị chặn: ${failed.join('; ')}` };
+  return { ok: true, note: `Chế độ ${regime}, ngược xu hướng nhưng đủ điều kiện (điểm ${score}, RS z = ${z2(rsZ!)}, rủi ro ${tier})` };
 }

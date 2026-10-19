@@ -1,5 +1,6 @@
-import { allowedSide, type Regime } from './regime.ts';
+import { regimeCheck, type Regime } from './regime.ts';
 import { COMMON, CONFIG } from './config.ts';
+import type { RiskTier } from './risk.ts';
 import type { Mode, Side } from './types.ts';
 
 export type GateResult = { code: string; pass: boolean; note: string };
@@ -8,6 +9,8 @@ export type GateContext = {
   side: Side;
   score: number;
   regime: Regime;
+  rsZ: number | null; // z sức mạnh tương đối so BTC (từ scoreSide); null = không đo được
+  riskTier: RiskTier;
   breakerTripped: boolean;
   breakerNote?: string;
   warmupBars: number;
@@ -44,12 +47,13 @@ export function fundingNote(rate: number, intervalHours: number, isDefault: bool
 
 export function evaluateGates(c: GateContext): GateResult[] {
   const dir = c.side === 'long' ? 1 : -1;
+  const regimeVerdict = regimeCheck(c.regime, c.side, c.score, c.rsZ, c.riskTier);
   const adverseFunding = dir * ratePer8h(c.fundingRate, c.fundingIntervalHours); // %/8h; > 0 nghĩa là lệnh phải trả funding
   return [
     {
       code: 'G-01',
-      pass: !c.breakerTripped && allowedSide(c.regime, c.side, c.score),
-      note: c.breakerTripped ? `Cầu dao biến động đang bật${c.breakerNote ? ' — ' + c.breakerNote : ''}` : `Chế độ ${c.regime}`,
+      pass: !c.breakerTripped && regimeVerdict.ok,
+      note: c.breakerTripped ? `Cầu dao biến động đang bật${c.breakerNote ? ' — ' + c.breakerNote : ''}` : regimeVerdict.note,
     },
     {
       code: 'G-02',

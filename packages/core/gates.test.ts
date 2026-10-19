@@ -20,7 +20,7 @@ const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
   move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
-  liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
+  rsZ: 0, riskTier: 'Vừa', liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
 };
 
 test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
@@ -96,4 +96,27 @@ test('G-11: ATR ngày không hợp lệ (NaN) → trượt (fail closed)', () =>
   const g = evaluateGates({ ...ok, stopDistAtr: NaN }).find((x) => x.code === 'G-11')!;
   assert.equal(g.pass, false);
   assert.match(g.note, /ATR/);
+});
+
+test('G-01: Short ngược xu hướng (up) điểm 85 nhưng RS z = −0,5 → trượt, note nêu RS z', () => {
+  const g = evaluateGates({ ...ok, side: 'short', regime: 'up', score: 85, rsZ: -0.5 }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /RS z = −0,50/);
+});
+
+test('G-01: Short ngược xu hướng đủ điểm, z = −2, rủi ro Cao → qua', () => {
+  const g = evaluateGates({ ...ok, side: 'short', regime: 'up', score: 85, rsZ: -2, riskTier: 'Cao' }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, true, g.note);
+});
+
+test('G-01: ngược xu hướng nhưng rủi ro Rất cao → trượt', () => {
+  const g = evaluateGates({ ...ok, side: 'short', regime: 'up', score: 85, rsZ: -2, riskTier: 'Rất cao' }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /Rất cao/);
+});
+
+test('G-01: ngược xu hướng, rsZ = null → trượt', () => {
+  const g = evaluateGates({ ...ok, side: 'short', regime: 'up', score: 95, rsZ: null }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /thiếu RS/);
 });

@@ -12,7 +12,7 @@ export type ScoreInput = {
   liquid: boolean;
   nearestLevels: { above: number | null; below: number | null };
 };
-export type SideScore = { side: Side; score: number; coverage: number; reasons: Reason[] };
+export type SideScore = { side: Side; score: number; coverage: number; reasons: Reason[]; rsZ: number | null }; // rsZ: z sức mạnh tương đối so BTC (dương = coin mạnh hơn BTC), null = không đo được
 
 const S = COMMON.score;
 
@@ -26,6 +26,7 @@ export function scoreSide(input: ScoreInput, side: Side, tp1Distance: number): S
   const reasons: Reason[] = [];
   let earned = 0;
   let available = 0;
+  let rsZ: number | null = null;
 
   // S-01a Xu hướng (khung xu hướng)
   const tc = input.trend.map((k) => k.close);
@@ -53,6 +54,7 @@ export function scoreSide(input: ScoreInput, side: Side, tp1Distance: number): S
     const rets = tc.slice(-n - 1).map((v, i, a) => (i === 0 ? 0 : v / a[i - 1]! - 1)).slice(1);
     const vol = stdev(rets) * Math.sqrt(n);
     const z = vol > 0 ? (coinRet - btcRet) / vol : 0;
+    rsZ = z;
     const pts = w.relativeStrength * clamp01(0.5 + (dir * z) / S.relStrengthZScale);
     earned += pts;
     available += w.relativeStrength;
@@ -101,11 +103,11 @@ export function scoreSide(input: ScoreInput, side: Side, tp1Distance: number): S
   const minPct = Math.round(COMMON.minCoverage * 100);
   if (coverage < COMMON.minCoverage) {
     reasons.push({ code: 'S-01', text: `Độ phủ dữ liệu ${Math.round(coverage * 100)}% < ${minPct}% — không chấm điểm`, points: 0 });
-    return { side, score: 0, coverage, reasons };
+    return { side, score: 0, coverage, reasons, rsZ };
   }
   const raw = available > 0 ? (100 * earned) / available : 0;
   const score = Number.isFinite(raw) ? round(raw) : 0;
-  return { side, score, coverage, reasons };
+  return { side, score, coverage, reasons, rsZ };
 }
 
 const round = (x: number) => Math.round(x * 10) / 10;

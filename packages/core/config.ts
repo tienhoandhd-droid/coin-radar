@@ -46,6 +46,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
 export const COMMON = {
   qualifyScore: 70,
   counterTrendScore: 80,
+  counterTrendRsZ: 1.5, // G-01: lệnh ngược chế độ cần |z sức mạnh tương đối so BTC| ≥ mức này, đúng chiều lệnh (Short: z ≤ −1,5; Long: z ≥ +1,5) — quyết định D2, đề xuất, chưa backtest
   minCoverage: 0.7,
   minWarmupBars: 250,
   topRankPct: 0.1,
