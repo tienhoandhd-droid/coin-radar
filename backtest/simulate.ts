@@ -84,7 +84,7 @@ export type SimTrade = {
   k: {
     id: string; symbol: string; mode: Mode; side: Side; d: 1 | -1; policy: ExitPolicy; placedAt: number; equityAtEntry: number;
     tick: number; qStep: number; leverage: number; costPct: number; cost: SimCost; pathInterval: string; meta: TradeMeta;
-    initialStopX: number; tp1X: number; actX: number; cbPct: number; beX: number | null; tp2X: number | null; tp3X: number | null;
+    initialStopX: number; tp1X: number; trailOnly: boolean; actX: number; cbPct: number; beX: number | null; tp2X: number | null; tp3X: number | null;
     trailAtr: number; timeStopMs: number; maxHoldMs: number; entryType: PlannerPlan['entryType']; sizing: Sizing;
     riskModel: { a: number; b: number; fundingPerUnit: number }; // từ planner: rủi ro(q) = q·a + q²·b
   };
@@ -111,7 +111,9 @@ export function createTrade(a: {
   const tp = pr.legs.find((l) => l.op === 'placeTakeProfit');
   const tr = pr.legs.find((l) => l.op === 'placeTrailing');
   const be = pr.legs.find((l) => l.op === 'placeStopLoss' && l.role === 'BE');
-  if (sl?.op !== 'placeStopLoss' || tp?.op !== 'placeTakeProfit' || tr?.op !== 'placeTrailing') throw new Error(`createTrade ${a.symbol}: planner thiếu SL/TP1/trailing`);
+  // #3 (Task 8): lệnh phá vỡ không TP1 — planner chỉ đặt SL + trailing 100% (exitRule.tp1Pct = 0)
+  const trailOnly = tp === undefined && pr.exitRule.tp1Pct === 0;
+  if (sl?.op !== 'placeStopLoss' || tr?.op !== 'placeTrailing' || (!trailOnly && tp?.op !== 'placeTakeProfit')) throw new Error(`createTrade ${a.symbol}: planner thiếu SL/TP1/trailing`);
   const legs: EntryLeg[] = pr.legs.flatMap((l): EntryLeg[] => {
     if (l.op !== 'placeEntry' || l.input.kind !== 'limit') return [];
     return [{
@@ -131,9 +133,10 @@ export function createTrade(a: {
       id: a.id, symbol: a.symbol, mode: a.mode, side, d, policy: a.policy, placedAt: a.placedAt, equityAtEntry: a.equityAtEntry,
       tick: a.contract.tickSize, qStep: pr.exitRule.qtyStep, leverage: pr.sizing.leverage, costPct: a.plan.costPct, cost: a.cost,
       pathInterval: a.pathInterval, meta: a.meta,
-      initialStopX: toX(d, sl.input.triggerPrice), tp1X: toX(d, tp.input.triggerPrice), actX: toX(d, tr.input.activatePrice), cbPct: tr.input.callbackPct,
+      initialStopX: toX(d, sl.input.triggerPrice), tp1X: tp?.op === 'placeTakeProfit' ? toX(d, tp.input.triggerPrice) : NaN, trailOnly,
+      actX: toX(d, tr.input.activatePrice), cbPct: tr.input.callbackPct,
       beX: be?.op === 'placeStopLoss' ? toX(d, be.input.triggerPrice) : null, tp2X: tgt(1), tp3X: tgt(2), trailAtr,
-      timeStopMs: cfg.timeStopHours * HOUR, maxHoldMs: cfg.maxHoldHours * HOUR, entryType: a.plan.entryType,
+      timeStopMs: cfg.timeStopHours * HOUR, maxHoldMs: trailOnly ? COMMON.breakout.maxHoldDays * DAY : cfg.maxHoldHours * HOUR, entryType: a.plan.entryType,
       sizing: { plannedRiskPct: pr.sizing.realRiskPct, requestedQty: pr.sizing.requestedQty, qty: pr.sizing.qty, notes: pr.reasons },
       riskModel: { a: pr.sizing.riskModel.a, b: pr.sizing.riskModel.b, fundingPerUnit: pr.sizing.riskModel.fundingPerUnit },
     },
@@ -158,6 +161,10 @@ export const isDone = (tr: SimTrade) => tr.b.closedAt !== null;
 
 function rebuildParts(tr: SimTrade, s: State): void {
   const k = tr.k;
+  if (k.trailOnly) { // #3: 100% vị thế theo TRAILING_STOP_MARKET kích hoạt +1R
+    s.parts = [{ name: 'TR' as const, qty: s.posQty, targetX: null, trail: { kind: 'callback' as const, actX: k.actX, cbPct: k.cbPct, peakX: null }, open: true }];
+    return;
+  }
   if (k.policy === 'C2') {
     const { tp1Qty, trailQty } = exitSplit(s.posQty, k.qStep);
     s.parts = [

@@ -492,3 +492,34 @@ test('#1 sàn chi phí: lệnh limit vào = maker khi bật tách phí maker/tak
     });
   });
 });
+
+// ---- Task 8 #3: phá vỡ Donchian khi không còn vùng cản phía trước → 100% trailing (tùy chọn, mặc định tắt) ----
+const noTp1 = (side: Side) => mkPlan(side, 'market', false, {
+  targets: [
+    { name: 'TP1', price: null, pct: 50, qty: 0, r: null, reason: 'không có vùng cản mạnh' },
+    { name: 'TP2', price: null, pct: 30, qty: 0, r: null, reason: 't' },
+    { name: 'TP3', price: null, pct: 20, qty: 0, r: null, reason: 't' },
+  ],
+  exit: { policy: 'C2', tp1Qty: 0, trailQty: 60, trailing: null }, trailAtr: 3,
+});
+
+test('#3 không TP1: mặc định từ chối; bật + đóng 1D phá đỉnh Donchian → chỉ SL + trailing 100% (kích hoạt +1R, callback = trailAtr / giá kích hoạt)', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  assert.match(planOrders(input(noTp1('long'), { breakout: { closeAboveDonchian: true } })).reasons.join(' '), /không có TP1/);
+  await withConfigOverride({ 'COMMON.breakout.enabled': true }, async () => {
+    const r = planOrders(input(noTp1('long'), { breakout: { closeAboveDonchian: true } }));
+    assert.equal(r.allowed, true, r.reasons.join('; '));
+    assert.deepEqual(r.legs.map((l) => l.role), ['E1', 'SL', 'TR']);
+    const tr = r.legs.find((l) => l.op === 'placeTrailing')!;
+    if (tr.op !== 'placeTrailing') return;
+    // giá xấu nhất 100,5, SL 97 → 1R = 3,5 → kích hoạt 104; callback 3 / 104 = 2,8846% → làm tròn xuống 2,88
+    assert.equal(tr.input.activatePrice, 104);
+    assert.equal(tr.input.callbackPct, 2.88);
+    assert.equal(tr.input.qty, r.sizing!.qty);
+    assert.equal(r.exitRule.tp1Pct, 0);
+    const no = planOrders(input(noTp1('long'), { breakout: { closeAboveDonchian: false } }));
+    assert.equal(no.allowed, false);
+    assert.match(no.reasons.join(' '), /Donchian/);
+    assert.equal(planOrders(input(noTp1('short'), { breakout: { closeAboveDonchian: true } })).allowed, false, 'chỉ Long');
+  });
+});

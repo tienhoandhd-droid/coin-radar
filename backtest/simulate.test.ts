@@ -505,3 +505,29 @@ test('#6 C3: thiếu nến 4H trong ctx → lỗi rõ ràng (không âm thầm c
   });
   await assert.rejects(advanceTrade(tr, bars([[100, 126, 100.5, 124]], T0, 4 * H), Infinity, { funding: [], resolve: null }), /C3.*4H/);
 });
+
+test('#3 lệnh phá vỡ không TP1: 100% trailing callback kích hoạt +1R, giữ tối đa breakout.maxHoldDays', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  await withConfigOverride({ 'COMMON.breakout.enabled': true }, async () => {
+    const p = {
+      ...plan('long'),
+      targets: [
+        { name: 'TP1', price: null, pct: 50, qty: 0, r: null, reason: 'x' },
+        { name: 'TP2', price: null, pct: 30, qty: 0, r: null, reason: 't' },
+        { name: 'TP3', price: null, pct: 20, qty: 0, r: null, reason: 't' },
+      ],
+      exit: { policy: 'C2', tp1Qty: 0, trailQty: 0, trailing: null }, trailAtr: 10,
+    } as PlannerPlan;
+    const tr = createTrade({
+      id: 'bo', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: p.capital, contract: C, plan: p, cost: NO_IMPACT, pathInterval: '5m',
+      planner: planned(p, { breakout: { closeAboveDonchian: true } }), meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+    });
+    assert.equal(tr.k.maxHoldMs, 30 * 24 * H);
+    // vào 100, SL 95 → kích hoạt 105; callback 10/105 = 9,5238% → 9,52; đỉnh 120 → dừng 120 × (1 − 0,0952) = 108,576
+    const r = await run(tr, bars([[100, 101, 99.5, 100], [100, 120, 100.5, 119], [119, 119.5, 108, 108.5]]));
+    assert.deepEqual(r.exits.map((e) => e.role), ['TR']);
+    close(r.exits[0]!.qty, r.qty);
+    close(r.exits[0]!.price, 108.576);
+    assert.equal(r.reason, 'trailing');
+  });
+});

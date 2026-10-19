@@ -32,6 +32,7 @@ import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { createReplay, decisionTimes, signalDedupeKey, loadContracts, DEV_PERIOD, type FundingRow, type Window } from './replay.ts';
 import { fundingFallbackRate, maxAbsFundingRate, meanFundingRate } from '../packages/core/sizing.ts';
+import { donchianBreakout } from '../packages/core/breakout.ts';
 import { loadCandles, createFetcher, fetchWindow1m, HOUR, MINUTE, DAY, type Interval, type Fetcher } from './data.ts';
 import {
   createTrade, advanceTrade, forceClose, tradeRecord, portfolioView, createBook, bookFlow, bookClose, isPaused, summarize, groupStats, isDone,
@@ -262,6 +263,13 @@ async function simulate(o: RunOptions) {
       const vol1m = h1.reduce((s, c) => s + c.quoteVolume, 0) / h1.length / 60;
       if (!(vol1m > 0)) throw new Error(`${a.symbol}: không ước được khối lượng 1 phút tại ${new Date(t).toISOString()}`);
       const fb = fundingBufferAt(funding(a.symbol), t, input.fundingIntervals.get(a.symbol) ?? COMMON.defaultFundingIntervalHours);
+      // #3 (tùy chọn): kế hoạch không TP1 → planner cần biết giá đóng 1D đã phá đỉnh Donchian chưa (nến 1D đã đóng tại t)
+      let breakout: { closeAboveDonchian: boolean } | undefined;
+      if (COMMON.breakout.enabled && (pick.plan.targets[0]?.price ?? null) === null) {
+        const n = COMMON.breakout.donchianDays;
+        const ok = donchianBreakout(await input.klines(a.symbol, '1d', n + 2), n);
+        if (ok !== null) breakout = { closeAboveDonchian: ok };
+      }
       if (fb.fallback) stats.fundingFallback++;
       const pr = planOrders({
         plan: pick.plan, grade: o.filter === 'all' ? 'A' : (a.grade?.grade ?? null), signal: { id: a.signal!.id, fresh: a.signal!.fresh },
@@ -270,6 +278,7 @@ async function simulate(o: RunOptions) {
         costModel: { tierPct: COMMON.costRoundTripPct[tierOf(r.ranks.get(a.symbol) ?? 1)], quoteVolPerMin: vol1m },
         fundingBuffer: { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours },
         fundingMeanRate: meanFundingRate(funding(a.symbol), t), // #1 sàn chi phí (chỉ dùng khi bật)
+        ...(breakout !== undefined ? { breakout } : {}),
       });
       if (!pr.allowed) {
         stats.plannerRejected++;

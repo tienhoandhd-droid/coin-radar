@@ -78,6 +78,11 @@ export const COMMON = {
     defaultPolicy: 'C2' as ExitPolicy, // người dùng chốt 19/10/2026: TP1 chốt 50%, 50% còn lại trailing stop trên sàn kích hoạt tại TP1. 'A0' = 50/30/20 cố định (luật cũ, để đối chứng)
     // % chốt tại TP1 lấy từ COMMON.zones.exitPcts[0] (một nguồn duy nhất, cả A0 và C2)
   },
+  // #3 phá vỡ không TP1 (Task 8): kế hoạch Swing không có vùng cản mạnh phía trước (không TP1) VÀ giá đóng 1D > đỉnh đóng donchianDays ngày
+  // trước đó → vào lệnh, thoát 100% bằng TRAILING_STOP_MARKET trên sàn kích hoạt tại +activationR × R, callback = trailAtr kế hoạch
+  // (3×ATR 4H) ÷ giá kích hoạt; giữ tối đa maxHoldDays ngày. Nghiên cứu #3: N ∈ {20; 55} — chọn 20 (một giá trị). Đề xuất, chưa backtest.
+  breakout: { enabled: false as boolean, donchianDays: 20, sides: ['long'] as Array<'long' | 'short'>, modes: ['swing'] as Array<'swing' | 'fast'>,
+    activationR: 1, maxHoldDays: 30 },
   // #6 thoát C3 (Task 8, chỉ mô phỏng — bot chưa làm): TP1 chốt tp1Pct%, phần còn lại dừng = max(hòa vốn + phí khứ hồi nhóm, đỉnh đóng 4H
   // kể từ TP1 − trailAtrMult4h × ATR(atrPeriod) 4H), kiểm trên giá đóng nến 4H. Nghiên cứu #6: tp1Pct ∈ {30; 50}, m ∈ {2; 3} — chọn MỘT
   // tổ hợp 30% / 3×ATR (trailing rộng giữ đuôi phải). Đề xuất, chưa backtest.

@@ -3,6 +3,7 @@ import { snapToTick, tickDecimals } from '../core/price.ts';
 import { entryLegProblems, exitPartProblems, isStepMultiple } from '../core/filters.ts';
 import { canOpen, type OpenTrade } from '../core/portfolio.ts';
 import { mmrFor, liquidationPrice, splitQuantity, type TradePlan } from '../core/plan.ts';
+import { floorPct } from '../core/exit.ts';
 import { riskModel, riskAt as riskAtModel, qtyForRisk, costPctAt, costModelProblems, fundingBufferProblems, costR, type CostModel, type FundingBuffer } from '../core/sizing.ts';
 import type { ExitPolicy } from '../core/exit.ts';
 import type { MarginBracket } from '../core/margin.ts';
@@ -23,6 +24,7 @@ export type PlannerPlan = PlanCore & {
   entryType: 'market' | 'limit' | 'split'; // split = chân market + chân limit (kế hoạch mô hình)
   limitPrice?: number | null; // PatternPlan; TradePlan limit dùng plan.entry
   cancelIfTp1First?: boolean; // PatternPlan; TradePlan: hủy limit nếu giá chạm TP1 trước (khi TP1 còn ở phía trước giá)
+  trailAtr?: number; // TradePlan: khoảng trailing theo ATR khung vào lệnh (giá) — dùng cho lệnh phá vỡ không TP1 (#3 Task 8)
 };
 
 export type PlannerInput = {
@@ -50,6 +52,9 @@ export type PlannerInput = {
   // #1 sàn chi phí (Task 8, COMMON.risk.maxCostR): funding TB có dấu mỗi kỳ trong COMMON.risk.fundingBufferLookbackDays ngày (dương = Long trả)
   // để ước funding DỰ KIẾN; bắt buộc khi bật sàn chi phí (fail closed), bỏ qua khi tắt.
   fundingMeanRate?: number;
+  // #3 phá vỡ (Task 8, COMMON.breakout): giá đóng 1D cuối > đỉnh đóng COMMON.breakout.donchianDays ngày trước đó (nơi gọi tính từ nến 1D
+  // đã đóng — core/breakout.ts donchianBreakout). Chỉ xét khi kế hoạch không có TP1 và tùy chọn bật.
+  breakout?: { closeAboveDonchian: boolean };
 };
 
 export type EntryRole = 'E1' | 'E2';
@@ -107,7 +112,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // Mọi khối lượng theo bước THÔ hơn của LOT_SIZE / MARKET_LOT_SIZE: chân market và lệnh thoát (khớp market) không bị orders.ts
   // cắt bớt → tổng TP1 + trailing luôn đúng bằng vị thế.
   const qStep = Math.max(c.stepSize, c.marketStepSize);
-  const exitRule = { basis: 'filled_qty' as const, tp1Pct: COMMON.zones.exitPcts[0]!, qtyStep: qStep };
+  const exitRule: PlannerResult['exitRule'] = { basis: 'filled_qty', tp1Pct: COMMON.zones.exitPcts[0]!, qtyStep: qStep }; // #3 trailing 100%: đặt lại tp1Pct = 0 bên dưới
   const problems: string[] = []; // vi phạm → từ chối
   const adjust: string[] = []; // lý do canOpen giảm khối lượng (vẫn cho vào)
   const reject = (...rs: string[]): PlannerResult => ({ allowed: false, reasons: [...adjust, ...problems, ...rs], legs: [], sizing: null, exitByFill: [], exitRule });
@@ -124,10 +129,16 @@ export function planOrders(i: PlannerInput): PlannerResult {
   if (p.capital !== i.capital) problems.push(`Kế hoạch được lập với vốn ${p.capital} USDT nhưng vốn bot là ${i.capital} USDT — bot phải lập lại kế hoạch với vốn của mình rồi mới vào lệnh`);
   if (p.riskPct > COMMON.risk.perTradePct) problems.push(`Rủi ro kế hoạch ${p.riskPct}% vượt ${COMMON.risk.perTradePct}%/lệnh`);
   const tp1Raw = p.targets[0]?.price ?? null;
-  const tr = p.exit.trailing;
-  if (tp1Raw === null || tr === null) problems.push('Kế hoạch không có TP1/trailing trên sàn — bot không vào lệnh thiếu TP1');
+  const trPlan = p.exit.trailing;
+  // #3 (tùy chọn): không TP1 + phá đỉnh Donchian → chỉ SL + trailing 100% (tính ở bước 2 khi đã biết giá xấu nhất)
+  const B = COMMON.breakout;
+  const trailOnly = tp1Raw === null && B.enabled && B.sides.includes(p.side) && B.modes.includes(i.mode);
+  if (trailOnly) {
+    if (i.breakout?.closeAboveDonchian !== true) problems.push(`Không TP1 và giá đóng 1D chưa phá đỉnh Donchian ${B.donchianDays} ngày (${i.breakout === undefined ? 'thiếu dữ liệu' : 'chưa phá'}) — không vào lệnh phá vỡ`);
+    if (!(typeof p.trailAtr === 'number' && p.trailAtr > 0)) problems.push(`Lệnh phá vỡ cần khoảng trailing ATR của kế hoạch (trailAtr ${String(p.trailAtr)})`);
+  } else if (tp1Raw === null || trPlan === null) problems.push('Kế hoạch không có TP1/trailing trên sàn — bot không vào lệnh thiếu TP1');
   if (!(i.markPrice > 0) || !Number.isFinite(i.markPrice)) problems.push(`Giá mark ${i.markPrice} không hợp lệ`);
-  if (problems.length > 0 || tp1Raw === null || tr === null) return reject();
+  if (problems.length > 0 || (!trailOnly && (tp1Raw === null || trPlan === null))) return reject();
 
   // ---- 2. Giá (làm tròn ĐÚNG như orders.ts → giá trong lệnh mong muốn = giá gửi sàn) ------------
   const side = p.side;
@@ -135,8 +146,6 @@ export function planOrders(i: PlannerInput): PlannerResult {
   const tick = c.tickSize;
   const awayDir = side === 'long' ? 'down' : 'up'; // SL ra xa giá vào; TP/kích hoạt/limit về phía giá vào (cùng hướng)
   const stop = snapToTick(p.stop, tick, awayDir);
-  const tp1 = snapToTick(tp1Raw, tick, awayDir);
-  const activate = snapToTick(tr.activationPrice, tick, awayDir);
   const hasMarket = p.entryType !== 'limit';
   const hasLimit = p.entryType !== 'market';
   const limitRaw = p.entryType === 'limit' ? (p.limitPrice ?? p.entry) : (p.limitPrice ?? null);
@@ -146,12 +155,17 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // Mọi giá khớp được phép: market = [giá mark, giá tối đa]; limit = giá limit
   const fills = [...(hasMarket ? [i.markPrice, maxEntry] : []), ...(limitPrice !== null ? [limitPrice] : [])];
   const worstEntry = d > 0 ? Math.max(...fills) : Math.min(...fills);
+  // Chốt lời: C2 = TP1 + trailing kích hoạt tại TP1; #3 phá vỡ = trailing 100% kích hoạt tại giá xấu nhất + activationR × |giá xấu nhất − SL|,
+  // callback = trailAtr ÷ giá kích hoạt (làm tròn XUỐNG 0,01 như floorPct; ngoài [min; max] sàn → từ chối ở dưới)
+  const tp1 = trailOnly ? null : snapToTick(tp1Raw!, tick, awayDir);
+  const activate = trailOnly ? snapToTick(worstEntry + d * B.activationR * Math.abs(worstEntry - stop), tick, awayDir) : snapToTick(trPlan!.activationPrice, tick, awayDir);
+  const tr = trailOnly ? { callbackPct: floorPct((p.trailAtr! / activate) * 100) } : trPlan!;
 
   if (hasMarket && d * (i.markPrice - maxEntry) > 0) problems.push(`Giá mark ${i.markPrice} đã vượt giá tối đa ${maxEntry} — không đuổi giá`);
   if (fills.some((f) => d * (f - stop) <= 0)) problems.push(`SL ${stop} sai phía: phải ${d > 0 ? 'dưới' : 'trên'} mọi giá vào (${fills.join(', ')})`);
   if (d * (i.markPrice - stop) <= 0) problems.push(`Giá mark ${i.markPrice} đã chạm/vượt SL ${stop}`);
-  if (fills.some((f) => d * (tp1 - f) <= 0)) problems.push(`TP1 ${tp1} sai phía: phải ${d > 0 ? 'trên' : 'dưới'} mọi giá vào (${fills.join(', ')})`);
-  if (activate !== tp1) problems.push(`Giá kích hoạt trailing ${activate} ≠ TP1 ${tp1}`);
+  if (tp1 !== null && fills.some((f) => d * (tp1 - f) <= 0)) problems.push(`TP1 ${tp1} sai phía: phải ${d > 0 ? 'trên' : 'dưới'} mọi giá vào (${fills.join(', ')})`);
+  if (tp1 !== null && activate !== tp1) problems.push(`Giá kích hoạt trailing ${activate} ≠ TP1 ${tp1}`);
   const { binanceTrailCallbackMinPct: cbMin, binanceTrailMaxCallbackPct: cbMax } = COMMON;
   if (!(tr.callbackPct >= cbMin && tr.callbackPct <= cbMax)) problems.push(`callbackRate ${tr.callbackPct} ngoài [${cbMin}; ${cbMax}]`);
   const cm = i.costModel;
@@ -229,9 +243,10 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // Dừng sàn hòa vốn (D10): giá vào xấu nhất + phí khứ hồi CỦA KHỐI LƯỢNG CUỐI, phải nằm giữa giá vào và TP1 (đặt sau khi TP1 khớp).
   // Cần khi callback của trailing lớn hơn khoảng bảo đảm không lỗ tính với phí đó (mức dừng lúc kích hoạt < hòa vốn).
   const costPct = costAt(qty);
-  const noLossPct = ((d * (tp1 - worstEntry * (1 + (d * costPct) / 100))) / tp1) * 100;
+  // #3 trailing 100% không có TP1 → không có dừng sàn hòa vốn (trailing kích hoạt tại +1R, callback theo ATR — có thể thoát dưới hòa vốn)
+  const noLossPct = tp1 === null ? Infinity : ((d * (tp1 - worstEntry * (1 + (d * costPct) / 100))) / tp1) * 100;
   const beTrigger = tr.callbackPct > noLossPct + 1e-12 ? snapToTick(worstEntry * (1 + (d * costPct) / 100), tick, d > 0 ? 'up' : 'down') : null;
-  if (beTrigger !== null && d * (tp1 - beTrigger) <= 0) {
+  if (beTrigger !== null && tp1 !== null && d * (tp1 - beTrigger) <= 0) {
     problems.push(`Dừng sàn hòa vốn ${beTrigger} (giá vào ${worstEntry} + phí ${Number(costPct.toFixed(6))}%) không nằm trước TP1 ${tp1} — TP1 chưa bù phí`);
   }
   let entryQty: number[];
@@ -251,10 +266,12 @@ export function planOrders(i: PlannerInput): PlannerResult {
   });
   const roles: EntryRole[] = kinds.map((_, j) => (j === 0 ? 'E1' : 'E2'));
   const scenarios: ExitScenario[] = [];
-  if (p.entryType === 'split') scenarios.push({ filled: ['E1'], positionQty: entryQty[0]!, ...exitSplit(entryQty[0]!, qStep) });
-  scenarios.push({ filled: roles, positionQty: qty, ...exitSplit(qty, qStep) });
+  const split = (q: number) => (trailOnly ? { tp1Qty: 0, trailQty: q } : exitSplit(q, qStep));
+  if (trailOnly) exitRule.tp1Pct = 0;
+  if (p.entryType === 'split') scenarios.push({ filled: ['E1'], positionQty: entryQty[0]!, ...split(entryQty[0]!) });
+  scenarios.push({ filled: roles, positionQty: qty, ...split(qty) });
   for (const s of scenarios) {
-    problems.push(...exitPartProblems([s.tp1Qty, s.trailQty], c).map((x) => `${s.filled.length === 1 && p.entryType === 'split' ? 'Chỉ chân market khớp: ' : ''}${x}`));
+    problems.push(...exitPartProblems(trailOnly ? [s.trailQty] : [s.tp1Qty, s.trailQty], c).map((x) => `${s.filled.length === 1 && p.entryType === 'split' ? 'Chỉ chân market khớp: ' : ''}${x}`));
   }
   const full = scenarios[scenarios.length - 1]!;
 
@@ -279,7 +296,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   }
 
   // ---- 7. Chỗ lệnh (MAX_NUM_ORDERS) ----------------------------------------------------------------------------------
-  const slots = bracketSlots({ entryLegs: kinds.length, tp1: true, trailing: true, breakevenFloor: beTrigger !== null });
+  const slots = bracketSlots({ entryLegs: kinds.length, tp1: tp1 !== null, trailing: true, breakevenFloor: beTrigger !== null });
   if (!Number.isInteger(i.openOrderCount) || i.openOrderCount < 0) problems.push(`openOrderCount ${i.openOrderCount} phải là số nguyên ≥ 0`);
   else if (i.openOrderCount + slots > c.maxNumOrders) problems.push(`Đã có ${i.openOrderCount} lệnh mở trên ${c.symbol}; cả bộ cần ${slots} lệnh sẽ vượt MAX_NUM_ORDERS ${c.maxNumOrders}`);
 
@@ -297,7 +314,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   const base = i.openOrderCount;
   const tp1Qty = full.tp1Qty;
   const trailQty = full.trailQty;
-  const cancelAt = (p.cancelIfTp1First ?? true) && d * (tp1 - i.markPrice) > 0 ? tp1 : null;
+  const cancelAt = tp1 !== null && (p.cancelIfTp1First ?? true) && d * (tp1 - i.markPrice) > 0 ? tp1 : null;
   kinds.forEach((k, j) => {
     const common = { contract: c, side, qty: entryQty[j]!, id: idOf(roles[j]!), openCount: base + j, reserveSlots: slots - j };
     // Chân "market" = LIMIT IOC giá trần = giá tối đa (Long làm tròn XUỐNG, Short LÊN): sàn không bao giờ khớp vượt giá cho phép;
@@ -312,10 +329,12 @@ export function planOrders(i: PlannerInput): PlannerResult {
   legs.push({ op: 'placeStopLoss', role: 'SL', when: 'on_entry_fill', clientId: makeClientId(slId),
     input: { contract: c, side, triggerPrice: stop, purpose: 'initial', id: slId } });
   n++;
-  const tpId = idOf('TP1');
-  legs.push({ op: 'placeTakeProfit', role: 'TP1', when: 'on_entry_fill', clientId: makeClientId(tpId),
-    input: { contract: c, side, entryPrice: worstEntry, triggerPrice: tp1, qty: tp1Qty, id: tpId, openCount: base + n } });
-  n++;
+  if (tp1 !== null) {
+    const tpId = idOf('TP1');
+    legs.push({ op: 'placeTakeProfit', role: 'TP1', when: 'on_entry_fill', clientId: makeClientId(tpId),
+      input: { contract: c, side, entryPrice: worstEntry, triggerPrice: tp1, qty: tp1Qty, id: tpId, openCount: base + n } });
+    n++;
+  }
   const trId = idOf('TR');
   legs.push({ op: 'placeTrailing', role: 'TR', when: 'on_entry_fill', clientId: makeClientId(trId),
     input: { contract: c, side, entryPrice: worstEntry, activatePrice: activate, callbackPct: tr.callbackPct, qty: trailQty, id: trId, openCount: base + n } });
@@ -330,7 +349,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // SL kiểm với giá mark hiện tại; dừng sàn hòa vốn kiểm với giá mark dự kiến lúc đặt (= TP1).
   for (const l of legs) {
     const b = l.op === 'placeEntry' ? builders.entry(l.input, i.now)
-      : l.op === 'placeStopLoss' ? builders.stopLoss({ ...l.input, markPrice: l.role === 'BE' ? tp1 : i.markPrice })
+      : l.op === 'placeStopLoss' ? builders.stopLoss({ ...l.input, markPrice: l.role === 'BE' && tp1 !== null ? tp1 : i.markPrice })
         : l.op === 'placeTakeProfit' ? builders.takeProfit(l.input) : builders.trailing(l.input);
     if (!b.ok) problems.push(...b.problems.map((x) => `${l.role}: ${x}`));
   }
