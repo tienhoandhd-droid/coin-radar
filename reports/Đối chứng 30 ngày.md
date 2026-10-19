@@ -114,6 +114,17 @@ chi phí khứ hồi thật khoảng **0,115 / 0,136 / 0,154%** → giả địn
 - Chạy bot **paper** với Swing (Long ưu tiên) ≥ 100 lệnh và ≥ 4 tuần trước khi nghĩ tới Demo, đúng lộ trình đã thống nhất.
 - Thêm nguồn tin coin riêng (thông báo niêm yết/hủy niêm yết Binance, DefiLlama hacks) — đã thử gọi được, nhưng chưa chứng minh giúp tăng lãi.
 
+## 9b. Trạng thái bot (cuối đợt)
+
+- Đã xong và qua rà soát: nhật ký + đối chiếu sau khi tắt máy (B4), cầu chì + khóa tiền thật (B5), Telegram (B6), WebSocket (B8a),
+  sàn giả lập paper dùng chung mô hình khớp đã kiểm chứng của bộ mô phỏng (B7), vòng đời bot + chốt chặn funding + systemd + sổ tay
+  vận hành `docs/runbook-bot.md` (B8b). 1273/1273 test đạt.
+- Đã **chạy paper thật 81 phút** trên máy (giá Binance công khai, khớp giả lập): 7 nến đóng, 89 lượt đối chiếu, 1 lần khởi động lại,
+  0 lỗi, 0 cảnh báo khẩn, 0 lệnh (không có tín hiệu Hạng A mới — đúng như mô phỏng: Hạng A rất hiếm).
+- Còn lại: **B9 — kiểm cơ khí trên Binance Demo**, cần anh tạo key Demo (không quyền rút tiền) và đặt vào `.env`. Các câu hỏi chỉ Demo trả lời
+  được (hai lệnh dừng cùng tồn tại, mã lỗi -4130/-2022 với lệnh algo, đường dẫn `/private/ws`) đã ghi trong sổ.
+- Muốn bot tự vào lệnh ở paper, phải bỏ điều kiện “chỉ Hạng A” (gần như không có lệnh) — đây cũng là quyết định của anh.
+
 ## 10. Tài liệu kèm
 
 - Biên nhận mù: `docs/verification/khoa-luat-mo-phong-mu.md`, `docs/verification/ket-qua-mo-phong-mu.md`
