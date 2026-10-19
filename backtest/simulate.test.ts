@@ -17,7 +17,10 @@ const C: Contract = {
 const T0 = Date.UTC(2026, 6, 1); // 01/07/2026 00:00 UTC (trong kỳ D)
 const M5 = 5 * 60_000;
 const H = 3_600_000;
-const CAPITAL = 102_000;
+// Vốn theo chiều để planner cho đúng 400 coin: rủi ro/coin = 5 + (giá vào + SL) × 0,05% (nửa phí ở giá vào, nửa ở giá SL)
+//   Long: 5 + 195 × 0,0005 = 5,0975 → 400 × 5,0975 / 2% = 101 950; Short: 5 + 205 × 0,0005 = 5,1025 → 102 050
+const CAP = { long: 101_950, short: 102_050 } as const;
+const CAPITAL = CAP.long;
 const NO_IMPACT: SimCost = { tierPct: 0.1, impactPct: 0.5, vol1m: Infinity }; // mỗi lần khớp trả 0,05% notional, không trượt theo cỡ lệnh
 
 // TP1 = 125 (Long) / 75 (Short); trailAtr 50 → callback thô 40% → kẹp trần sàn 10% (dễ tính tay: dừng = đỉnh × 0,9 / đáy × 1,1)
@@ -38,15 +41,15 @@ function plan(side: Side, over: Partial<PlannerPlan> = {}): PlannerPlan {
     ],
     exit: { policy: 'C2', tp1Qty: 0, trailQty: 0, trailing: trailingFor(side, worst, tp1, 50, 0.1) },
     valid: true, invalidReason: null, qty: 10_000, costPct: 0.1, suggestedLeverage: 5,
-    limitExpiryHours: entryType === 'market' ? null : 24, riskPct: 2, capital: CAPITAL,
+    limitExpiryHours: entryType === 'market' ? null : 24, riskPct: 2, capital: CAP[side],
     ...over,
   };
 }
 
 function planned(p: PlannerPlan, over: Partial<PlannerInput> = {}): PlannerResult {
   const r = planOrders({
-    plan: p, grade: 'A', signal: { id: `AAAUSDT|swing|${p.side}|zone|1|${p.stop}`, fresh: true }, mode: 'swing', contract: C, capital: CAPITAL,
-    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, ...over,
+    plan: p, grade: 'A', signal: { id: `AAAUSDT|swing|${p.side}|zone|1|${p.stop}`, fresh: true }, mode: 'swing', contract: C, capital: p.capital,
+    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, ...over,
   });
   assert.ok(r.allowed, `planner từ chối: ${r.reasons.join('; ')}`);
   return r;
@@ -54,7 +57,7 @@ function planned(p: PlannerPlan, over: Partial<PlannerInput> = {}): PlannerResul
 
 function trade(p: PlannerPlan, opts: { cost?: SimCost; policy?: 'C2' | 'A0'; over?: Partial<PlannerInput> } = {}): SimTrade {
   return createTrade({
-    id: 't1', symbol: C.symbol, mode: 'swing', policy: opts.policy ?? 'C2', placedAt: T0, equityAtEntry: CAPITAL, contract: C,
+    id: 't1', symbol: C.symbol, mode: 'swing', policy: opts.policy ?? 'C2', placedAt: T0, equityAtEntry: p.capital, contract: C,
     plan: p, planner: planned(p, opts.over), cost: opts.cost ?? NO_IMPACT, pathInterval: '5m',
     meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
   });
@@ -247,10 +250,10 @@ test('Dừng theo thời gian không áp dụng khi đã đạt +1R (đỉnh ≥
 
 test('Trần danh mục: 10 lệnh còn rủi ro → planner (dùng lại) từ chối; lệnh đã qua TP1 không tính', () => {
   const open: OpenTrade[] = Array.from({ length: 10 }, (_, i) => ({ symbol: `X${i}USDT`, side: 'long', notional: 100, leverage: 5, riskAmount: 10, pastTp1: false }));
-  const r = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open, openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0 });
+  const r = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open, openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 } });
   assert.equal(r.allowed, false);
   assert.match(r.reasons.join(' '), /trần 10 lệnh/);
-  const r2 = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open.map((o, i) => ({ ...o, pastTp1: i < 3 })), openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0 });
+  const r2 = planOrders({ plan: plan('long'), grade: 'A', signal: { id: 's', fresh: true }, mode: 'swing', contract: C, capital: CAPITAL, openTrades: open.map((o, i) => ({ ...o, pastTp1: i < 3 })), openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'sim', now: T0, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 } });
   assert.equal(r2.allowed, true);
 });
 
@@ -332,4 +335,40 @@ test('SL là MỘT lệnh closePosition: trượt theo cỡ tính trên cả 400
   assert.equal(r.exits.length, 1);
   assert.deepEqual([r.exits[0]!.role, r.exits[0]!.qty], ['SL', 400]);
   close(r.exits[0]!.price, 95 * (1 - 0.005 * 38_000 / 400_000 / 2));
+});
+
+// ---- Ràng buộc cứng người dùng: lỗ thật mỗi lệnh ≤ 2% vốn (rà soát Task 3, mục i) ----
+test('≤ 2%: Short SL cao hơn giá vào 8,2% (ca AKEUSDT) — phí chiều ra tính ở giá SL → chạm SL đủ vẫn ≤ 2% vốn', async () => {
+  const cost: SimCost = { tierPct: 1, impactPct: 0.5, vol1m: 2_000_000 }; // nhóm thanh khoản thấp 1% khứ hồi + trượt theo cỡ
+  // vào bằng limit đúng giá xấu nhất 100 (không có phần giá tốt hơn che phí chiều ra)
+  const p = { ...plan('short', { entryType: 'limit', limitPrice: 100 }), stop: 108.2, costPct: 1, capital: 100_000, suggestedLeverage: 3,
+    targets: [{ name: 'TP1' as const, price: 75, pct: 50, qty: 0, r: 3, reason: 't' }, { name: 'TP2' as const, price: null, pct: 30, qty: 0, r: null, reason: 't' }, { name: 'TP3' as const, price: null, pct: 20, qty: 0, r: null, reason: 't' }] };
+  const tr = createTrade({
+    id: 'ake', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: 100_000, contract: C, plan: p, cost, pathInterval: '5m',
+    planner: planned(p, { capital: 100_000, costModel: { tierPct: 1, quoteVolPerMin: 2_000_000 }, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 } }),
+    meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  const r = await run(tr, bars([[99.9, 100.2, 99.5, 100], [100.2, 108.5, 100.1, 108.3]]));
+  assert.equal(r.reason, 'stop_loss');
+  assert.equal(r.avgEntry, 100);
+  assert.ok(r.pctEquity >= -2 - 1e-9, `lỗ ${r.pctEquity}%`);
+  assert.ok(r.pctEquity < -1.95, `định cỡ vẫn dùng gần hết 2%: ${r.pctEquity}%`);
+});
+
+test('≤ 2%: Long trả funding nhiều kỳ trước khi chạm SL (ca FFUSDT) — đệm funding trong định cỡ → ≤ 2% vốn', async () => {
+  const p = { ...plan('long'), capital: 100_000 };
+  const fb = { maxAbsRate: 0.0005, intervalHours: 8 }; // Swing giữ dự kiến 168 giờ → 21 kỳ × 0,05%
+  const tr = createTrade({
+    id: 'ff', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: 100_000, contract: C, plan: p, cost: NO_IMPACT, pathInterval: '1h',
+    planner: planned(p, { capital: 100_000, fundingBuffer: fb }),
+    meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  // 10 kỳ funding +0,05% (Long trả) rồi chạm SL
+  const rows = Array.from({ length: 81 }, (_, i) => [100, 100.5, 99.5, 100] as [number, number, number, number]);
+  rows.push([99.8, 99.9, 94, 94.5]);
+  const funding = Array.from({ length: 10 }, (_, j) => ({ fundingTime: T0 + (j + 1) * 8 * H, fundingRate: 0.0005, markPrice: 100 }));
+  const r = await run(tr, bars(rows, T0, H), { funding });
+  assert.equal(r.reason, 'stop_loss');
+  assert.ok(r.funding < 0);
+  assert.ok(r.pctEquity >= -2 - 1e-9, `lỗ ${r.pctEquity}%`);
 });

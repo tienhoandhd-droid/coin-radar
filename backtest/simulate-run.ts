@@ -66,6 +66,14 @@ export function pickCandidates(results: readonly Analysis[], filter: Filter, st:
   return out;
 }
 
+// |funding| lớn nhất mỗi kỳ trong COMMON.risk.fundingBufferLookbackDays ngày tới t — chỉ các kỳ ĐÃ chốt (fundingTime ≤ t, không nhìn trước)
+export function maxAbsFunding(rows: readonly FundingRow[], t: number): number {
+  const from = t - COMMON.risk.fundingBufferLookbackDays * DAY;
+  let m = 0;
+  for (const r of rows) if (r.fundingTime > from && r.fundingTime <= t) m = Math.max(m, Math.abs(r.fundingRate));
+  return m;
+}
+
 export type SettleMarks = Map<SimTrade, { flows: number; closed: boolean }>;
 
 // Dòng tiền mới của các lệnh (đã chạy tới cùng một mốc) → sổ vốn theo ĐÚNG thứ tự thời gian; lệnh đóng → đếm thua (cầu chì).
@@ -226,6 +234,7 @@ export async function runSimulation(o: RunOptions) {
         mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t,
         costModel: { tierPct: COMMON.costRoundTripPct[tierOf(r.ranks.get(a.symbol) ?? 1)], quoteVolPerMin: vol1m },
+        fundingBuffer: { maxAbsRate: maxAbsFunding(funding(a.symbol), t), intervalHours: input.fundingIntervals.get(a.symbol) ?? COMMON.defaultFundingIntervalHours },
       });
       if (!pr.allowed) {
         stats.plannerRejected++;

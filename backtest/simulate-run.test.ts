@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Analysis } from '../packages/core/analyze.ts';
-import { pickCandidates, settle, cooldownMs, type PickState, type SettleMarks } from './simulate-run.ts';
+import { pickCandidates, settle, cooldownMs, maxAbsFunding, type PickState, type SettleMarks } from './simulate-run.ts';
 import { createBook, type SimTrade } from './simulate.ts';
 
 const T = Date.UTC(2026, 6, 1, 12);
@@ -63,4 +63,16 @@ test('settle: dòng tiền của nhiều lệnh gộp theo thời gian thật tr
   assert.equal(book.trips.losses, 0);
   settle(book, [a, b], ptr); // gọi lại không cộng trùng
   assert.equal(book.equity, 990);
+});
+
+test('maxAbsFunding: |funding| lớn nhất trong 30 ngày tới t, chỉ kỳ đã chốt (không nhìn trước)', () => {
+  const D = 86_400_000;
+  const rows = [
+    { fundingTime: T - 31 * D, fundingRate: -0.01, markPrice: 1 }, // quá 30 ngày
+    { fundingTime: T - 5 * D, fundingRate: -0.0007, markPrice: 1 },
+    { fundingTime: T, fundingRate: 0.0003, markPrice: 1 },
+    { fundingTime: T + 1, fundingRate: 0.02, markPrice: 1 }, // tương lai
+  ];
+  assert.equal(maxAbsFunding(rows, T), 0.0007);
+  assert.equal(maxAbsFunding([], T), 0);
 });
