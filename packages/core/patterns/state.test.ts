@@ -327,13 +327,17 @@ function series2(): Candle[] {
   for (let r = 0; r < 4; r++) { leg(100, 120, 8); leg(120, 100, 8); }
   leg(100, 120, 8);
   leg(120, 124, 2); // phá lên
-  push(125, 1.5, 120.2); // retest: râu chạm lại đường phá (~120) nhưng đóng ngoài
+  push(127, 1.5, 125.5); // nến đệm: râu KHÔNG chạm đường phá (để nến liền trước retest không tự chạm)
+  push(125, 1.5, 120.2); // retest ở bi+2: râu chạm lại đường phá (~120) nhưng đóng ngoài
   leg(125, 135, 6);
   for (let i = 0; i < 14; i++) push(135 + (i % 2), 1);
   leg(135, 112, 6); // quay đầu thủng sâu vào trong sau > 10 nến
   for (let i = 0; i < 6; i++) push(112 + (i % 2), 1);
   return c;
 }
+
+// Gương giá (240 - giá): phá xuống + retest bằng râu trên, để phủ nhánh phá xuống.
+const mirrorSeries = (c: Candle[]): Candle[] => c.map((x) => k(240 - x.low, 240 - x.high, 240 - x.close, x.volume));
 
 function checkReplay(full: Candle[], minCompared: number): Set<string> {
   const fullAtr = atr(full, COMMON.patterns.atrPeriod);
@@ -367,7 +371,8 @@ function checkReplay(full: Candle[], minCompared: number): Set<string> {
 test('chạy toàn bộ == chạy tăng dần từng nến (không look-ahead), phủ mọi trạng thái', () => {
   const s1 = checkReplay(series(), 100);
   const s2 = checkReplay(series2(), 50);
-  const all = new Set([...s1, ...s2]);
+  const s3 = checkReplay(mirrorSeries(series2()), 50);
+  const all = new Set([...s1, ...s2, ...s3]);
   for (const st of ['armed', 'breakout_pending', 'breakout', 'retested', 'failed', 'expired', 'invalidated']) {
     assert.ok(all.has(st), `bài replay chưa phủ trạng thái ${st}; có: ${[...all].join(',')}`);
   }
