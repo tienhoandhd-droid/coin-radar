@@ -486,6 +486,7 @@ export async function executeActions(actionsIn: readonly Action[], ctx: Executor
         case 'record_fill': ctx.journal.append({ type: 'fill', signalId: a.signalId, role: a.role, fill: a.fill }); break;
         case 'update_leg': ctx.journal.append({ type: 'leg_update', signalId: a.signalId, role: a.role, clientId: a.clientId, status: a.status, reason: a.reason }); break;
         case 'mark_trade_closed': ctx.journal.append({ type: 'trade_closed', signalId: a.signalId, reason: a.reason }); break;
+        case 'sync_stop': ctx.journal.append({ type: 'stop_tightened', signalId: a.signalId, stop: a.stop, reason: a.reason }); break;
         case 'query_order': await queryOrderAction(a); break;
         case 'query_algo': await queryAlgoAction(a); break;
         default: {

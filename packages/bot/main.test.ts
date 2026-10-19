@@ -544,3 +544,44 @@ test('R2 #3 tắt bot mà KHÔNG đọc được trạng thái sàn → vẫn b�
   assert.equal(last.level, 'urgent');
   assert.match(last.text, /Bot tắt — KHÔNG đọc được trạng thái sàn, kiểm tay ngay/);
 });
+
+// ======================= B8b vòng 3 (rà soát lại 2) =======================
+test('R3 siết SL bị sàn TỪ CHỐI → nhật ký giữ SL cũ (không stop_tightened), KHẨN; SL cũ vẫn trên sàn', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  const oldStop = h.journal.state().trades[SIGNAL_ID]!.plan.stop;
+  h.deps.publicGet = ((orig) => async (p: string) => (p.startsWith('/fapi/v1/fundingRate') ? [{ symbol: 'AAAUSDT', fundingTime: FT, fundingRate: '0.02', markPrice: '100' }] : orig(p)))(h.deps.publicGet);
+  h.paper.inject({ match: (r) => r.method === 'POST' && r.path === '/fapi/v1/algoOrder' && r.params?.type === 'STOP_MARKET', status: 400, body: { code: -2021, msg: 'Order would immediately trigger.' }, apply: false, times: 5 });
+  h.clock.t = FT + 2 * 60_000;
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  assert.ok(h.bot.trace().includes('funding:AAAUSDT tighten'));
+  assert.equal(h.journal.state().trades[SIGNAL_ID]!.plan.stop, oldStop, 'nhật ký giữ SL cũ');
+  assert.ok(!events(h.journal).some((e) => e.type === 'stop_tightened'));
+  assert.ok(h.notes.some((n) => n.level === 'urgent' && /siết SL .*KHÔNG được sàn nhận/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+  const algos = (await h.paper.api.request({ method: 'GET', path: '/fapi/v1/openAlgoOrders', params: { symbol: 'AAAUSDT' }, createsOrder: false })).body as Array<{ orderType: string; triggerPrice: string }>;
+  assert.deepEqual(algos.filter((a) => a.orderType === 'STOP_MARKET').map((a) => Number(a.triggerPrice)), [oldStop]);
+});
+
+test('R3 nhật ký lệch SL với sàn (vd ghi sai) → lượt đối chiếu lấy SL trên sàn làm sự thật', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  const real = h.journal.state().trades[SIGNAL_ID]!.plan.stop;
+  h.journal.append({ type: 'stop_tightened', signalId: SIGNAL_ID, stop: real + 1.5, reason: 'ghi sai giả lập' });
+  await h.drive(h.bot.onUserEvent({ type: 'resync_required', reason: 'reconnect' } as UserEvent).then(() => h.bot.idle()));
+  assert.equal(h.journal.state().trades[SIGNAL_ID]!.plan.stop, real);
+});
+
+test('R3 bộ nhớ chốt chặn funding (|funding| xấu nhất, lần kiểm được gần nhất) bền qua khởi động lại', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  h.setPremiumRate('0.0007');
+  h.clock.t = FT + 2 * 60_000;
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  const m = h.journal.state().fundingGuard['AAAUSDT'];
+  assert.ok(m !== undefined && m.worstRate >= 0.0007 && m.lastGood !== null);
+  await h.drive(h.bot.stop());
+  const h2 = harness({ dir: h.dir, scan: signalScan() });
+  h2.clock.t = h.clock.t + 60_000;
+  // nạp lại từ nhật ký ngay khi dựng bot (trước lần kiểm funding lúc khởi động)
+  assert.deepEqual(h2.bot.fundingMemory('AAAUSDT'), { worstRate: m.worstRate, lastGood: m.lastGood });
+});

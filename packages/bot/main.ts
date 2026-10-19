@@ -143,7 +143,21 @@ export function createBot(deps: BotDeps) {
   const fundingFail = new Map<string, { settlement: number; attempts: number; alerted: boolean; alertedMissed: number }>();
   const worstRate = new Map<string, number>(); // |funding| xấu nhất đã biết theo mã (lịch sử 30 ngày, premiumIndex)
   const lastGood = new Map<string, { at: number; lockedLoss: number }>(); // lần chốt chặn funding chạy được gần nhất
-  const noteRate = (sym: string, r: number) => { if (Number.isFinite(r)) worstRate.set(sym, Math.max(worstRate.get(sym) ?? 0, Math.abs(r))); };
+  const noteRate = (sym: string, r: number) => {
+    if (!Number.isFinite(r) || Math.abs(r) <= (worstRate.get(sym) ?? 0)) return;
+    worstRate.set(sym, Math.abs(r));
+    saveFundingMemory(sym);
+  };
+  // Bền qua khởi động lại (nhật ký funding_state) — chỉ ghi khi đổi
+  function saveFundingMemory(sym: string): void {
+    const cur = journal.state().fundingGuard[sym];
+    const next = { worstRate: worstRate.get(sym) ?? 0, lastGood: lastGood.get(sym) ?? null };
+    if (JSON.stringify(cur ?? null) !== JSON.stringify(next)) journal.append({ type: 'funding_state', symbol: sym, ...next });
+  }
+  for (const [sym, m] of Object.entries(journal.state().fundingGuard)) {
+    if (m.worstRate > 0) worstRate.set(sym, m.worstRate);
+    if (m.lastGood !== null) lastGood.set(sym, { ...m.lastGood });
+  }
   const fundingBlocked = new Set<string>();
   const slLatencyLogged = new Set<string>();
   let startedAt = 0;
@@ -765,13 +779,27 @@ export function createBot(deps: BotDeps) {
     });
     trace(`funding:${sym} ${run.result.action}`);
     lastGood.set(sym, { at: now, lockedLoss: run.lockedLoss });
+    saveFundingMemory(sym);
     log(`Chốt chặn funding ${sym}: đã mất ${run.lockedLoss.toFixed(2)} USDT (phí + funding ${income.toFixed(2)}), lỗ nếu chạm dừng ${Number.isFinite(run.stopUsed) ? run.stopUsed : '(trailing)'} = ${run.lossBefore.toFixed(2)} / ngân sách ${run.budget.toFixed(2)} → ${run.result.action}${run.result.action === 'tighten' ? ` SL ${run.result.stop}` : ''}`);
-    for (const ev of run.journal) journal.append(ev);
-    if (run.actions.length === 0) return true;
-    const rep = await executeActions(run.actions, execCtx(f.ex.positions));
-    if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
-    await reconcileLoop(['sau chốt chặn funding']);
+    await applyGuardRun(t, run, f.ex.positions, 'chốt chặn funding');
     return true;
+  }
+
+  // Thực hiện hành động của chốt chặn; SL mới CHỈ ghi vào nhật ký (stop_tightened) khi sàn ĐÃ nhận lệnh dừng mới (chân SL của lần thử đó
+  // 'open' sau executor — kết quả không rõ được executor tra lại). Bị từ chối / không rõ → nhật ký giữ SL cũ (sàn là sự thật) + KHẨN;
+  // executor đã xử lý theo chính sách sẵn có (giữ SL cũ khi còn phủ / đóng khẩn khi không còn dừng nào).
+  async function applyGuardRun(t: TradeState, run: ReturnType<typeof fundingGuardActions>, positions: readonly ExPosition[], what: string): Promise<void> {
+    if (run.actions.length === 0) return;
+    const rep = await executeActions(run.actions, execCtx(positions));
+    if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
+    const tight = run.journal.find((e) => e.type === 'stop_tightened');
+    const place = run.actions.find((a) => a.type === 'place_stop');
+    if (tight !== undefined && tight.type === 'stop_tightened' && place !== undefined && place.type === 'place_stop') {
+      const leg = journal.state().trades[t.signalId]?.legs.SL;
+      if (leg !== undefined && leg.clientId === place.clientId && leg.status === 'open') journal.append(tight);
+      else notify({ level: 'urgent', symbol: t.symbol, text: `KHẨN ${t.symbol}: siết SL về ${tight.stop} (${what}) KHÔNG được sàn nhận (chân SL: ${leg?.status ?? 'không có'}) — giữ SL cũ ${t.plan.stop} làm chuẩn; sẽ thử lại ở kỳ kiểm sau` });
+    }
+    await reconcileLoop([`sau ${what}`]);
   }
 
   // Chốt chặn hỏng (không đọc được funding/income) mà sàn vẫn nhận lệnh: siết SL PHÒNG TRƯỚC bằng CÙNG hàm chốt chặn, giả định funding xấu
@@ -812,11 +840,7 @@ export function createBot(deps: BotDeps) {
     });
     trace(`funding:${sym} preempt-${run.result.action}`);
     log(`Siết SL phòng trước ${sym}: |funding| xấu nhất ${rate}, ước đã trả ${accrued.toFixed(2)} + còn lại ${projected.toFixed(2)} USDT → ${run.result.action}${run.result.action === 'tighten' ? ` SL ${run.result.stop}` : ''}`);
-    for (const ev of run.journal) journal.append(ev);
-    if (run.actions.length === 0) return;
-    const rep = await executeActions(run.actions, execCtx(f.ex.positions));
-    if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
-    await reconcileLoop(['sau siết SL phòng trước']);
+    await applyGuardRun(t, run, f.ex.positions, 'siết SL phòng trước');
   }
   async function refreshPremium(symbol: string): Promise<void> {
     try {
@@ -1034,6 +1058,7 @@ export function createBot(deps: BotDeps) {
     status,
     fundingGuardHealthy,
     entryBlockedSymbols: () => [...fundingBlocked].sort(),
+    fundingMemory: (sym: string) => ({ worstRate: worstRate.get(sym) ?? 0, lastGood: lastGood.get(sym) ?? null }),
   };
 }
 

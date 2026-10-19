@@ -130,6 +130,8 @@ export type Action =
   | { type: 'record_fill'; signalId: string; role: LegRole; fill: Fill }
   | { type: 'update_leg'; signalId: string; role: LegRole; clientId: string; status: LegStatus; reason: string }
   | { type: 'mark_trade_closed'; signalId: string; reason: string }
+  // Mức dừng ĐANG nằm trên sàn khác plan.stop của nhật ký (> nửa tick) → sàn là sự thật: ghi mức này vào nhật ký
+  | { type: 'sync_stop'; symbol: string; signalId: string; stop: number; reason: string }
   // Trạng thái không rõ → tra lại (queryOrder / queryAlgo), không gửi lại mù
   | { type: 'query_order'; symbol: string; signalId: string; clientId: string; reason: string }
   | { type: 'query_algo'; symbol: string; signalId: string; clientId: string; reason: string };
@@ -510,6 +512,13 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       } else {
         const keep = latest(covering.filter((o) => bes.includes(o))) ?? latest(covering)!;
         stopPx = keep.triggerPrice > 0 ? keep.triggerPrice : t.plan.stop;
+        // Sàn là sự thật (rà soát lại B8b vòng 2): nhật ký ghi mức dừng khác mức trên sàn → đồng bộ nhật ký theo sàn; sàn LỎNG hơn → KHẨN
+        // (rủi ro thực theo mức trên sàn được kiểm ngay dưới: > 2% → giảm vị thế)
+        if (keep.triggerPrice > 0 && Math.abs(keep.triggerPrice - t.plan.stop) > c.tickSize / 2) {
+          const looser = d * (keep.triggerPrice - t.plan.stop) < 0;
+          emit(4, { type: 'sync_stop', symbol: sym, signalId: sid, stop: keep.triggerPrice, reason: `Đồng bộ theo sàn: lệnh dừng trên sàn ${keep.triggerPrice}, nhật ký ${t.plan.stop}` });
+          alert(4, looser ? 'urgent' : 'info', sym, sid, `${looser ? 'KHẨN ' : ''}${sym}: lệnh dừng trên sàn ${keep.triggerPrice} ${looser ? 'LỎNG hơn' : 'chặt hơn'} nhật ký ${t.plan.stop} — lấy mức trên sàn làm chuẩn`);
+        }
         for (const o of [...sls, ...bes]) if (o !== keep) cancelAlgo(o, null, 'Lần thử cũ của lệnh dừng (lần mới đã nằm trên sàn)');
       }
       if (realFloorBroken && !t.plan.needsBreakevenFloor) {

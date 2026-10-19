@@ -40,6 +40,8 @@ export type JournalState = {
   outcomes: TradeOutcome[];
   // B8b: đỉnh vốn + vốn đầu ngày UTC (cầu chì lỗ ngày / cảnh báo sụt) — bền qua khởi động lại. null = chưa đo lần nào.
   equity: { peak: number; day: string; dayStartEquity: number } | null;
+  // B8b vòng 3: bộ nhớ chốt chặn funding theo mã — |funding| xấu nhất đã biết + lần kiểm được gần nhất (lỗ đã chốt lúc đó)
+  fundingGuard: Record<string, { worstRate: number; lastGood: { at: number; lockedLoss: number } | null }>;
 };
 
 export const OUTCOME_KEEP_MS = 7 * 86_400_000;
@@ -67,10 +69,11 @@ export type JournalEventBody =
   | { type: 'stop_tightened'; signalId: string; stop: number; reason: string }
   | { type: 'trade_outcome'; outcome: TradeOutcome }
   | { type: 'equity'; peak: number; day: string; dayStartEquity: number }
+  | { type: 'funding_state'; symbol: string; worstRate: number; lastGood: { at: number; lockedLoss: number } | null }
   | { type: 'note'; text: string };
 export type JournalEvent = { seq: number; at: number } & JournalEventBody;
 
-export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null });
+export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null, fundingGuard: {} });
 
 export function journalFileName(at: number): string {
   return `journal-${new Date(at).toISOString().slice(0, 10)}.jsonl`;
@@ -90,6 +93,7 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
   s.unprotected ??= {}; // ảnh chụp cũ (trước B5 vòng 1) không có trường này
   s.outcomes ??= []; // ảnh chụp cũ (trước B8b)
   s.equity ??= null;
+  s.fundingGuard ??= {};
   const tradeOf = (signalId: string): TradeState | null => {
     const t = s.trades[signalId];
     if (t === undefined) warn(`sự kiện #${e.seq} (${e.type}) tham chiếu lệnh ${signalId} không có trong nhật ký — bỏ qua`);
@@ -231,6 +235,9 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
     case 'equity':
       s.equity = { peak: e.peak, day: e.day, dayStartEquity: e.dayStartEquity };
       break;
+    case 'funding_state':
+      s.fundingGuard[e.symbol] = { worstRate: e.worstRate, lastGood: e.lastGood === null ? null : { ...e.lastGood } };
+      break;
     case 'note':
       break;
     default:
@@ -295,6 +302,7 @@ function restoreFull(dir: string, warn: Warn): { state: JournalState; tornLine: 
       state.unprotected ??= {}; // ảnh chụp cũ
       state.outcomes ??= [];
       state.equity ??= null;
+      state.fundingGuard ??= {};
       snapshotAt = snap.at;
     } catch (e) {
       warn(`ảnh chụp ${snapPath} không đọc được (${e instanceof Error ? e.message : String(e)}) — phát lại toàn bộ nhật ký`);

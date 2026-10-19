@@ -150,6 +150,8 @@ quyết định `Quét swing (nến …): … mã chấm, Đạt …, Hạng A M
 | `Không xác định được lệnh sở hữu vị thế` / vị thế lạ | có vị thế không do bot mở (hoặc mơ hồ) | Bot khóa mã đó, không đụng vào. Anh tự xử lý trên Binance |
 | `Chốt chặn funding: … siết SL` / `đóng market` | funding đã trả + lỗ tại SL vượt 2% vốn lúc vào | Không cần làm gì (đúng ràng buộc 2%); theo dõi |
 | `KHẨN chốt chặn funding <mã> không chạy được: …` | sau giờ chốt funding bot không đọc được dữ liệu để kiểm (quá 2 lần hoặc quá 10 phút; bot vẫn thử lại mỗi phút) | Bot chặn vào lệnh mới mã đó, tạm dùng đệm funding "max", và (nếu sàn còn nhận lệnh) **siết SL phòng trước** theo funding xấu nhất đã biết cho cả thời gian giữ còn lại; mỗi kỳ chốt lỡ thêm → KHẨN lại. Kiểm mạng / Binance; tự kiểm lỗ của vị thế đó. Chạy lại được → bot báo "bỏ chặn" |
+| `KHẨN …: siết SL về … KHÔNG được sàn nhận — giữ SL cũ` | sàn từ chối/không xác nhận lệnh dừng mới của chốt chặn funding; nhật ký giữ SL cũ (sàn là chuẩn) | Bot thử lại ở kỳ kiểm sau; theo dõi, cân nhắc đóng tay nếu lặp lại |
+| `KHẨN …: lệnh dừng trên sàn … LỎNG hơn nhật ký …` | SL trên sàn khác SL bot ghi; bot lấy mức trên sàn làm chuẩn (rủi ro > 2% thì tự giảm vị thế) | Kiểm lệnh dừng mã đó trên Binance |
 | `KHẨN Bot tắt — KHÔNG đọc được trạng thái sàn, kiểm tay ngay` | lúc tắt bot không đọc được sàn → chưa hủy được lệnh vào treo, chưa kiểm được SL | Mở Binance: hủy lệnh vào (limit) còn treo, kiểm mọi vị thế có SL |
 | `KHẨN Bot tắt — … <mã>: KHÔNG có SL` | lúc tắt, vị thế đó không có lệnh dừng trên sàn (bot kiểm thật từng mã) | Đặt SL tay hoặc bật lại bot NGAY |
 | `-2015` trong log | key sai/mất quyền/IP không trong whitelist | Sửa danh sách IP hoặc quyền key trên Binance |

@@ -782,3 +782,30 @@ for (const side of SIDES) {
     assert.ok(missingSlAlerts(acts).some((a) => a.level === 'urgent'));
   });
 }
+
+// ---- B8b vòng 3: mức dừng trên sàn khác plan.stop của nhật ký → sàn là sự thật ------------------------------------------------
+for (const side of SIDES) {
+  test(`B8b R3 ${side}: SL trên sàn CHẶT hơn plan.stop (lệch > 1 tick) → sync_stop theo sàn, cảnh báo info`, () => {
+    const t = mkTrade(side);
+    const ex = healthy(t);
+    ex.openAlgoOrders[0] = algo(t, 'SL', { triggerPrice: px(side, 98) });
+    const acts = reconcile([t], ex, ctx(side));
+    const s = ofType(acts, 'sync_stop');
+    assert.equal(s.length, 1);
+    assert.equal(s[0]!.stop, px(side, 98));
+    assert.ok(!ofType(acts, 'alert').some((a) => a.level === 'urgent'));
+  });
+  test(`B8b R3 ${side}: SL trên sàn LỎNG hơn plan.stop → sync_stop theo sàn + KHẨN`, () => {
+    const t = mkTrade(side);
+    const ex = healthy(t);
+    ex.openAlgoOrders[0] = algo(t, 'SL', { triggerPrice: px(side, 96) });
+    const acts = reconcile([t], ex, ctx(side));
+    assert.equal(ofType(acts, 'sync_stop')[0]?.stop, px(side, 96));
+    assert.ok(ofType(acts, 'alert').some((a) => a.level === 'urgent' && /LỎNG hơn/.test(a.text)));
+  });
+  test(`B8b R3 ${side}: lệch ≤ nửa tick → không đồng bộ`, () => {
+    const t = mkTrade(side);
+    const acts = reconcile([t], healthy(t), ctx(side));
+    assert.equal(ofType(acts, 'sync_stop').length, 0);
+  });
+}
