@@ -228,6 +228,7 @@ const baseIn = {
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false, now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 0.5,
   patternData: null as null | { c4h: ReturnType<typeof up>; c1d: ReturnType<typeof up>; c1h: ReturnType<typeof up>; btcSma200ReclaimedAt: null },
+  openTrades: [],
 };
 baseIn.patternData = { c4h: baseIn.entry, c1d: baseIn.daily, c1h: baseIn.hourly, btcSma200ReclaimedAt: null };
 

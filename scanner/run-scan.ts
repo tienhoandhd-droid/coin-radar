@@ -5,6 +5,7 @@ import { CONFIG, COMMON } from '../packages/core/config.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } from '../packages/core/types.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
+import type { OpenTrade } from '../packages/core/portfolio.ts';
 
 // Một lần quét, tách khỏi I/O (rà soát cuối 1c, B4): máy quét (scan.ts) và phát lại/backtest (kế hoạch 2) gọi CÙNG hàm này.
 // Mọi dữ liệu thị trường đến từ tham số; nến lấy qua `klines(symbol, interval, limit)` — chỉ được trả nến ĐÃ ĐÓNG tại `now`
@@ -24,6 +25,7 @@ export type ScanInput = {
   events: MacroEvent[];
   capital: number;
   limit: number | null; // --limit: chỉ quét N hợp đồng thanh khoản cao nhất
+  openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3) — máy quét: [] (chỉ thông tin); bot/mô phỏng: danh mục thật tại `now`
 };
 
 export type ScanResult = {
@@ -102,7 +104,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
         liquidityRankPct: rank, spreadPct: ((book.ask - book.bid) / mid) * 100,
         premium, fundingIntervalHours: input.fundingIntervals.get(c.symbol) ?? COMMON.defaultFundingIntervalHours,
         fundingIntervalDefault: !input.fundingIntervals.has(c.symbol), now: new Date(now), events: input.events, capital: input.capital, riskPct: COMMON.risk.perTradePct,
-        patternData,
+        patternData, openTrades: input.openTrades,
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

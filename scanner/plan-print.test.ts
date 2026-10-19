@@ -13,7 +13,7 @@ const base: TradePlan = {
     { name: 'TP3', price: null, pct: 20, qty: 7, r: null, reason: 'het vung' },
   ],
   afterTp1Stop: 0.6143, exit: { policy: 'A0', tp1Qty: 14, trailQty: 0, trailing: null }, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
-  riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
+  riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, costPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
   fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2,
   fillTable: [
     { label: 'giá hiện tại', fill: 0.6143, qty: 29, q: [14, 8, 7], estLoss: 2.43 },
@@ -132,7 +132,7 @@ function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: 
   const a: PatternPlanArgs = { mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', price: { close: c[c.length - 1]!.close, time: c[c.length - 1]!.closeTime, tf: '4h' }, geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     state: { state: 'breakout', breakoutIndex: 30, side: 'up', breakoutLine: 110, distanceAtr: 0, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
     zones: [z(118, 118.5), z(121, 122), z(126, 127)], multiMonth: null, btcSma200ReclaimedAt: null,
-    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
   const r = buildPatternPlan(a);
   if (r.status !== 'ready' || !r.plan) throw new Error(`fixture không ready: ${r.reason}`);
   return r.plan;
@@ -308,4 +308,20 @@ test('B0 mô hình chia 2 chân: bảo đảm không lỗ tính ở chân xấu 
   const worst = Math.max(p.maxEntry, p.limitPrice!);
   assert.equal(worst, p.maxEntry);
   assert.ok(p.exit.trailing!.stopAtActivation >= worst * 1.0025 - 1e-9, `${p.exit.trailing!.stopAtActivation}`);
+});
+
+test('C1/C3 portfolioLines: vào đủ / giảm khối lượng (rủi ro thực < 2% in rõ) / không vào', async () => {
+  const { portfolioLines } = await import('./plan-print.ts');
+  const base = { requestedQty: 100, openCount: 0, openRiskPct: 0, openMarginPct: 0 };
+  const full = portfolioLines({ ...base, allowed: true, adjustedQty: 100, riskAmount: 200, riskPctActual: 2, marginNeeded: 2000, reasons: [] }).join('\n');
+  assert.match(full, /vào đủ khối lượng/);
+  assert.match(full, /rủi ro thực 2,00% vốn/);
+  assert.match(full, /ký quỹ ≈ 2000,00 USDT/);
+  const cut = portfolioLines({ ...base, allowed: true, adjustedQty: 50, riskAmount: 100, riskPctActual: 1, marginNeeded: 1000, reasons: ['Giảm khối lượng vì ký quỹ'] }).join('\n');
+  assert.match(cut, /GIẢM khối lượng còn 50 coin/);
+  assert.match(cut, /rủi ro thực 1,00% vốn \(< 2%\)/);
+  assert.match(cut, /ký quỹ/);
+  const no = portfolioLines({ ...base, allowed: false, adjustedQty: 0, riskAmount: 0, riskPctActual: 0, marginNeeded: 0, reasons: ['Đã có 10 lệnh mở'] }).join('\n');
+  assert.match(no, /KHÔNG VÀO/);
+  assert.match(no, /10 lệnh/);
 });

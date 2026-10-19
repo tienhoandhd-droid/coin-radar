@@ -17,6 +17,8 @@ import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
 import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from './grade.ts';
 import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
+import { sizeSlippagePct } from './margin.ts';
+import { canOpen, type CanOpenResult, type OpenTrade } from './portfolio.ts';
 
 // Nến cho phần mô hình biểu đồ (kế hoạch 1c), chỉ bắt buộc với hợp đồng trong phạm vi P-G1.
 // c4h / c1d: bối cảnh (vai-đầu-vai, vùng nhiều tháng, coil) và nhận diện Swing; c1h: ATR(1H) tại nến phá.
@@ -60,6 +62,7 @@ export type AnalyzeInput = {
   capital: number;
   riskPct: number;
   patternData: PatternData | null; // null = không tải (hợp đồng ngoài phạm vi P-G1); trong phạm vi mà null → ném lỗi
+  openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3). Máy quét: [] hoặc danh sách người dùng đưa vào → chỉ để thông tin
 };
 
 export type Label = 'Đạt tiêu chí Long' | 'Đạt tiêu chí Short' | 'Theo dõi' | 'Không đạt';
@@ -81,6 +84,7 @@ export type Analysis = {
   patternSignal: PatternPlan | null; // kế hoạch lệnh theo mô hình khi tín hiệu được phát là tín hiệu mô hình
   grading: GradeInput; // dữ kiện để chấm Hạng A/B (gradeSignal)
   grade: GradeResult | null; // chỉ có khi tín hiệu Đạt tiêu chí; null = không phải tín hiệu
+  portfolio: CanOpenResult | null; // C1/C3: khối lượng tối đa cho phép theo danh mục + ký quỹ + thanh khoản; null = không có tín hiệu
 };
 
 // Một hợp đồng × chế độ chỉ một tín hiệu. Cùng chiều → dùng tín hiệu mô hình; ngược chiều → không phát cả hai.
@@ -143,13 +147,23 @@ export function analyze(i: AnalyzeInput): Analysis {
   // P-01: rủi ro mỗi lệnh = i.riskPct (mặc định COMMON.risk.perTradePct = 2%, người dùng chốt 19/10/2026). Không còn hạ xuống 0,25% theo chế độ/mức rủi ro; mức rủi ro chỉ để hiển thị và lọc Hạng A.
   const riskPct = i.riskPct;
 
+  // I7: khối lượng giao dịch 1 phút ước từ nến 1H gần nhất (máy quét không tải nến 1m). Thiếu → ném lỗi (không coi trượt giá = 0).
+  const volBars = i.hourly.slice(-COMMON.slippage.volumeBars1h);
+  const quoteVolPerMin = volBars.length === 0 ? NaN : volBars.reduce((s, k) => s + k.quoteVolume, 0) / volBars.length / 60;
+  if (!Number.isFinite(quoteVolPerMin) || quoteVolPerMin <= 0) {
+    throw new Error(`${i.contract.symbol}: thiếu khối lượng 1H để ước trượt giá theo cỡ lệnh (${volBars.length} nến)`);
+  }
+  // Trượt giá thêm tính trên notional của lần lập đầu (chưa có trượt thêm) → lần lập thứ hai có khối lượng nhỏ hơn, nên mức trượt đã tính là thận trọng
+  const extraFor = (notional: number) => sizeSlippagePct(notional, quoteVolPerMin);
+
   // I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL, LOT_SIZE/MARKET_LOT_SIZE, MAX_NUM_ORDERS) → không hợp lệ kèm lý do
   const planFor = (side: Side) => {
-    const p = buildPlan({
+    const build = (extraCostPct: number) => buildPlan({
       mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
-      costTier: costTier(i.liquidityRankPct), tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
+      costTier: costTier(i.liquidityRankPct), extraCostPct, tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
     });
+    const p = build(extraFor(build(0).notional));
     const problems = p.valid ? zonePlanFilterProblems(p, i.contract) : [];
     return problems.length > 0 ? invalidateZonePlan(p, `Bộ lọc sàn: ${problems.join('; ')}`) : p;
   };
@@ -256,11 +270,14 @@ export function analyze(i: AnalyzeInput): Analysis {
         continue;
       }
       // Mức cắt lỗ (chữ nhật: pivot nhỏ phía trong) do patternStopLevel tính chung cho kế hoạch và máy trạng thái
-      const res = buildPatternPlan({
-        mode: i.mode, patternId: t.id, price: priceNow, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
-        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct),
+      const multiMonth = context.multiMonth;
+      const buildP = (extraCostPct: number) => buildPatternPlan({
+        mode: i.mode, patternId: t.id, price: priceNow, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth,
+        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct), extraCostPct,
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });
+      const first = buildP(0);
+      const res = first.plan === null ? first : buildP(extraFor(first.plan.notional));
       if (res.status !== 'ready' || res.plan === null) {
         info.notes.push(`Kế hoạch mô hình: ${res.status === 'wait_confirm' ? 'chờ xác nhận' : 'bỏ'} — ${res.reason}`);
         continue;
@@ -308,7 +325,7 @@ export function analyze(i: AnalyzeInput): Analysis {
   // Hạng A/B (Task 8): dữ kiện gom ở đây vì Analysis không giữ nến. TP1 sau phí ở giá khớp XẤU NHẤT cho phép (M2, rà soát cuối 1c):
   // lệnh vùng = worstTp1NetR (market: giá tối đa; limit: giá limit), cùng công thức tp1NetRAt với lệnh mô hình.
   const zoneDir = plan.side === 'long' ? 1 : -1;
-  const zoneCostFrac = COMMON.costRoundTripPct[costTier(i.liquidityRankPct)] / 100
+  const zoneCostFrac = plan.costPct / 100
     + Math.max(0, zoneDir * i.premium.lastFundingRate * (CONFIG[i.mode].fundingHoldHours / i.fundingIntervalHours));
   const zoneTp1Net = worstTp1NetR(plan, zoneCostFrac);
   const grading: GradeInput = {
@@ -320,7 +337,13 @@ export function analyze(i: AnalyzeInput): Analysis {
     coilReleased: i.patternData === null ? { long: false, short: false } : coilReleasedAt(i.patternData.c4h),
     eventFlagged: Boolean(ev.flag),
   };
-  const result = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen, grading, grade: null as GradeResult | null };
+  // C1/C3/I7: khối lượng tối đa cho phép theo danh mục đang mở, ký quỹ và thanh khoản (máy quét: thông tin; bot: bắt buộc)
+  const sig = chosen.patternSignal ?? chosen.plan;
+  const portfolio = sig === null ? null : canOpen({
+    symbol: i.contract.symbol, side: sig.side, entry: sig.entry, stop: sig.stop, qty: sig.qty, leverage: sig.suggestedLeverage, costPct: sig.costPct,
+    entryType: sig.entryType === 'limit' ? 'limit' : 'market', filters: i.contract, maxNotional: COMMON.slippage.maxParticipation * quoteVolPerMin,
+  }, i.openTrades, i.capital);
+  const result = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen, grading, grade: null as GradeResult | null, portfolio };
   if (result.label.startsWith('Đạt') && (result.plan !== null || result.patternSignal !== null)) result.grade = gradeSignal(result);
   return result;
 }

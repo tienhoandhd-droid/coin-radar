@@ -5,7 +5,7 @@ import { parseFundingInfo, parseBookTickers, parseContracts, parseKlines, parseP
 import { CONFIG, COMMON } from '../packages/core/config.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import { parseScanArgs, type ScanArgs } from './args.ts';
-import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, type GradedItem } from './plan-print.ts';
+import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, portfolioLines, type GradedItem } from './plan-print.ts';
 import { runScan } from './run-scan.ts';
 
 const { values } = parseArgs({ options: {
@@ -38,7 +38,7 @@ const premiums = new Map(parsePremium(await client.get('/fapi/v1/premiumIndex'))
 // Chu kỳ funding từng hợp đồng (1 lần/lần quét). Mã không có trong danh sách → mặc định 8h (theo tài liệu Binance).
 const fundingIntervals = parseFundingInfo(await client.get('/fapi/v1/fundingInfo'));
 const scan = await runScan({
-  mode, contracts, tickers, books, premiums, fundingIntervals, now, events, capital, limit: args.limit,
+  mode, contracts, tickers, books, premiums, fundingIntervals, now, events, capital, limit: args.limit, openTrades: [],
   klines: async (symbol, interval, limit) => parseKlines(await client.get(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`), now),
 });
 const { regime, breaker, btcReclaim, errors, banned, inScope } = scan;
@@ -57,7 +57,7 @@ const top = (side: 'long' | 'short') => final
 mkdirSync(new URL('../output/', import.meta.url), { recursive: true });
 const file = new URL(`../output/scan-${mode}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`, import.meta.url);
 writeFileSync(file, JSON.stringify({ mode, capital, at: new Date(now).toISOString(), regime, breaker, errors, results: final }, null, 2));
-console.log(`Vốn: ${capital} USDT | Rủi ro: ${COMMON.risk.perTradePct}% vốn/lệnh (người dùng chốt 19/10/2026; mức rủi ro coin chỉ để hiển thị) = ${(capital * COMMON.risk.perTradePct / 100).toFixed(2).replace('.', ',')} USDT | Trần ${COMMON.portfolio.maxOpenTrades} lệnh mở | Thoát lệnh: ${COMMON.exit.defaultPolicy}`);
+console.log(`Vốn: ${capital} USDT | Rủi ro: ${COMMON.risk.perTradePct}% vốn/lệnh (người dùng chốt 19/10/2026; mức rủi ro coin chỉ để hiển thị) = ${(capital * COMMON.risk.perTradePct / 100).toFixed(2).replace('.', ',')} USDT | Trần ${COMMON.portfolio.maxOpenTrades} lệnh mở, tổng rủi ro mở ≤ ${COMMON.portfolio.maxOpenRiskPct}%, ký quỹ ≤ ${COMMON.portfolio.marginSafetyFactor * 100}% vốn (máy quét không biết lệnh đang mở của anh: kiểm với danh mục trống) | Thoát lệnh: ${COMMON.exit.defaultPolicy}`);
 console.log(`Chế độ: ${mode} | Thị trường: ${regime.regime} (${regime.reasons.join('; ')})`);
 console.log(`Cầu dao: ${breaker.tripped ? 'BẬT — ' + breaker.reason : 'tắt'}`);
 console.log(`Hợp đồng: ${contracts.length} | Đã chấm: ${final.length} | Lỗi: ${errors.length} | Thời gian: ${((Date.now() - started) / 1000).toFixed(0)}s`);
@@ -98,6 +98,7 @@ const graded: GradedItem[] = qualified.map((a) => {
   const lines = ps !== null
     ? (ps.fresh || args.showOld ? patternPlanLines(head, ps, tickOf(a.symbol)) : [oldPatternSignalLine(head, ps)])
     : planLines(head, a.plan!, tickOf(a.symbol));
+  if (a.portfolio !== null) lines.push(...portfolioLines(a.portfolio));
   const notes = a.flags.filter((f) => /cùng chiều|xung đột/.test(f));
   if (notes.length > 0) lines.push(`  Ghi chú: ${notes.join('; ')}`);
   return { symbol: a.symbol, side: a.best.side, score: a.best.score, grade: a.grade, lines };

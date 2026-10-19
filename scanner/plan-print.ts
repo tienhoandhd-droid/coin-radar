@@ -6,6 +6,7 @@ import type { PatternPlan } from '../packages/core/patterns/pattern-plan.ts';
 import type { PatternKind } from '../packages/core/patterns/types.ts';
 import type { PatternInfo } from '../packages/core/analyze.ts';
 import type { GradeResult } from '../packages/core/grade.ts';
+import type { CanOpenResult } from '../packages/core/portfolio.ts';
 
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
 const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
@@ -70,6 +71,16 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   }
   lines.push(`  Tiền mất ước tính nếu chạm SL: ${num(p.estLoss, 2)} USDT (đã gồm phí ước tính; ngân sách rủi ro ${dec(p.riskPct)}% vốn = ${num(p.riskAmount, 2)} USDT)`);
   return lines;
+}
+
+// C1/C3/I7: khối lượng tối đa cho phép theo danh mục đang mở + ký quỹ + thanh khoản (portfolio.canOpen).
+// Máy quét không biết lệnh đang mở của anh (danh sách trống) → chỉ để thông tin; bot dùng danh mục thật.
+export function portfolioLines(r: CanOpenResult): string[] {
+  const open = `danh mục đang mở: ${r.openCount} lệnh, rủi ro mở ${num(r.openRiskPct, 2)}%, ký quỹ ${num(r.openMarginPct, 2)}% vốn`;
+  if (!r.allowed) return [`  Danh mục/ký quỹ: KHÔNG VÀO — ${r.reasons.join('; ')} (${open})`];
+  const money = `rủi ro thực ${num(r.riskPctActual, 2)}% vốn${r.riskPctActual < COMMON.risk.perTradePct - 1e-9 ? ` (< ${COMMON.risk.perTradePct}%)` : ''} = ${num(r.riskAmount, 2)} USDT, ký quỹ ≈ ${num(r.marginNeeded, 2)} USDT`;
+  if (r.reasons.length === 0) return [`  Danh mục/ký quỹ: vào đủ khối lượng — ${money} (${open})`];
+  return [`  Danh mục/ký quỹ: GIẢM khối lượng còn ${qty(r.adjustedQty)} coin (kế hoạch ${qty(r.requestedQty)}) — ${money}; ${r.reasons.join('; ')} (${open})`];
 }
 
 // ---------- Kế hoạch 1c: mô hình biểu đồ ----------

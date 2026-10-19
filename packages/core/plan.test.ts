@@ -38,7 +38,7 @@ function flat(price: number, n = 60): Candle[] {
   return Array.from({ length: n }, (_, i) => k(i, price, price + 0.5, price - 0.5));
 }
 const baseArgs = { mode: 'swing' as const, dailyAtr: 1, tickSize: 0.001, capital: 1000, riskPct: 0.5, costTier: 'high' as const,
-  stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8 };
+  stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8 };
 const supports = [zone(95, 96, 3)];
 const resistances = [zone(99, 100), zone(102, 103), zone(106, 107)];
 
@@ -163,28 +163,28 @@ test('Swing: khoảng cắt lỗ không nhỏ hơn 1×ATR ngày; funding Long tr
 test('buildPlan báo lỗi khi nến phẳng (ATR = 0), không trả giá trị vô nghĩa', () => {
   const flat = Array.from({ length: 60 }, (_, i) => k(i, 100, 100, 100));
   const args = { mode: 'fast' as const, side: 'long' as const, entry: flat, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
   assert.throws(() => buildPlan(args), /ATR/);
 });
 
 test('buildPlan báo lỗi khi dữ liệu dưới 15 nến (ATR chưa tính được)', () => {
   const short = Array.from({ length: 10 }, (_, i) => k(i, 100 + i));
   const args = { mode: 'fast' as const, side: 'long' as const, entry: short, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
   assert.throws(() => buildPlan(args), /ATR/);
 });
 
 test('buildPlan Swing báo lỗi khi ATR ngày là NaN', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const args = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: NaN, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] };
   assert.throws(() => buildPlan(args), /ATR ngày/);
 });
 
 test('buildPlan: funding tính theo số kỳ thật — hợp đồng 4h trả gấp đôi hợp đồng 8h cùng mức/kỳ, 1h gấp 8 lần', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const base = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.5,
-    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, fundingRate: 0.0001, zones: [] };
+    costTier: 'high' as const, tickSize: 0.001, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, zones: [] };
   const p8 = buildPlan({ ...base, fundingIntervalHours: 8 });
   const p4 = buildPlan({ ...base, fundingIntervalHours: 4 });
   const p1 = buildPlan({ ...base, fundingIntervalHours: 1 });
@@ -195,7 +195,7 @@ test('buildPlan: funding tính theo số kỳ thật — hợp đồng 4h trả 
 test('buildPlan: ghi lại riskPct đã dùng và riskAmount theo đó', () => {
   const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
   const p = buildPlan({ mode: 'swing', side: 'long', entry: c, dailyAtr: 3, capital: 1000, riskPct: 0.25, costTier: 'high',
-    tickSize: 0.001, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] });
+    tickSize: 0.001, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8, zones: [] });
   assert.equal(p.riskPct, 0.25);
   assert.equal(p.riskAmount, 2.5);
 });
@@ -590,4 +590,15 @@ test('B0: C2 vẫn bị loại khi TP1 hoặc phần trailing < 1 bước', () =
   assert.equal(p.qty, 0.001);
   assert.equal(p.valid, false);
   assert.match(p.invalidReason!, /TP1 50% \+ trailing 50%/);
+});
+
+test('I7: trượt giá thêm theo cỡ lệnh (extraCostPct) cộng vào phí → khối lượng nhỏ hơn, cùng ngân sách rủi ro; âm/NaN → ném lỗi', () => {
+  const a = { ...baseArgs, side: 'long' as const, entry: flat(96.3), zones: [...supports, ...resistances] };
+  const p0 = buildPlan(a);
+  const p1 = buildPlan({ ...a, extraCostPct: 0.5 });
+  assert.ok(p1.qty < p0.qty, `${p1.qty} < ${p0.qty}`);
+  // mất ước tính = qty × |vào − SL| + notional × (phí nhóm + trượt thêm)
+  assert.equal(r6(p1.estLoss), r6(p1.qty * p1.riskPerUnit + (p1.notional * (COMMON.costRoundTripPct.high + 0.5)) / 100));
+  assert.throws(() => buildPlan({ ...a, extraCostPct: -0.1 }), /trượt giá/);
+  assert.throws(() => buildPlan({ ...a, extraCostPct: NaN }), /trượt giá/);
 });

@@ -47,7 +47,7 @@ function args(over: Partial<PatternPlanArgs> & { close?: number; side?: 'long' |
     price: { close: lastBar.close, time: lastBar.closeTime, tf: '4h' },
     mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', geometry: geom(), state: st(), candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     zones: longZones, multiMonth: null, btcSma200ReclaimedAt: null,
-    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8,
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8,
     ...rest,
   };
 }

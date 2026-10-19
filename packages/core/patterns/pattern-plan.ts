@@ -69,6 +69,7 @@ export type PatternPlan = {
   estLoss: number; // tiền mất ước tính nếu chạm SL khi mọi chân khớp
   fillTable: PatternFillRow[];
   riskPct: number;
+  costPct: number; // phí + trượt giá khứ hồi đã dùng (%), gồm trượt thêm theo cỡ lệnh (I7)
   safeLeverage: number;
   suggestedLeverage: number;
   liquidationEstimate: number;
@@ -107,6 +108,7 @@ export type PatternPlanArgs = {
   capital: number;
   riskPct: number;
   costTier: CostTier;
+  extraCostPct: number; // trượt giá THÊM theo cỡ lệnh (% khứ hồi, I7), cộng vào phí theo nhóm thanh khoản
   tickSize: number;
   stepSize: number;
   fundingRate: number; // mức MỖI KỲ funding
@@ -338,7 +340,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const reasons = [tp1Reason, tp2Reason, tp3Reason];
 
   // ---- Chi phí và R:R ở giá khớp xấu nhất ----
-  const costPct = COMMON.costRoundTripPct[a.costTier];
+  if (!Number.isFinite(a.extraCostPct) || a.extraCostPct < 0) throw new Error(`Kế hoạch mô hình: trượt giá thêm theo cỡ lệnh không hợp lệ (${a.extraCostPct})`);
+  const costPct = COMMON.costRoundTripPct[a.costTier] + a.extraCostPct;
   const fundingEvents = cfg.fundingHoldHours / a.fundingIntervalHours;
   const fundingPaidFrac = Math.max(0, dir * a.fundingRate * fundingEvents); // chỉ tính khi lệnh phải TRẢ funding
   const costFrac = costPct / 100 + fundingPaidFrac;
@@ -579,6 +582,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     estLoss: row0.estLoss,
     fillTable,
     riskPct: a.riskPct,
+    costPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,
     liquidationEstimate: liquidationPrice(entry, suggested, side, mmr.mmr),

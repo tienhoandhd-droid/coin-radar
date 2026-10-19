@@ -23,7 +23,7 @@ function input(over: Partial<ScanInput> = {}, fail: Record<string, string> = {})
       const n = Math.min(limit, 500);
       return series(n, interval === '1d' ? 1 : 0.2);
     },
-    now: NOW, events: [], capital: 1000, limit: null,
+    now: NOW, events: [], capital: 1000, limit: null, openTrades: [],
     ...over,
   };
 }

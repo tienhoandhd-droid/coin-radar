@@ -19,12 +19,14 @@ const upWaves = (n: number, step: number, share = 0.5, amp = 1, period = 40) =>
 const base: AnalyzeInput = {
   mode: 'swing',
   contract: { symbol: 'TESTUSDT', baseAsset: 'TEST', onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001, minQty: 0.001, maxQty: 1e9, marketMinQty: 0.001, marketMaxQty: 1e9, marketStepSize: 0.001, minNotional: 5, maxNumOrders: 200, deliveryDate: 4133404800000 },
-  trend: up(300, 1), entry: upWaves(500, 0.2, 0.6, 2, 40), daily: up(300, 1), hourly: up(100, 0.05), btcTrend: up(300, 0.3),
+  trend: up(300, 1), entry: upWaves(500, 0.2, 0.6, 2, 40), daily: up(300, 1),
+  // 1H: khối lượng ~6 triệu USDT/giờ (≈ 100.000 USDT/phút) để trượt giá theo cỡ lệnh (I7) không lấn át kế hoạch của vốn 1000
+  hourly: up(100, 0.05).map((x) => ({ ...x, quoteVolume: 6e6, takerBuyQuote: 3e6 })), btcTrend: up(300, 0.3),
   regime: 'up', breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false,
   now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 2,
-  patternData: null,
+  patternData: null, openTrades: [],
 };
 // TESTUSDT ở base thuộc phạm vi mô hình (rủi ro Thấp/Vừa, hạng thanh khoản 5%) → phải có dữ liệu mô hình.
 base.patternData = { c4h: base.entry, c1d: base.daily, c1h: base.hourly, btcSma200ReclaimedAt: null };
@@ -383,7 +385,9 @@ test('I1 finalizeSignal: chỉ mô hình / cùng chiều / ngược chiều / ch
 test('M2 chấm hạng lệnh vùng: grading.tp1NetR = TP1 sau phí ở giá khớp XẤU NHẤT (giá tối đa nếu vào trực tiếp)', () => {
   const a = analyze(base);
   assert.ok(a.plan !== null);
-  const costFrac = COMMON.costRoundTripPct.high / 100 + Math.max(0, base.premium.lastFundingRate * (CONFIG.swing.fundingHoldHours / base.fundingIntervalHours));
+  // phí dùng để chấm = phí kế hoạch đã dùng (nhóm thanh khoản + trượt thêm theo cỡ lệnh, I7) + funding phải trả
+  assert.ok(a.plan.costPct > COMMON.costRoundTripPct.high);
+  const costFrac = a.plan.costPct / 100 + Math.max(0, base.premium.lastFundingRate * (CONFIG.swing.fundingHoldHours / base.fundingIntervalHours));
   // (dữ liệu này cho lệnh limit nên giá xấu nhất = giá limit; nhánh market kiểm ở plan.test.ts — worstTp1NetR)
   assert.ok(Math.abs(a.grading.tp1NetR! - worstTp1NetR(a.plan, costFrac)!) < 1e-12);
 });
@@ -401,4 +405,25 @@ test('I2: lệnh market vượt MARKET_LOT_SIZE.maxQty → không hợp lệ, G-
   const g12 = a.gates.find((g) => g.code === 'G-12')!;
   assert.equal(g12.pass, false);
   assert.match(g12.note, /LOT_SIZE/);
+});
+
+test('C1/C3: tín hiệu có kiểm danh mục — danh mục trống thì cho vào; đủ 10 lệnh mở thì không', () => {
+  const a = analyze(base);
+  assert.ok(a.label.startsWith('Đạt') && a.portfolio !== null);
+  assert.equal(a.portfolio.allowed, true, a.portfolio.reasons.join('; '));
+  assert.ok(a.portfolio.riskPctActual > 0 && a.portfolio.riskPctActual <= 2 + 1e-9);
+  const ten = Array.from({ length: 10 }, (_, j) => ({ symbol: `X${j}USDT`, side: 'long' as const, notional: 10, leverage: 5, riskAmount: 0, pastTp1: true }));
+  const b = analyze({ ...base, openTrades: ten });
+  assert.equal(b.portfolio!.allowed, false);
+  assert.match(b.portfolio!.reasons.join(), /10 lệnh/);
+});
+
+test('I7: khối lượng 1H thấp → phí kế hoạch tăng theo cỡ lệnh và khối lượng bị giới hạn theo thanh khoản; thiếu nến 1H → ném lỗi', () => {
+  const thin = { ...base, hourly: base.hourly.map((x) => ({ ...x, quoteVolume: 60_000, takerBuyQuote: 30_000 })) }; // ~1.000 USDT/phút
+  const a = analyze(base);
+  const t = analyze(thin);
+  assert.ok(a.plan !== null && t.plan !== null);
+  assert.ok(t.plan.costPct > a.plan.costPct, `phí tăng khi thanh khoản mỏng: ${t.plan.costPct} > ${a.plan.costPct}`);
+  assert.ok(t.portfolio !== null && t.portfolio.adjustedQty <= (COMMON.slippage.maxParticipation * 1000) / t.plan.entry + 1e-9);
+  assert.throws(() => analyze({ ...base, hourly: [] }), /khối lượng 1H/);
 });

@@ -85,6 +85,7 @@ export type TradePlan = {
   estLoss: number; // số tiền mất ước tính nếu chạm SL = qty × |vào − SL| + phí ước tính
   fillTable: FillRow[]; // market: 3 dòng (giá hiện tại / giữa / giá tối đa); limit: 1 dòng (giá limit)
   riskPct: number; // % vốn rủi ro thực sự đã dùng để tính khối lượng (P-01)
+  costPct: number; // phí + trượt giá khứ hồi đã dùng (%): theo nhóm thanh khoản + trượt thêm theo cỡ lệnh (I7)
   safeLeverage: number;
   suggestedLeverage: number;
   liquidationEstimate: number;
@@ -102,6 +103,7 @@ export type PlanArgs = {
   capital: number;
   riskPct: number;
   costTier: CostTier;
+  extraCostPct: number; // trượt giá THÊM theo cỡ lệnh (% khứ hồi, I7 — sizeSlippagePct), cộng vào phí theo nhóm thanh khoản; 0 = không thêm
   tickSize: number; // bước giá của hợp đồng: mọi giá trong kế hoạch là bội của số này
   stepSize: number;
   fundingRate: number; // mức MỖI KỲ funding của hợp đồng (không phải %/8h)
@@ -153,6 +155,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
   }
   if (!Number.isFinite(a.fundingIntervalHours) || a.fundingIntervalHours <= 0) {
     throw new Error(`Không lập được kế hoạch: chu kỳ funding không hợp lệ (${a.fundingIntervalHours})`);
+  }
+  if (!Number.isFinite(a.extraCostPct) || a.extraCostPct < 0) {
+    throw new Error(`Không lập được kế hoạch: trượt giá thêm theo cỡ lệnh không hợp lệ (${a.extraCostPct})`);
   }
   const tick = a.tickSize;
   const fp = (x: number) => formatTick(x, tick);
@@ -299,7 +304,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
 
   const exitPolicy = a.exitPolicy ?? COMMON.exit.defaultPolicy;
   const c2 = exitPolicy === 'C2' && targets[0]!.price !== null; // C2 không có TP1 -> cả vị thế theo trailing ATR như cũ, giữ kiểm tra cũ
-  const costPct = COMMON.costRoundTripPct[a.costTier];
+  const costPct = COMMON.costRoundTripPct[a.costTier] + a.extraCostPct;
   const size = positionSize(a.capital, a.riskPct, entry, stop, costPct, a.stepSize);
   const estLoss = size.qty * riskPerUnit + (size.notional * costPct) / 100;
   const parts = splitQuantity(size.qty, a.stepSize, zc.exitPcts);
@@ -368,6 +373,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     estLoss,
     fillTable,
     riskPct: a.riskPct,
+    costPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,
     liquidationEstimate: liquidationPrice(entry, suggested, a.side, mmr.mmr),
