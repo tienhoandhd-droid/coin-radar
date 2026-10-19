@@ -131,6 +131,20 @@ test('LIMIT có hạn tự hủy: GTD + goodTillDate (giây tròn); hạn < 600 
   assert.equal(h.calls.length, 2);
 });
 
+test('LIMIT IOC (chân "market" có giá trần, B3 rà soát): timeInForce=IOC, không goodTillDate; IOC kèm expireAt → từ chối', async () => {
+  const h = harness();
+  await h.orders.placeEntry({ contract: C, side: 'long', kind: 'limit', qty: 0.002, limitPrice: 60000.09, ioc: true, id: id('E1'), openCount: 0, reserveSlots: 4 });
+  assert.deepEqual(h.calls[0], {
+    method: 'POST', path: ORDER_PATH,
+    params: { symbol: 'BTCUSDT', side: 'BUY', type: 'LIMIT', quantity: '0.002', price: '60000.0', timeInForce: 'IOC', newClientOrderId: makeClientId(id('E1')), newOrderRespType: 'RESULT' },
+  });
+  const both = await h.orders.placeEntry({ contract: C, side: 'short', kind: 'limit', qty: 0.002, limitPrice: 60000, ioc: true, expireAt: NOW + 3_600_000, id: id('E1'), openCount: 0, reserveSlots: 4 });
+  assert.equal(both.kind, 'rejected');
+  assert.equal(both.sent, false);
+  assert.match(both.msg, /IOC/);
+  assert.equal(h.calls.length, 1);
+});
+
 test('Lệnh vào vi phạm bộ lọc → từ chối tại chỗ, KHÔNG gửi', async () => {
   const h = harness();
   const small = await h.orders.placeEntry({ contract: C, side: 'long', kind: 'market', qty: 0.0005, refPrice: 60000, id: id('E1'), openCount: 0, reserveSlots: 4 });

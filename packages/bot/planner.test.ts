@@ -75,9 +75,16 @@ for (const side of ['long', 'short'] as const) {
         // chân vào
         const e1 = entryOf(r.legs, 'E1');
         assert.equal(e1.when, 'now');
-        assert.equal(e1.input.kind, entryType === 'limit' ? 'limit' : 'market');
+        // chân "market" gửi dưới dạng LIMIT IOC giá trần = giá tối đa → sàn không bao giờ khớp vượt giá cho phép
+        assert.equal(e1.input.kind, 'limit');
+        if (e1.input.kind === 'limit') assert.equal(e1.input.ioc === true, entryType !== 'limit');
+        if (entryType !== 'limit' && e1.input.kind === 'limit') {
+          assert.equal(e1.input.limitPrice, plan.maxEntry);
+          assert.equal(e1.input.expireAt, undefined);
+          assert.equal(e1.cancelIfMarkReaches, null);
+        }
         if (entryType === 'split') assert.equal(entryOf(r.legs, 'E2').input.kind, 'limit');
-        const lim = r.legs.find((l) => l.op === 'placeEntry' && l.input.kind === 'limit');
+        const lim = r.legs.find((l) => l.op === 'placeEntry' && l.input.kind === 'limit' && l.input.ioc !== true);
         if (lim !== undefined && lim.op === 'placeEntry' && lim.input.kind === 'limit') {
           assert.equal(lim.input.limitPrice, plan.limitPrice);
           assert.equal(lim.input.expireAt, NOW + 24 * 3_600_000);
@@ -142,7 +149,7 @@ test('B3 split: kịch bản "chỉ chân market khớp" có TP1/trailing riêng
   assert.deepEqual(only, { filled: ['E1'], positionQty: 30, tp1Qty: 15, trailQty: 15 });
   const both = r.exitByFill.find((s) => s.filled.join() === 'E1,E2')!;
   assert.deepEqual(both, { filled: ['E1', 'E2'], positionQty: 60, tp1Qty: 30, trailQty: 30 });
-  assert.deepEqual(r.exitRule, { tp1Pct: 50, qtyStep: 0.001 });
+  assert.deepEqual(r.exitRule, { basis: 'filled_qty', tp1Pct: 50, qtyStep: 0.001 });
 });
 
 test('B3 exitSplit: 50/50 làm tròn theo bước, phần dư cho trailing, tổng luôn bằng vị thế', () => {
@@ -173,17 +180,17 @@ test('B3 mã client ổn định giữa các lần gọi; đổi runId/signalId 
 });
 
 test('B3 danh mục: tổng rủi ro mở 9% → canOpen giảm khối lượng, mang khối lượng mới + rủi ro thực vào mọi chân', () => {
-  // vốn 100.000, rủi ro 1 coin = |100 − 97| + 0,1 = 3,1 → 60 coin = 186 USDT; đang mở 9.950 USDT → còn 50 USDT → 16,129 coin
+  // vốn 100.000; rủi ro 1 coin ở giá khớp XẤU NHẤT 100,5 = 3,5 + 0,1005 = 3,6005; đang mở 9.950 USDT → còn 50 USDT → 13,886 coin
   const open: OpenTrade[] = [{ symbol: 'XUSDT', side: 'long', notional: 1000, leverage: 5, riskAmount: 9_950, pastTp1: false }];
   const r = planOrders(input(mkPlan('long', 'market', false), { openTrades: open }));
   assert.equal(r.allowed, true, r.reasons.join('; '));
   assert.equal(r.sizing!.adjusted, true);
   assert.equal(r.sizing!.requestedQty, 60);
-  assert.equal(r.sizing!.qty, 16.129);
-  assert.ok(r.sizing!.riskPct < 2 && r.sizing!.riskPct > 0.04);
+  assert.equal(r.sizing!.qty, 13.886);
+  assert.ok(r.sizing!.realRiskPct <= 0.05 + 1e-9 && r.sizing!.realRiskPct > 0.049, String(r.sizing!.realRiskPct));
   assert.match(r.reasons.join(), /tổng rủi ro mở/);
-  assert.equal(qtyOf(role(r.legs, 'E1')), 16.129);
-  assert.equal(sq(qtyOf(role(r.legs, 'TP1')) + qtyOf(role(r.legs, 'TR'))), 16.129);
+  assert.equal(qtyOf(role(r.legs, 'E1')), 13.886);
+  assert.equal(sq(qtyOf(role(r.legs, 'TP1')) + qtyOf(role(r.legs, 'TR'))), 13.886);
 });
 
 test('B3 danh mục: split bị giảm khối lượng → chia lại hai chân 50/50 theo bước', () => {
@@ -263,4 +270,70 @@ test('B3 thứ tự giữ chỗ: lệnh vào giữ chỗ cho cả bộ (bracketS
   }
   const tp = role(r.legs, 'TP1')!;
   if (tp.op === 'placeTakeProfit') assert.equal(tp.input.openCount, 6);
+});
+
+// ---- Rà soát B3 #1/#2: khối lượng do planner TỰ tính theo 2% vốn bot, ở giá khớp XẤU NHẤT ---------------------------------
+// perUnit = |giá khớp xấu nhất − SL| + giá khớp xấu nhất × phí%; qty = floor(vốn × 2% / perUnit) theo bước.
+const worstOfPlan = (p: PlannerPlan) => {
+  const fills = [...(p.entryType !== 'limit' ? [p.marketPrice, p.maxEntry] : []), ...(p.entryType !== 'market' ? [p.limitPrice!] : [])];
+  return p.side === 'long' ? Math.max(...fills) : Math.min(...fills);
+};
+const qty2pct = (capital: number, p: PlannerPlan) => {
+  const w = worstOfPlan(p);
+  return sq(Math.floor((capital * 0.02) / (Math.abs(w - p.stop) + (w * COST) / 100) / step + 1e-9) * step);
+};
+for (const side of ['long', 'short'] as const) {
+  for (const entryType of ['market', 'limit', 'split'] as const) {
+    for (const [stopName, dist, lev] of [['SL chặt', 0.5, 5], ['SL rộng', 10, 2]] as const) {
+      test(`B3 biên 2%: vốn 10.000, ${side} ${entryType} ${stopName} — kế hoạch lập cho vốn lớn hơn → planner cắt về đúng 2% ở giá khớp xấu nhất`, () => {
+        const d = side === 'long' ? 1 : -1;
+        const base = mkPlan(side, entryType, false);
+        // SL cách giá khớp GẦN SL nhất (mark / limit) đúng `dist` → SL chặt: khoảng ở giá xấu nhất chỉ 0,5–2
+        const fills = [...(entryType !== 'limit' ? [base.marketPrice] : []), ...(entryType !== 'market' ? [base.limitPrice!] : [])];
+        const nearest = side === 'long' ? Math.min(...fills) : Math.max(...fills);
+        const stop = Number((nearest - d * dist).toFixed(2));
+        const plan = mkPlan(side, entryType, false, { stop, qty: 1_000_000, riskPct: 2, suggestedLeverage: lev });
+        const r = planOrders(input(plan, { capital: 10_000 }));
+        assert.equal(r.allowed, true, r.reasons.join('; '));
+        const want = qty2pct(10_000, plan);
+        assert.equal(r.sizing!.qty, want);
+        assert.equal(r.sizing!.worstEntry, worstOfPlan(plan));
+        assert.ok(r.sizing!.realRiskPct <= 2 + 1e-9, `rủi ro thực ${r.sizing!.realRiskPct}% > 2%`);
+        assert.ok(r.sizing!.realRiskPct > 1.99, `rủi ro thực ${r.sizing!.realRiskPct}% quá xa biên 2%`);
+        const pos = sq(r.legs.filter((l) => l.op === 'placeEntry').reduce((s, l) => s + qtyOf(l), 0));
+        assert.equal(pos, want);
+        // lỗ thật nếu MỌI chân khớp ở giá xấu nhất rồi chạm SL: ≤ 2% vốn
+        const w = worstOfPlan(plan);
+        assert.ok(pos * (Math.abs(w - stop) + (w * COST) / 100) <= 200 + 1e-6);
+      });
+    }
+  }
+}
+
+test('B3 rà soát repro: Long market vốn 1.000, kế hoạch qty 60 (lập cho vốn khác) → cắt về 2% ở giá tối đa, KHÔNG bao giờ 10%', () => {
+  const r = planOrders(input(mkPlan('long', 'market', false), { capital: 1_000 }));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  // perUnit ở 100,5 = 3,6005 → 20 / 3,6005 = 5,5547… → 5,554
+  assert.equal(r.sizing!.qty, 5.554);
+  assert.ok(r.sizing!.realRiskPct <= 2 + 1e-9 && r.sizing!.realRiskPct > 1.99);
+  assert.equal(r.sizing!.requestedQty, 5.554);
+  assert.equal(r.sizing!.adjusted, false);
+  // vốn 9.300: 186 / 3,6005 = 51,659 coin (trước đây vào 60 coin = 2,32% ở giá tối đa)
+  const r2 = planOrders(input(mkPlan('long', 'market', false), { capital: 9_300 }));
+  assert.equal(r2.sizing!.qty, 51.659);
+  assert.ok(r2.sizing!.realRiskPct <= 2 + 1e-9);
+});
+
+test('B3 kế hoạch nhỏ hơn 2% (vd chỉ đặt limit 50%) → giữ khối lượng kế hoạch, không phóng to', () => {
+  const r = planOrders(input(mkPlan('long', 'limit', false, { qty: 10 }), { capital: 10_000 }));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  assert.equal(r.sizing!.qty, 10);
+  assert.ok(r.sizing!.realRiskPct < 2);
+});
+
+test('B3 khớp IOC một phần: bộ lệnh thoát định cỡ theo khối lượng ĐÃ khớp (dữ liệu cho B4)', () => {
+  const r = planOrders(input(mkPlan('short', 'market', false)));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  assert.equal(r.exitRule.basis, 'filled_qty');
+  assert.deepEqual(exitSplit(17.001, r.exitRule.qtyStep), { tp1Qty: 8.5, trailQty: 8.501 });
 });

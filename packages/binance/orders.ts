@@ -119,7 +119,9 @@ const openSide = (side: Side) => (side === 'long' ? 'BUY' : 'SELL');
 type EntryBase = { contract: Contract; side: Side; qty: number; id: ClientIdParts; openCount: number; reserveSlots: number };
 export type EntryInput =
   | (EntryBase & { kind: 'market'; refPrice: number }) // refPrice: giá tham chiếu để kiểm MIN_NOTIONAL (nên dùng giá xấu nhất dự kiến)
-  | (EntryBase & { kind: 'limit'; limitPrice: number; expireAt?: number }); // expireAt (ms): có → GTD; không → GTC (hiệu lực 1 năm)
+  | (EntryBase & { kind: 'limit'; limitPrice: number; expireAt?: number; ioc?: boolean }); // expireAt (ms): có → GTD; không → GTC (hiệu lực 1 năm)
+// ioc = true: LIMIT timeInForce=IOC (mục 3.2) — khớp ngay phần có thể ở giá ≤ limit (Long) / ≥ limit (Short), phần còn lại tự hủy.
+// Bot dùng cho chân "market" với giá trần = giá tối đa → sàn không bao giờ khớp vượt giá cho phép. Không đi cùng expireAt.
 
 const GTD_MIN_AHEAD_MS = 600_000; // tài liệu: goodTillDate phải > hiện tại + 600 giây
 const GTD_SAFETY_MS = 10_000; // [Đề xuất] đệm cho lệch giờ máy/sàn và độ trễ mạng (giờ ở đây là giờ máy, chưa trừ offset)
@@ -147,7 +149,10 @@ function buildEntry(a: EntryInput, nowMs: number): Built {
   };
   if (a.kind === 'limit') {
     params.price = fmt(price, c.tickSize);
-    if (a.expireAt === undefined) {
+    if (a.ioc === true) {
+      if (a.expireAt !== undefined) problems.push('Lệnh IOC không đi cùng hạn tự hủy (expireAt/GTD)');
+      params.timeInForce = 'IOC';
+    } else if (a.expireAt === undefined) {
       params.timeInForce = 'GTC';
     } else {
       // Tài liệu: phần ms của goodTillDate bị bỏ qua → gửi giây tròn (làm tròn xuống) rồi mới kiểm mốc 600 s

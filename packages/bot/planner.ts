@@ -56,14 +56,14 @@ export type DesiredOrder =
 export type ExitScenario = { filled: EntryRole[]; positionQty: number; tp1Qty: number; trailQty: number };
 
 export type Sizing = {
-  requestedQty: number; // khối lượng theo kế hoạch (2%)
+  requestedQty: number; // khối lượng 2% vốn bot do planner TỰ tính ở giá khớp xấu nhất (≤ plan.qty — kế hoạch chỉ là trần trên)
   qty: number; // khối lượng thật sẽ vào (sau canOpen + làm tròn bước)
-  adjusted: boolean; // true: bị giảm vì danh mục/ký quỹ/thanh khoản
-  riskAmount: number; // tiền mất nếu chạm SL với qty (gồm phí ước tính), tại giá vào dùng để tính
-  riskPct: number; // riskAmount / vốn × 100 — rủi ro THỰC
+  adjusted: boolean; // true: bị giảm vì danh mục/ký quỹ/thanh khoản (canOpen)
+  riskAmount: number; // tiền mất nếu MỌI chân khớp ở giá xấu nhất rồi chạm SL (gồm phí + trượt ước tính)
+  realRiskPct: number; // riskAmount / vốn × 100 — luôn ≤ 2% (bất biến)
   leverage: number;
-  notional: number; // tại giá vào dùng để tính
-  marginNeeded: number;
+  notional: number; // ở giá khớp xấu nhất
+  marginNeeded: number; // ở giá khớp xấu nhất
   worstEntry: number; // giá khớp xa SL nhất được phép
 };
 
@@ -73,7 +73,9 @@ export type PlannerResult = {
   legs: DesiredOrder[]; // theo thứ tự đặt; rỗng khi không cho vào
   sizing: Sizing | null;
   exitByFill: ExitScenario[]; // market/limit: [E1]; split: [E1] (chỉ chân market khớp) và [E1, E2]
-  exitRule: { tp1Pct: number; qtyStep: number }; // khớp một phần bất kỳ: exitSplit(khối lượng đã khớp, qtyStep)
+  // basis 'filled_qty': TP1/trailing LUÔN định cỡ theo khối lượng ĐÃ khớp thật (IOC khớp một phần, split chỉ một chân, ...):
+  // exitSplit(khối lượng đã khớp, qtyStep). Khối lượng trong legs là kịch bản "khớp đủ".
+  exitRule: { basis: 'filled_qty'; tp1Pct: number; qtyStep: number };
 };
 
 const GTD_MIN_MS = 610_000; // orders.ts: goodTillDate > hiện tại + 600 s (tài liệu) + 10 s đệm
@@ -90,7 +92,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // Mọi khối lượng theo bước THÔ hơn của LOT_SIZE / MARKET_LOT_SIZE: chân market và lệnh thoát (khớp market) không bị orders.ts
   // cắt bớt → tổng TP1 + trailing luôn đúng bằng vị thế.
   const qStep = Math.max(c.stepSize, c.marketStepSize);
-  const exitRule = { tp1Pct: COMMON.zones.exitPcts[0]!, qtyStep: qStep };
+  const exitRule = { basis: 'filled_qty' as const, tp1Pct: COMMON.zones.exitPcts[0]!, qtyStep: qStep };
   const problems: string[] = []; // vi phạm → từ chối
   const adjust: string[] = []; // lý do canOpen giảm khối lượng (vẫn cho vào)
   const reject = (...rs: string[]): PlannerResult => ({ allowed: false, reasons: [...adjust, ...problems, ...rs], legs: [], sizing: null, exitByFill: [], exitRule });
@@ -156,12 +158,24 @@ export function planOrders(i: PlannerInput): PlannerResult {
   else if (lev > levCap) problems.push(`Đòn bẩy ${lev}× vượt trần chế độ ${i.mode} ${levCap}×`);
   if (problems.length > 0) return reject();
 
-  // ---- 3. Danh mục (canOpen): trần 10 lệnh còn rủi ro, tổng rủi ro ≤ 10%, ký quỹ, thanh khoản, bộ lọc sàn ---------------
+  // ---- 3. Khối lượng 2% do planner TỰ tính ở giá khớp XẤU NHẤT (rà soát B3 #1/#2) --------------------------------------
+  // Không tin plan.qty/plan.riskPct (kế hoạch có thể lập với vốn khác, hoặc ở giá kế hoạch thay vì giá xấu nhất).
+  // perUnit = |giá xấu nhất − SL| + giá xấu nhất × costPct% (phí + trượt theo nhóm thanh khoản + trượt theo cỡ lệnh).
+  // plan.qty chỉ là trần trên (vd kế hoạch mô hình chỉ đặt limit cho 50% khối lượng) — không bao giờ phóng to.
+  const dec = tickDecimals(qStep);
+  const floorQ = (x: number) => (x > 0 && Number.isFinite(x) ? Number((Math.floor(x / qStep + 1e-9) * qStep).toFixed(dec)) : 0);
+  const perUnit = Math.abs(worstEntry - stop) + (worstEntry * p.costPct) / 100;
+  const budget = (i.capital * COMMON.risk.perTradePct) / 100;
+  const requestedQty = floorQ(Math.min(p.qty, budget / perUnit));
+  if (!(requestedQty > 0)) return reject(`Khối lượng 2% vốn (${budget.toFixed(2)} USDT ÷ ${perUnit} USDT/coin ở giá xấu nhất ${worstEntry}) nhỏ hơn bước ${qStep}`);
+
+  // ---- 4. Danh mục (canOpen) ở giá xấu nhất: trần 10 lệnh còn rủi ro, tổng rủi ro ≤ 10%, ký quỹ, thanh khoản, bộ lọc sàn ----
+  // Mọi chân vào đều là LIMIT (chân "market" = LIMIT IOC) → bộ lọc LOT_SIZE.
   let po;
   try {
     po = canOpen({
-      symbol: c.symbol, side, entry: p.entry, stop, qty: p.qty, leverage: lev, costPct: p.costPct,
-      entryType: p.entryType === 'limit' ? 'limit' : 'market', filters: c, maxNotional: i.maxNotional,
+      symbol: c.symbol, side, entry: worstEntry, stop, qty: requestedQty, leverage: lev, costPct: p.costPct,
+      entryType: 'limit', filters: c, maxNotional: i.maxNotional,
     }, i.openTrades, i.capital);
   } catch (e) {
     return reject(`Kiểm danh mục lỗi: ${e instanceof Error ? e.message : String(e)}`);
@@ -169,11 +183,13 @@ export function planOrders(i: PlannerInput): PlannerResult {
   if (!po.allowed) return reject(...po.reasons);
   adjust.push(...po.reasons);
 
-  // ---- 4. Khối lượng: các chân vào, TP1, trailing (theo bước thô) -------------------------------------------------------
-  const dec = tickDecimals(qStep);
-  const qty = Number((Math.floor(Math.min(po.adjustedQty, p.qty) / qStep + 1e-9) * qStep).toFixed(dec));
+  // ---- 5. Khối lượng: các chân vào, TP1, trailing (theo bước thô) -------------------------------------------------------
+  const qty = floorQ(Math.min(po.adjustedQty, requestedQty));
   if (!(qty > 0)) return reject(`Khối lượng ${po.adjustedQty} nhỏ hơn bước ${qStep}`);
-  const adjusted = qty < p.qty;
+  const adjusted = qty < requestedQty;
+  const riskAmount = qty * perUnit;
+  const realRiskPct = (riskAmount / i.capital) * 100;
+  if (realRiskPct > COMMON.risk.perTradePct + 1e-9) problems.push(`Rủi ro thực ${realRiskPct.toFixed(4)}% ở giá xấu nhất vượt ${COMMON.risk.perTradePct}%/lệnh`);
   let entryQty: number[];
   if (p.entryType === 'split') {
     const m = COMMON.patterns.plan.splitMarketPct;
@@ -182,12 +198,12 @@ export function planOrders(i: PlannerInput): PlannerResult {
     entryQty = [qty];
   }
   const kinds: Array<'market' | 'limit'> = p.entryType === 'split' ? ['market', 'limit'] : [p.entryType];
-  // Giá kiểm MIN_NOTIONAL cho chân market: giá khớp cho notional NHỎ nhất trong dải (thận trọng)
+  // Giá kiểm MIN_NOTIONAL cho chân "market" (IOC): giá khớp cho notional NHỎ nhất trong dải (thận trọng)
   const marketRef = Math.min(i.markPrice, maxEntry);
   const legPrice = (k: 'market' | 'limit') => (k === 'market' ? marketRef : limitPrice!);
   kinds.forEach((k, j) => {
     if (!isStepMultiple(entryQty[j]!, c.stepSize) || !isStepMultiple(entryQty[j]!, c.marketStepSize)) problems.push(`Khối lượng chân ${k} ${entryQty[j]} không theo bước`);
-    problems.push(...entryLegProblems({ kind: k, price: legPrice(k), qty: entryQty[j]! }, c));
+    problems.push(...entryLegProblems({ kind: 'limit', price: legPrice(k), qty: entryQty[j]! }, c));
   });
   const roles: EntryRole[] = kinds.map((_, j) => (j === 0 ? 'E1' : 'E2'));
   const scenarios: ExitScenario[] = [];
@@ -198,8 +214,8 @@ export function planOrders(i: PlannerInput): PlannerResult {
   }
   const full = scenarios[scenarios.length - 1]!;
 
-  // ---- 5. Bậc ký quỹ + thanh lý ở khối lượng thật: thanh lý cách giá vào ≥ (1 + đệm) × khoảng SL, ở mọi giá khớp --------
-  const notional = qty * p.entry;
+  // ---- 6. Bậc ký quỹ + thanh lý ở khối lượng thật: thanh lý cách giá vào ≥ (1 + đệm) × khoảng SL, ở mọi giá khớp --------
+  const notional = qty * worstEntry;
   const tier = mmrFor(qty * worstEntry, i.leverageBrackets);
   if (lev > tier.maxLeverage) problems.push(`Đòn bẩy ${lev}× vượt trần bậc ký quỹ ${tier.maxLeverage}× ở notional ${Math.round(qty * worstEntry)} USDT`);
   const buf = COMMON.liquidationBufferStops;
@@ -210,12 +226,12 @@ export function planOrders(i: PlannerInput): PlannerResult {
     }
   }
 
-  // ---- 6. Chỗ lệnh (MAX_NUM_ORDERS) ----------------------------------------------------------------------------------
+  // ---- 7. Chỗ lệnh (MAX_NUM_ORDERS) ----------------------------------------------------------------------------------
   const slots = bracketSlots({ entryLegs: kinds.length, tp1: true, trailing: true, breakevenFloor: beTrigger !== null });
   if (!Number.isInteger(i.openOrderCount) || i.openOrderCount < 0) problems.push(`openOrderCount ${i.openOrderCount} phải là số nguyên ≥ 0`);
   else if (i.openOrderCount + slots > c.maxNumOrders) problems.push(`Đã có ${i.openOrderCount} lệnh mở trên ${c.symbol}; cả bộ cần ${slots} lệnh sẽ vượt MAX_NUM_ORDERS ${c.maxNumOrders}`);
 
-  // ---- 7. Mã client tất định ----------------------------------------------------------------------------------------
+  // ---- 8. Mã client tất định ----------------------------------------------------------------------------------------
   const idOf = (leg: string): ClientIdParts => ({ runId: i.runId, signalId: i.signal!.id, leg, attempt: 0 });
   try {
     makeClientId(idOf('E1'));
@@ -224,7 +240,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   }
   if (problems.length > 0) return reject();
 
-  // ---- 8. Dựng các chân theo thứ tự đặt. openCount = lệnh có sẵn + các chân đặt trước nó; lệnh vào giữ chỗ phần còn lại ----
+  // ---- 9. Dựng các chân theo thứ tự đặt. openCount = lệnh có sẵn + các chân đặt trước nó; lệnh vào giữ chỗ phần còn lại ----
   const legs: DesiredOrder[] = [];
   const base = i.openOrderCount;
   const tp1Qty = full.tp1Qty;
@@ -232,8 +248,10 @@ export function planOrders(i: PlannerInput): PlannerResult {
   const cancelAt = (p.cancelIfTp1First ?? true) && d * (tp1 - i.markPrice) > 0 ? tp1 : null;
   kinds.forEach((k, j) => {
     const common = { contract: c, side, qty: entryQty[j]!, id: idOf(roles[j]!), openCount: base + j, reserveSlots: slots - j };
+    // Chân "market" = LIMIT IOC giá trần = giá tối đa (Long làm tròn XUỐNG, Short LÊN): sàn không bao giờ khớp vượt giá cho phép;
+    // phần không khớp tự hủy → bộ lệnh thoát định cỡ theo khối lượng đã khớp (exitRule.basis = 'filled_qty').
     const input: EntryInput = k === 'market'
-      ? { ...common, kind: 'market', refPrice: marketRef }
+      ? { ...common, kind: 'limit', limitPrice: maxEntry, ioc: true }
       : { ...common, kind: 'limit', limitPrice: limitPrice!, ...(expireAt !== undefined ? { expireAt } : {}) };
     legs.push({ op: 'placeEntry', role: roles[j]!, when: 'now', clientId: makeClientId(input.id), input, cancelIfMarkReaches: k === 'limit' ? cancelAt : null });
   });
@@ -256,7 +274,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
       input: { contract: c, side, triggerPrice: beTrigger, purpose: 'breakeven', id: beId } });
   }
 
-  // ---- 9. Chốt chặn cuối: chạy đúng bộ dựng request của orders.ts cho TỪNG chân. Một chân bị từ chối tại chỗ → bỏ cả bộ ----
+  // ---- 10. Chốt chặn cuối: chạy đúng bộ dựng request của orders.ts cho TỪNG chân. Một chân bị từ chối tại chỗ → bỏ cả bộ ----
   // SL kiểm với giá mark hiện tại; dừng sàn hòa vốn kiểm với giá mark dự kiến lúc đặt (= TP1).
   for (const l of legs) {
     const b = l.op === 'placeEntry' ? builders.entry(l.input, i.now)
@@ -266,10 +284,9 @@ export function planOrders(i: PlannerInput): PlannerResult {
   }
   if (problems.length > 0) return reject();
 
-  const riskAmount = qty * (Math.abs(p.entry - stop) + (p.entry * p.costPct) / 100);
   return {
     allowed: true, reasons: adjust, legs, exitByFill: scenarios, exitRule,
-    sizing: { requestedQty: p.qty, qty, adjusted, riskAmount, riskPct: (riskAmount / i.capital) * 100, leverage: lev, notional, marginNeeded: notional / lev, worstEntry },
+    sizing: { requestedQty, qty, adjusted, riskAmount, realRiskPct, leverage: lev, notional, marginNeeded: notional / lev, worstEntry },
   };
 }
 
