@@ -52,3 +52,24 @@ test('buildPlan Long: cắt lỗ dưới giá, chốt lời 1 = 1,5R, Short đ�
   assert.ok(L.fundingCostR > 0, 'Long trả funding khi funding dương');
   assert.ok(S.fundingCostR < 0, 'Short nhận funding khi funding dương');
 });
+
+test('buildPlan báo lỗi khi nến phẳng (ATR = 0), không trả giá trị vô nghĩa', () => {
+  const flat = Array.from({ length: 60 }, (_, i) => k(i, 100, 100, 100));
+  const args = { mode: 'fast' as const, side: 'long' as const, entry: flat, dailyAtr: 3, capital: 1000, riskPct: 0.5,
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+  assert.throws(() => buildPlan(args), /ATR/);
+});
+
+test('buildPlan báo lỗi khi dữ liệu dưới 15 nến (ATR chưa tính được)', () => {
+  const short = Array.from({ length: 10 }, (_, i) => k(i, 100 + i));
+  const args = { mode: 'fast' as const, side: 'long' as const, entry: short, dailyAtr: 3, capital: 1000, riskPct: 0.5,
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+  assert.throws(() => buildPlan(args), /ATR/);
+});
+
+test('buildPlan Swing báo lỗi khi ATR ngày là NaN', () => {
+  const c = Array.from({ length: 60 }, (_, i) => k(i, 100 + Math.sin(i / 3) * 2));
+  const args = { mode: 'swing' as const, side: 'long' as const, entry: c, dailyAtr: NaN, capital: 1000, riskPct: 0.5,
+    costTier: 'high' as const, stepSize: 0.001, fundingRate: 0.0001, levels: { above: null, below: null } };
+  assert.throws(() => buildPlan(args), /ATR ngày/);
+});

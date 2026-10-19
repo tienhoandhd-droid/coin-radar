@@ -78,6 +78,12 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const closes = a.entry.map((k) => k.close);
   const price = last(closes);
   const atrEntry = last(atr(a.entry, 14));
+  if (!Number.isFinite(atrEntry) || atrEntry <= 0) {
+    throw new Error(`Không lập được kế hoạch: ATR khung vào lệnh không hợp lệ (${atrEntry})`);
+  }
+  if (a.mode === 'swing' && (!Number.isFinite(a.dailyAtr) || a.dailyAtr <= 0)) {
+    throw new Error(`Không lập được kế hoạch: ATR ngày không hợp lệ (${a.dailyAtr})`);
+  }
 
   // Cắt lỗ: xa hơn giữa (pivot ± buffer) và (giá ∓ k×ATR)
   const pivot = a.side === 'long' ? a.levels.below : a.levels.above;
@@ -96,6 +102,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
   }
 
   const riskPerUnit = Math.abs(price - stop);
+  if (!Number.isFinite(riskPerUnit) || riskPerUnit <= 0) {
+    throw new Error('Không lập được kế hoạch: khoảng cắt lỗ bằng 0');
+  }
   const tp1 = price + dir * cfg.tp1R * riskPerUnit;
   const costPct = COMMON.costRoundTripPct[a.costTier];
   const size = positionSize(a.capital, a.riskPct, price, stop, costPct, a.stepSize);
