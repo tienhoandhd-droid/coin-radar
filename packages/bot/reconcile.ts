@@ -260,10 +260,19 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       if (cancelledOrders.has(o.clientId)) continue;
       cancelledOrders.add(o.clientId);
       handled.add(o.clientId);
-      emit(1, { type: 'cancel_order', symbol, signalId: null, clientId: o.clientId, orderId: o.orderId, reason: 'Mã bị khóa — hủy lệnh vào còn treo để không nhập thêm vào vị thế' });
+      emit(1, { type: 'cancel_order', symbol, signalId: null, clientId: o.clientId, orderId: o.orderId, reason: 'Mã bị khóa — hủy MỌI lệnh thường của bot trên mã (lệnh vào còn treo) để không nhập thêm vào vị thế' });
     }
-    const covered = ex.openAlgoOrders.some((o) => o.symbol === symbol && isBot(o.clientId) && o.orderType === 'STOP_MARKET' && (o.closePosition || o.quantity >= qty));
+    // Chỉ tính lệnh dừng ĐÚNG CHIỀU đóng vị thế (Long → SELL, Short → BUY); lệnh mồ côi ngược chiều không bảo vệ gì
+    const closeSide = side === 'long' ? 'SELL' : 'BUY';
+    const covered = ex.openAlgoOrders.some((o) => o.symbol === symbol && isBot(o.clientId) && o.orderType === 'STOP_MARKET' && o.side === closeSide && (o.closePosition || o.quantity >= qty));
     if (covered) return;
+    // SL của lệnh liên quan đang không rõ trạng thái → tra lại trước, không đặt lần thử mới (có thể đã nằm trên sàn)
+    const unknownSl = cands.filter((t) => t.legs.SL?.status === 'unknown');
+    if (unknownSl.length > 0) {
+      for (const t of unknownSl) emit(1, { type: 'query_algo', symbol, signalId: t.signalId, clientId: t.legs.SL!.clientId, reason: 'Mã bị khóa, SL trạng thái không rõ — tra lại trước khi đặt lại' });
+      alert(1, 'urgent', symbol, null, `KHẨN ${symbol}: mã bị khóa, vị thế ${qty} chưa xác nhận được lệnh dừng — đang tra lại; tra xong sẽ đặt hoặc đóng`);
+      return;
+    }
     const close = (why: string) => {
       emit(1, { type: 'market_close', symbol, signalId: null, side, qty, reason: why, urgent: true });
       alert(1, 'urgent', symbol, null, `KHẨN ${symbol}: mã bị khóa, vị thế ${qty} không có lệnh dừng — đóng market: ${why}`);
@@ -432,16 +441,19 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       const clientId = b.clientId!;
       const head = latest(old);
       const replacing = head !== undefined;
-      if (replacing && mode === 'cancel_then_place') {
+      const oldCovers = old.some((o) => o.closePosition) || old.reduce((sum, o) => sum + o.quantity, 0) + trCover >= posQty - eps;
+      // Lệnh cũ toàn reduce-only theo khối lượng mà KHÔNG còn phủ đủ (vị thế lớn lên): đặt-trước thì cũ + mới + trailing > vị thế →
+      // -2022 chắc chắn (tài liệu: lệnh reduce-only xung đột lệnh đang mở) → hủy cũ rồi đặt mới ngay (cancel_then_place).
+      const how: StopReplaceMode = replacing && !oldCovers && old.every((o) => !o.closePosition) ? 'cancel_then_place' : mode;
+      if (replacing && how === 'cancel_then_place') {
         emit(1, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: head.clientId, algoId: head.algoId, onlyAfterPlaced: null, replacedBy: clientId, reason: `Thay lệnh dừng (cancel_then_place) bằng ${clientId}` });
       }
-      const oldCovers = old.some((o) => o.closePosition) || old.reduce((sum, o) => sum + o.quantity, 0) + trCover >= posQty - eps;
-      const onReject = replacing && mode === 'place_then_cancel' && oldCovers ? 'stop_replace_rejected' : 'market_close';
+      const onReject = replacing && how === 'place_then_cancel' && oldCovers ? 'stop_replace_rejected' : 'market_close';
       const onRejectCancelEntries = pendingEntries().map((o) => ({ clientId: o.clientId, orderId: o.orderId }));
       emit(1, { type: 'place_stop', symbol: sym, signalId: sid, role, purpose, clientId, input, qty, replaces: head?.clientId ?? null, onReject, onRejectCancelEntries, reason });
       placedCount++;
       for (const o of old) {
-        if (mode === 'cancel_then_place' && o === head) continue;
+        if (how === 'cancel_then_place' && o === head) continue;
         cancelAlgo(o, clientId, `Thay lệnh dừng bằng ${clientId}`);
       }
       return clientId;

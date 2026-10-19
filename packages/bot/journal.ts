@@ -10,7 +10,6 @@ import type { AttributedFill, ExPosition, Fill, LegRole, LegState, LegStatus, Tr
 // KÈM cảnh báo; dòng hỏng ở giữa → dừng (không bao giờ im lặng bỏ qua sự kiện). Không bao giờ ghi secret (redact).
 
 export const DEFAULT_JOURNAL_DIR = 'data/bot';
-export const REDUCE_ONLY_REJECT = -2022; // docs/reference/binance-usdm-api.md bảng lỗi
 const SNAPSHOT = 'snapshot.json';
 const FILE_RE = /^journal-\d{4}-\d{2}-\d{2}\.jsonl$/;
 
@@ -134,8 +133,9 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       if (t === null) break;
       const leg = legOf(t, e.role, e.clientId);
       if (leg.clientId === e.clientId) leg.status = 'rejected';
-      // -2022 REDUCE_ONLY_REJECT (tài liệu tra cứu): khối lượng reduce-only xung đột → lần sau bộ đối chiếu đổi cỡ BE, không phải trùng lệnh dừng
-      if (e.code !== REDUCE_ONLY_REJECT) t.stopReplaceFallback = true;
+      // Mọi từ chối khi đặt-trước (kể cả -2022 REDUCE_ONLY_REJECT: cũ + mới + trailing vượt vị thế) → lần sau hủy-trước-đặt-sau,
+      // với lần thử mới; không bao giờ đặt lại y lệnh vừa bị từ chối.
+      t.stopReplaceFallback = true;
       break;
     }
     case 'trade_closed': {
