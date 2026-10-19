@@ -115,7 +115,9 @@ export async function runSimulation(o: RunOptions) {
   let prevSignals = new Map<string, SignalState>();
   const skip = new Map<string, number>();
   const rejects = new Map<string, number>();
+  // Chuỗi giá chỉ giữ trong bộ nhớ khi mã đang có lệnh (giải phóng khi lệnh cuối của mã đóng — tránh tràn bộ nhớ ở Lướt nhanh)
   const pathOf = new Map<string, { interval: Interval; candles: Candle[] }>();
+  const pathIntervalOf = new Map<string, Interval>(); // độ phủ: khung đã dùng cho từng mã
   const fundingOf = new Map<string, FundingRow[]>();
   const stats = { steps: 0, scanErrors: 0, signalsDat: 0, signalsA: 0, pausedSignals: 0, plannerRejected: 0, opened: 0,
     m1Asked: 0, m1FromCache: 0, m1Fetched: 0, m1Missing: 0, m1FetchErrors: 0, m1FetchDisabled: false as boolean, forcedPeriodEnd: 0 };
@@ -135,6 +137,7 @@ export async function runSimulation(o: RunOptions) {
     }
     if (p === undefined) throw new Error(`${symbol}: không có chuỗi giá cho mô phỏng (${tried.join(' | ')})`);
     pathOf.set(symbol, p);
+    pathIntervalOf.set(symbol, p.interval);
     return p;
   }
   function funding(symbol: string): FundingRow[] {
@@ -180,6 +183,7 @@ export async function runSimulation(o: RunOptions) {
       const i = active.indexOf(tr);
       if (i >= 0) active.splice(i, 1);
       st.active.delete(tr.k.symbol);
+      if (!active.some((x) => x.k.symbol === tr.k.symbol)) { pathOf.delete(tr.k.symbol); fundingOf.delete(tr.k.symbol); }
       if (tr.b.firstFillAt !== null) st.cooldownUntil.set(`${tr.k.symbol}|${tr.k.side}`, tr.b.closedAt! + cooldownMs(o.mode));
       done.push(tradeRecord(tr));
     }
@@ -257,7 +261,7 @@ export async function runSimulation(o: RunOptions) {
   }
   closeOut(settle(book, active, marks));
   done.sort((x, y) => (x.exitTime ?? x.placedAt).localeCompare(y.exitTime ?? y.placedAt));
-  return { done, book, stats, skip, rejects, m1Errors, pathOf, wallSeconds: (performance.now() - started) / 1000 };
+  return { done, book, stats, skip, rejects, m1Errors, pathIntervalOf, wallSeconds: (performance.now() - started) / 1000 };
 }
 
 // Thống kê theo nhóm cho báo cáo
@@ -298,7 +302,7 @@ export function report(res: Awaited<ReturnType<typeof runSimulation>>, o: Omit<R
     protections: { lossTrips: res.book.trips.losses, dailyTrips: res.book.trips.daily, ddAlerts30: res.book.ddAlerts, pauses: res.book.pauses.map((p) => ({ from: new Date(p.from).toISOString(), until: new Date(p.until).toISOString(), why: p.why })) },
     stats: res.stats, m1Errors: res.m1Errors, skipped: Object.fromEntries([...res.skip].sort()),
     plannerRejectReasons: Object.fromEntries([...res.rejects].sort((a, b) => b[1] - a[1]).slice(0, 25)),
-    pathCoverage: count((r) => r.pathInterval), symbolsWithPath: Object.fromEntries((['5m', '15m', '1h'] as const).map((iv) => [iv, [...res.pathOf.values()].filter((p) => p.interval === iv).length])),
+    pathCoverage: count((r) => r.pathInterval), symbolsWithPath: Object.fromEntries((['5m', '15m', '1h'] as const).map((iv) => [iv, [...res.pathIntervalOf.values()].filter((x) => x === iv).length])),
     wallSeconds: Math.round(res.wallSeconds),
   };
 }
