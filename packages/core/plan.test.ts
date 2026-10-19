@@ -450,3 +450,54 @@ test('2.2 TP1 đủ xa: không hạ giá tối đa, entryReason không nhắc h�
   assert.equal(r6(p.maxEntry), 96.6);
   assert.doesNotMatch(p.entryReason, /hạ/);
 });
+
+// ---- Đợt 3: kiểm MỌI dòng bảng khối lượng, không chỉ dòng đầu ----
+const rowOk = (p: ReturnType<typeof buildPlan>, f: { qty: number; q: number[] }) =>
+  f.qty > 0 && p.targets.every((t, i) => t.price === null || f.q[i]! > 0);
+
+test('3.1 Long, 3 TP, vốn 1480, bước 1: dòng giữa/tối đa chia ra TP2 = 0 → bỏ dòng, hạ giá tối đa về giá hiện tại', () => {
+  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1480, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.valid, true);
+  assert.ok(p.targets.every((t) => t.price !== null));
+  assert.ok(p.fillTable.every((f) => rowOk(p, f)), JSON.stringify(p.fillTable));
+  assert.deepEqual(p.fillTable.map((f) => f.label), ['giá hiện tại']);
+  assert.equal(r6(p.maxEntry), 96.3);
+  assert.equal(r6(p.entryZone.high), 96.3);
+  assert.match(p.entryReason, /giá tối đa hạ xuống 96,300 vì khối lượng không chia được 50\/30\/20/);
+});
+
+test('3.1 Short (gương): cùng lỗi → nâng giá tối đa lên giá hiện tại', () => {
+  const zs = [zone(104, 105, 3), zone(101, 101.8), zone(97, 98), zone(93, 94)];
+  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1490, side: 'short', entry: flat(103.7), zones: zs });
+  assert.equal(p.valid, true);
+  assert.ok(p.fillTable.every((f) => rowOk(p, f)), JSON.stringify(p.fillTable));
+  assert.equal(p.fillTable.length, 1);
+  assert.equal(r6(p.maxEntry), 103.7);
+  assert.equal(r6(p.entryZone.low), 103.7);
+  assert.match(p.entryReason, /giá tối đa nâng lên 103,700 vì khối lượng không chia được 50\/30\/20/);
+});
+
+test('3.1 Toàn trailing, vốn 370: dòng khối lượng 0 bị bỏ, giá tối đa hạ về dòng còn hợp lệ', () => {
+  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 370, side: 'long', entry: flat(96.3), zones: supports });
+  assert.equal(p.valid, true);
+  assert.ok(p.targets.every((t) => t.price === null));
+  assert.ok(p.fillTable.length >= 1 && p.fillTable.every((f) => f.qty > 0), JSON.stringify(p.fillTable));
+  assert.equal(r6(p.maxEntry), r6(p.fillTable[p.fillTable.length - 1]!.fill));
+  assert.ok(p.maxEntry < 96.6);
+  assert.match(p.entryReason, /giá tối đa hạ xuống/);
+});
+
+test('3.1 Toàn trailing Short, vốn 380: mirror', () => {
+  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 380, side: 'short', entry: flat(103.7), zones: [zone(104, 105, 3)] });
+  assert.equal(p.valid, true);
+  assert.ok(p.fillTable.every((f) => f.qty > 0), JSON.stringify(p.fillTable));
+  assert.equal(r6(p.maxEntry), r6(p.fillTable[p.fillTable.length - 1]!.fill));
+  assert.ok(p.maxEntry > 103.4);
+  assert.match(p.entryReason, /giá tối đa nâng lên/);
+});
+
+test('3.1 dòng đầu hỏng → vẫn không hợp lệ như cũ', () => {
+  const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.valid, false);
+  assert.equal(p.invalidReason, 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn');
+});

@@ -26,7 +26,9 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   } else {
     for (const t of p.targets) {
       lines.push(t.price === null
-        ? `  ${t.name}: chốt ${t.pct}% = ${qty(t.qty)} coin — ${trail} — ${t.reason}`
+        ? (t.qty > 0
+          ? `  ${t.name}: chốt ${t.pct}% = ${qty(t.qty)} coin — ${trail} — ${t.reason}`
+          : `  ${t.name}: chốt ${t.pct}% — gộp vào ${p.targets[p.targets.length - 1]!.name} (khối lượng nhỏ hơn 1 bước, không tách được) — ${t.reason}`)
         : `  ${t.name}: ${px(t.price)} chốt ${t.pct}% = ${qty(t.qty)} coin | ${num(t.r!, 2)}R — ${t.reason}`);
     }
     lines.push('  Đạt TP1 → dời SL về đúng giá KHỚP THẬT của anh (giữ nguyên sau TP2)');
@@ -37,7 +39,9 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   lines.push(`  Khối lượng: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)}`);
   lines.push(`  Bảng khối lượng theo giá khớp (ngân sách rủi ro giữ nguyên ${num(p.riskAmount, 2)} USDT, chia ${COMMON.zones.exitPcts.join('/')}):`);
   for (const f of p.fillTable) {
-    lines.push(`    Khớp ${px(f.fill)} (${f.label}): ${qty(f.qty)} coin = TP1 ${qty(f.q[0])} / TP2 ${qty(f.q[1])} / TP3 ${qty(f.q[2])} | mất ước tính ${num(f.estLoss, 2)} USDT`);
+    // Phần bằng 0 (chỉ xảy ra với phần trailing) không in số 0 mà nói rõ đã gộp vào TP3
+    const part = (i: number) => `TP${i + 1} ${f.q[i]! > 0 ? qty(f.q[i]!) : `gộp vào TP${f.q.length}`}`;
+    lines.push(`    Khớp ${px(f.fill)} (${f.label}): ${qty(f.qty)} coin = ${f.q.map((_, i) => part(i)).join(' / ')} | mất ước tính ${num(f.estLoss, 2)} USDT`);
   }
   lines.push(`  Tiền mất ước tính nếu chạm SL: ${num(p.estLoss, 2)} USDT (đã gồm phí ước tính; ngân sách rủi ro ${dec(p.riskPct)}% vốn = ${num(p.riskAmount, 2)} USDT)`);
   return lines;

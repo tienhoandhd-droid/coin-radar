@@ -97,3 +97,18 @@ test('2.2 lệnh limit: bảng chỉ một dòng', () => {
   assert.match(t, /Khớp 0,6000 \(limit\): 30 coin = TP1 15 \/ TP2 9 \/ TP3 6/);
   assert.equal((t.match(/Khớp /g) ?? []).length, 1);
 });
+
+test('3.2 phần trailing bằng 0 do gộp: không in "= 0 coin", nói rõ gộp vào đâu (dòng TP và bảng)', () => {
+  const p = { ...base,
+    targets: [
+      { name: 'TP1' as const, price: 0.761, pct: 50, qty: 2, r: 1.78, reason: 'ly do tp1' },
+      { name: 'TP2' as const, price: null, pct: 30, qty: 0, r: null, reason: 'het vung' },
+      { name: 'TP3' as const, price: null, pct: 20, qty: 1, r: null, reason: 'het vung' },
+    ],
+    fillTable: [{ label: 'giá hiện tại' as const, fill: 0.6143, qty: 3, q: [2, 0, 1] as [number, number, number], estLoss: 2.43 }] };
+  const t = planLines(head, p, 0.0001).join('\n');
+  assert.doesNotMatch(t, /= 0 coin/);
+  assert.doesNotMatch(t, /TP2 0\b/);
+  assert.match(t, /TP2: chốt 30% — gộp vào TP3/);
+  assert.match(t, /3 coin = TP1 2 \/ TP2 gộp vào TP3 \/ TP3 1/);
+});

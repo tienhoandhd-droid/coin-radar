@@ -289,6 +289,19 @@ export function buildPlan(a: PlanArgs): TradePlan {
       invalidReason = 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn';
     }
   }
+  // Dòng đầu đã hợp lệ thì kiểm nốt các dòng sau bằng cùng luật: khối lượng > 0 và mọi phần có giá TP phải ≥ 1 bước.
+  // Giá khớp càng xấu thì khối lượng càng nhỏ nên các dòng sau dễ hỏng trước → bỏ dòng hỏng, hạ giá tối đa về dòng hợp lệ cuối cùng.
+  if (valid && entryType === 'market') {
+    const rowOk = (f: FillRow) => f.qty > 0 && targets.every((t, i) => t.price === null || f.q[i]! > 0);
+    const kept = fillTable.filter(rowOk);
+    if (kept.length < fillTable.length && kept.length > 0) {
+      fillTable.length = 0;
+      fillTable.push(...kept);
+      maxEntry = snapToTick(kept[kept.length - 1]!.fill, tick, a.side === 'long' ? 'down' : 'up');
+      if (a.side === 'long') entryZone.high = maxEntry; else entryZone.low = maxEntry;
+      entryReason += `; giá tối đa ${a.side === 'long' ? 'hạ xuống' : 'nâng lên'} ${fp(maxEntry)} vì khối lượng không chia được ${zc.exitPcts.join('/')} ở giá khớp xấu hơn`;
+    }
+  }
   const safe = maxSafeLeverage(riskPerUnit / entry, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops);
   const suggested = Math.max(1, Math.min(cfg.maxLeverage, Math.floor(safe)));
   // Số kỳ funding thật trong thời gian giữ dự kiến: 4h/kỳ → gấp đôi 8h/kỳ
