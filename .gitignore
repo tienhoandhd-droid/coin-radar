@@ -4,4 +4,5 @@ output/
 .env.*
 *.log
 data/cache/
+data/bot/
 !.env.example
