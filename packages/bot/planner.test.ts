@@ -372,3 +372,34 @@ test('B3b trần notional theo thanh khoản làm giảm khối lượng -> lý 
   assert.match(r.reasons.join('; '), /trần notional theo thanh khoản 5000/);
   assert.match(r.reasons.join('; '), /rủi ro thực 1,06%/);
 });
+
+// ---- Rà soát Task 3 kế hoạch 2, I1: phí theo cỡ lệnh tính lại cho KHỐI LƯỢNG CUỐI (costModel) ----
+const BIG_VOL = 1e15; // KL 1 phút rất lớn → trượt theo cỡ ≈ 0
+
+test('I1 costModel: phí kế hoạch phồng (1%) nhưng phí thật ở khối lượng cuối = 0,1% nhóm → planner định cỡ theo phí thật (khối lượng lớn hơn), rủi ro vẫn ≤ 2%', () => {
+  const plan = mkPlan('long', 'market', false, { costPct: 1, qty: 100_000 }); // qty kế hoạch lớn: chỉ trần 2% giới hạn
+  const old = planOrders(input(plan));
+  const fixed = planOrders(input(plan, { costModel: { tierPct: 0.1, quoteVolPerMin: BIG_VOL } }));
+  assert.equal(old.allowed, true, old.reasons.join('; '));
+  assert.equal(fixed.allowed, true, fixed.reasons.join('; '));
+  assert.ok(fixed.sizing!.qty > old.sizing!.qty, `${fixed.sizing!.qty} > ${old.sizing!.qty}`);
+  assert.ok(Math.abs(fixed.sizing!.costPct - 0.1) < 1e-6, `phí hiệu dụng ${fixed.sizing!.costPct}`);
+  assert.ok(fixed.sizing!.realRiskPct <= 2 + 1e-9);
+});
+
+test('I1 costModel: trượt theo cỡ tính trên khối lượng CUỐI — KL 1 phút mỏng thì phí hiệu dụng = nhóm + 0,5% × notional/KL', () => {
+  const plan = mkPlan('long', 'market', false, { costPct: 1 });
+  const r = planOrders(input(plan, { costModel: { tierPct: 0.1, quoteVolPerMin: 100_000 } }));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  const s = r.sizing!;
+  assert.ok(Math.abs(s.costPct - (0.1 + 0.5 * (s.qty * s.worstEntry) / 100_000)) < 1e-9, `${s.costPct}`);
+});
+
+test('I1 costModel: luật "TP1 phải bù phí" (dừng sàn hòa vốn) xét lại với phí của khối lượng cuối', () => {
+  // TP1 cách giá xấu nhất 0,15%: phí kế hoạch 0,2% → hòa vốn sau phí vượt TP1 → từ chối; phí thật 0,1% → cho vào
+  const plan = mkPlan('long', 'market', true, { costPct: 0.2 });
+  assert.equal(planOrders(input(plan)).allowed, false);
+  assert.match(planOrders(input(plan)).reasons.join(' '), /TP1 chưa bù phí/);
+  const r = planOrders(input(plan, { costModel: { tierPct: 0.1, quoteVolPerMin: BIG_VOL } }));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+});

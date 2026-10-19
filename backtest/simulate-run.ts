@@ -225,6 +225,7 @@ export async function runSimulation(o: RunOptions) {
         plan: pick.plan, grade: o.filter === 'all' ? 'A' : (a.grade?.grade ?? null), signal: { id: a.signal!.id, fresh: a.signal!.fresh },
         mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t,
+        costModel: { tierPct: COMMON.costRoundTripPct[tierOf(r.ranks.get(a.symbol) ?? 1)], quoteVolPerMin: vol1m },
       });
       if (!pr.allowed) {
         stats.plannerRejected++;

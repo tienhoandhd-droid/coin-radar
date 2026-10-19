@@ -3,6 +3,7 @@ import { snapToTick, tickDecimals } from '../core/price.ts';
 import { entryLegProblems, exitPartProblems, isStepMultiple } from '../core/filters.ts';
 import { canOpen, type OpenTrade } from '../core/portfolio.ts';
 import { mmrFor, liquidationPrice, splitQuantity, type TradePlan } from '../core/plan.ts';
+import { sizeSlippagePct } from '../core/margin.ts';
 import type { ExitPolicy } from '../core/exit.ts';
 import type { MarginBracket } from '../core/margin.ts';
 import type { Contract, Mode } from '../core/types.ts';
@@ -39,6 +40,9 @@ export type PlannerInput = {
   now: number; // ms — tính hạn GTD của limit
   leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật; không có → bảng giả định thận trọng
   exitPolicy?: ExitPolicy; // mặc định COMMON.exit.defaultPolicy (C2); bot chỉ chạy C2
+  // Rà soát Task 3 kế hoạch 2 (I1): phí nhóm thanh khoản (% khứ hồi, COMMON.costRoundTripPct) + KL 1 phút (USDT) để planner tính lại
+  // trượt theo cỡ (I7) cho KHỐI LƯỢNG CUỐI thay vì dùng costPct của kế hoạch. Không có → dùng costPct của kế hoạch như cũ.
+  costModel?: { tierPct: number; quoteVolPerMin: number };
 };
 
 export type EntryRole = 'E1' | 'E2';
@@ -65,6 +69,7 @@ export type Sizing = {
   notional: number; // ở giá khớp xấu nhất
   marginNeeded: number; // ở giá khớp xấu nhất
   worstEntry: number; // giá khớp xa SL nhất được phép
+  costPct: number; // phí + trượt khứ hồi (%) dùng cho khối lượng CUỐI (costModel) — hoặc costPct của kế hoạch khi không có costModel
 };
 
 export type PlannerResult = {
@@ -139,10 +144,9 @@ export function planOrders(i: PlannerInput): PlannerResult {
   if (activate !== tp1) problems.push(`Giá kích hoạt trailing ${activate} ≠ TP1 ${tp1}`);
   const { binanceTrailCallbackMinPct: cbMin, binanceTrailMaxCallbackPct: cbMax } = COMMON;
   if (!(tr.callbackPct >= cbMin && tr.callbackPct <= cbMax)) problems.push(`callbackRate ${tr.callbackPct} ngoài [${cbMin}; ${cbMax}]`);
-  // Dừng sàn hòa vốn (D10): giá vào xấu nhất + phí khứ hồi, phải nằm giữa giá vào và TP1 (đặt sau khi TP1 khớp, giá mark ≈ TP1)
-  const beTrigger = tr.needsBreakevenFloor ? snapToTick(worstEntry * (1 + (d * p.costPct) / 100), tick, d > 0 ? 'up' : 'down') : null;
-  if (beTrigger !== null && d * (tp1 - beTrigger) <= 0) {
-    problems.push(`Dừng sàn hòa vốn ${beTrigger} (giá vào ${worstEntry} + phí ${p.costPct}%) không nằm trước TP1 ${tp1} — TP1 chưa bù phí`);
+  const cm = i.costModel;
+  if (cm !== undefined && !(cm.tierPct >= 0 && Number.isFinite(cm.tierPct) && cm.quoteVolPerMin > 0 && Number.isFinite(cm.quoteVolPerMin))) {
+    problems.push(`costModel không hợp lệ (phí nhóm ${cm.tierPct}%, KL 1 phút ${cm.quoteVolPerMin})`);
   }
   let expireAt: number | undefined;
   if (hasLimit) {
@@ -166,11 +170,19 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // plan.qty chỉ là trần trên (vd kế hoạch mô hình chỉ đặt limit cho 50% khối lượng) — không bao giờ phóng to.
   const dec = tickDecimals(qStep);
   const floorQ = (x: number) => (x > 0 && Number.isFinite(x) ? Number((Math.floor(x / qStep + 1e-9) * qStep).toFixed(dec)) : 0);
-  const perUnit = Math.abs(worstEntry - stop) + (worstEntry * p.costPct) / 100;
+  // Rủi ro(q) = q·a + q²·b. Không có costModel: phí = costPct của kế hoạch (b = 0). Có costModel (rà soát Task 3 kế hoạch 2, I1):
+  // phí = phí nhóm + trượt theo cỡ (I7) tính trên notional của CHÍNH khối lượng q → b = pctPerParticipation% × giá² / KL 1 phút.
+  const kSlip = COMMON.slippage.pctPerParticipation / 100;
+  const ra = Math.abs(worstEntry - stop) + (worstEntry * (cm !== undefined ? cm.tierPct : p.costPct)) / 100;
+  const rb = cm !== undefined ? (kSlip * worstEntry * worstEntry) / cm.quoteVolPerMin : 0;
+  const riskAt = (q: number) => q * ra + q * q * rb;
+  const qForRisk = (r: number) => (rb > 0 ? (-ra + Math.sqrt(ra * ra + 4 * rb * r)) / (2 * rb) : r / ra);
+  const costAt = (q: number) => (cm !== undefined ? cm.tierPct + sizeSlippagePct(q * worstEntry, cm.quoteVolPerMin) : p.costPct); // % khứ hồi
   const budget = (i.capital * COMMON.risk.perTradePct) / 100;
-  const riskCapQty = floorQ(budget / perUnit); // khối lượng tối đa theo trần 2% vốn
-  const requestedQty = floorQ(Math.min(p.qty, budget / perUnit));
-  const pctVn = (qty: number) => ((qty * perUnit) / i.capital * 100).toFixed(2).replace('.', ',');
+  const riskCapQty = floorQ(qForRisk(budget)); // khối lượng tối đa theo trần 2% vốn
+  const requestedQty = floorQ(Math.min(p.qty, qForRisk(budget)));
+  const perUnit = requestedQty > 0 ? riskAt(requestedQty) / requestedQty : ra;
+  const pctVn = (qty: number) => ((riskAt(qty) / i.capital) * 100).toFixed(2).replace('.', ',');
   // Ghi rõ giới hạn nào đang áp dụng và rủi ro thực sau đó (không giảm âm thầm)
   if (requestedQty < floorQ(p.qty)) {
     adjust.push(`Khối lượng bị cắt về trần ${COMMON.risk.perTradePct}% vốn: kế hoạch ${p.qty} → ${requestedQty} coin (${i.capital} USDT × ${COMMON.risk.perTradePct}% ÷ ${perUnit} USDT/coin ở giá xấu nhất ${worstEntry}); rủi ro thực ${pctVn(requestedQty)}%`);
@@ -184,7 +196,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   let po;
   try {
     po = canOpen({
-      symbol: c.symbol, side, entry: worstEntry, stop, qty: requestedQty, leverage: lev, costPct: p.costPct,
+      symbol: c.symbol, side, entry: worstEntry, stop, qty: requestedQty, leverage: lev, costPct: costAt(requestedQty),
       entryType: 'limit', filters: c, maxNotional: i.maxNotional,
     }, i.openTrades, i.capital);
   } catch (e) {
@@ -198,9 +210,17 @@ export function planOrders(i: PlannerInput): PlannerResult {
   if (!(qty > 0)) return reject(`Khối lượng ${po.adjustedQty} nhỏ hơn bước ${qStep}`);
   const adjusted = qty < requestedQty;
   if (adjusted) adjust.push(`Khối lượng giảm tiếp ${requestedQty} → ${qty} coin do giới hạn danh mục/ký quỹ/thanh khoản (lý do ở trên); rủi ro thực ${pctVn(qty)}%`);
-  const riskAmount = qty * perUnit;
+  const riskAmount = riskAt(qty);
   const realRiskPct = (riskAmount / i.capital) * 100;
   if (realRiskPct > COMMON.risk.perTradePct + 1e-9) problems.push(`Rủi ro thực ${realRiskPct.toFixed(4)}% ở giá xấu nhất vượt ${COMMON.risk.perTradePct}%/lệnh`);
+  // Dừng sàn hòa vốn (D10): giá vào xấu nhất + phí khứ hồi CỦA KHỐI LƯỢNG CUỐI, phải nằm giữa giá vào và TP1 (đặt sau khi TP1 khớp).
+  // Cần khi callback của trailing lớn hơn khoảng bảo đảm không lỗ tính với phí đó (mức dừng lúc kích hoạt < hòa vốn).
+  const costPct = costAt(qty);
+  const noLossPct = ((d * (tp1 - worstEntry * (1 + (d * costPct) / 100))) / tp1) * 100;
+  const beTrigger = tr.callbackPct > noLossPct + 1e-12 ? snapToTick(worstEntry * (1 + (d * costPct) / 100), tick, d > 0 ? 'up' : 'down') : null;
+  if (beTrigger !== null && d * (tp1 - beTrigger) <= 0) {
+    problems.push(`Dừng sàn hòa vốn ${beTrigger} (giá vào ${worstEntry} + phí ${Number(costPct.toFixed(6))}%) không nằm trước TP1 ${tp1} — TP1 chưa bù phí`);
+  }
   let entryQty: number[];
   if (p.entryType === 'split') {
     const m = COMMON.patterns.plan.splitMarketPct;
@@ -297,7 +317,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
 
   return {
     allowed: true, reasons: adjust, legs, exitByFill: scenarios, exitRule,
-    sizing: { requestedQty, qty, adjusted, riskAmount, realRiskPct, leverage: lev, notional, marginNeeded: notional / lev, worstEntry },
+    sizing: { requestedQty, qty, adjusted, riskAmount, realRiskPct, leverage: lev, notional, marginNeeded: notional / lev, worstEntry, costPct },
   };
 }
 

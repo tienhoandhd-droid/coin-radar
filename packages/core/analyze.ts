@@ -157,8 +157,10 @@ export function analyze(i: AnalyzeInput): Analysis {
   if (!Number.isFinite(quoteVolPerMin) || quoteVolPerMin <= 0) {
     throw new Error(`${i.contract.symbol}: thiếu khối lượng 1H để ước trượt giá theo cỡ lệnh (${volBars.length} nến)`);
   }
-  // Trượt giá thêm tính trên notional của lần lập đầu (chưa có trượt thêm) → lần lập thứ hai có khối lượng nhỏ hơn, nên mức trượt đã tính là thận trọng
-  const extraFor = (notional: number) => sizeSlippagePct(notional, quoteVolPerMin);
+  // Trượt giá thêm tính trên notional của lần lập đầu (chưa có trượt thêm) → lần lập thứ hai có khối lượng nhỏ hơn, nên mức trượt đã tính là thận trọng.
+  // Notional giao dịch được không vượt trần thanh khoản (maxParticipation × KL 1 phút — canOpen cắt về đó) → trượt ước trên notional SAU trần
+  // (rà soát Task 3 kế hoạch 2, I1: ước trên notional chưa cắt làm phí kế hoạch phồng gấp nhiều lần phí thật ở mã thanh khoản mỏng).
+  const extraFor = (notional: number) => sizeSlippagePct(Math.min(notional, COMMON.slippage.maxParticipation * quoteVolPerMin), quoteVolPerMin);
 
   // I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL, LOT_SIZE/MARKET_LOT_SIZE, MAX_NUM_ORDERS) → không hợp lệ kèm lý do
   const planFor = (side: Side) => {

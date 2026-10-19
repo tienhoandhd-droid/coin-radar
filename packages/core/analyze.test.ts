@@ -492,3 +492,14 @@ test('I7 rà soát B0b #3: có bậc thật (leverageBracket) → G-08 và kế 
   const tiny = analyze({ ...base, leverageBrackets: [{ ...real[0]!, notionalCap: 1 }] });
   assert.equal(tiny.gates.find((g) => g.code === 'G-08')!.pass, false);
 });
+
+test('I7 (rà soát Task 3 kế hoạch 2, I1): trượt theo cỡ ước trên notional SAU trần thanh khoản (0,25 × KL 1 phút), không trên notional chưa cắt', () => {
+  const thin = { ...base, hourly: base.hourly.map((x) => ({ ...x, quoteVolume: 60_000, takerBuyQuote: 30_000 })) }; // 1.000 USDT/phút
+  const t = analyze(thin);
+  assert.ok(t.plan !== null);
+  const r = base.liquidityRankPct;
+  const tier = r <= COMMON.costTierRank.high ? 'high' : r <= COMMON.costTierRank.mid ? 'mid' : 'low';
+  // khối lượng giao dịch được không vượt 0,25 × 1.000 USDT → trượt thêm tối đa 0,5% × 0,25 = 0,125%
+  const capExtra = COMMON.slippage.pctPerParticipation * COMMON.slippage.maxParticipation;
+  assert.ok(t.plan.costPct <= COMMON.costRoundTripPct[tier] + capExtra + 1e-12, `costPct ${t.plan.costPct} > nhóm ${COMMON.costRoundTripPct[tier]} + ${capExtra}`);
+});
