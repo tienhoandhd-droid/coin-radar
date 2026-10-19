@@ -6,6 +6,7 @@ const REPORT = 'reports/Bộ nguyên tắc phân tích coin.md';
 const FINAL_REVIEW = '.superpowers/sdd/2026-10-19-ke-hoach-1-loi-cham-diem/final-review.md';
 const REVIEW = 'reports/Phản biện bộ nguyên tắc.md';
 const PATTERNS = 'reports/Mô hình biểu đồ cho BTC.md';
+const GRADE_A = 'docs/specs/2026-10-19-coin-radar-design.md (mục Hạng A)';
 
 export const RULES: readonly Rule[] = [
   { code: 'G-01', title: 'Hướng lệnh theo chế độ thị trường; cầu dao không bật', evidence: 'evidence', status: 'active', source: REPORT },
@@ -44,6 +45,13 @@ export const RULES: readonly Rule[] = [
   { code: 'P-C1', title: 'Bối cảnh: vai-đầu-vai và hai đỉnh/hai đáy đã xác nhận chặn lệnh ngược (hai đỉnh/hai đáy chỉ là bối cảnh — người dùng chọn 19/10/2026); cấm Long sát dưới biên trên / Short sát trên biên dưới vùng nhiều tháng chưa phá', evidence: 'industry', status: 'active', source: PATTERNS },
   { code: 'P-C2', title: 'Cờ "coil" (nén biến động) — chỉ báo, không là điều kiện', evidence: 'industry', status: 'display', source: PATTERNS },
   { code: 'P-S1', title: 'Tín hiệu phá vỡ mô hình 4H/1D (chữ nhật, cờ, tam giác) với kế hoạch lệnh riêng; Lướt nhanh chỉ ghi nhận', evidence: 'industry', status: 'active', source: PATTERNS },
+  // Hạng A (Task 8, người dùng yêu cầu 19/10/2026) — bộ lọc chặt, KHÔNG phải xác suất thắng
+  { code: 'H-A1', title: 'Hạng A — xu hướng đồng thuận nhiều khung: chế độ thị trường không ngược lệnh; khung xu hướng, khung vào lệnh (và BTC 1D ở Swing) cùng chiều', evidence: 'industry', status: 'active', source: GRADE_A },
+  { code: 'H-A2', title: 'Hạng A — điểm ≥ 80', evidence: 'industry', status: 'active', source: GRADE_A },
+  { code: 'H-A3', title: 'Hạng A — điểm vào đẹp: SL sau vùng độ mạnh ≥ 3, giá vào sát mép vùng, không có vùng cản trước TP1', evidence: 'industry', status: 'active', source: GRADE_A },
+  { code: 'H-A4', title: 'Hạng A — TP1 ≥ 1,5R sau phí + funding', evidence: 'industry', status: 'active', source: GRADE_A },
+  { code: 'H-A5', title: 'Hạng A — rủi ro coin Thấp/Vừa, không F-01, cầu dao tắt, ngoài cửa sổ sự kiện', evidence: 'industry', status: 'active', source: GRADE_A },
+  { code: 'H-A6', title: 'Hạng A — có ít nhất một hợp lưu: mô hình phá vỡ/retest, dòng tiền taker mạnh, coil vừa bung hoặc hai đáy/hai đỉnh cùng chiều', evidence: 'industry', status: 'active', source: GRADE_A },
 ];
 
 export function ruleByCode(code: string): Rule {

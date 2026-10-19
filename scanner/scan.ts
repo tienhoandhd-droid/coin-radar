@@ -8,17 +8,18 @@ import { inPatternScope } from '../packages/core/gates.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import { parseScanArgs, type ScanArgs } from './args.ts';
-import { planLines, patternPlanLines, trackedLines } from './plan-print.ts';
+import { planLines, patternPlanLines, trackedLines, gradedReportLines, type GradedItem } from './plan-print.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
 
 const { values } = parseArgs({ options: {
   mode: { type: 'string', default: 'swing' },
   limit: { type: 'string' },
   capital: { type: 'string', default: '1000' },
+  'show-b': { type: 'boolean' },
 } });
 let args: ScanArgs;
 try {
-  args = parseScanArgs(values);
+  args = parseScanArgs({ mode: values.mode, capital: values.capital, limit: values.limit, showB: values['show-b'] });
 } catch (error) {
   console.error(`Lỗi tham số: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -150,14 +151,17 @@ for (const a of scoped) {
 }
 
 const qualified = final.filter((a) => a.label.startsWith('Đạt') && (a.plan !== null || a.patternSignal !== null));
-console.log(`\nKế hoạch lệnh các hợp đồng Đạt tiêu chí (${qualified.length}, trong đó theo mô hình: ${qualified.filter((a) => a.patternSignal !== null).length}):`);
-for (const a of qualified) {
+const gradeA = qualified.filter((a) => a.grade?.grade === 'A').length;
+console.log(`\nKế hoạch lệnh các hợp đồng Đạt tiêu chí (${qualified.length}, trong đó theo mô hình: ${qualified.filter((a) => a.patternSignal !== null).length}) | Hạng A: ${gradeA} | Hạng B: ${qualified.length - gradeA}${args.showB ? ' | --show-b: in đủ Hạng B' : ''}`);
+const graded: GradedItem[] = qualified.map((a) => {
+  if (a.grade === null) throw new Error(`${a.symbol}: tín hiệu Đạt tiêu chí nhưng chưa được chấm hạng`);
   const head = { symbol: a.symbol, score: a.best.score, riskTier: a.risk.tier };
   const lines = a.patternSignal !== null ? patternPlanLines(head, a.patternSignal, tickOf(a.symbol)) : planLines(head, a.plan!, tickOf(a.symbol));
-  console.log('\n' + lines.join('\n'));
   const notes = a.flags.filter((f) => /cùng chiều|xung đột/.test(f));
-  if (notes.length > 0) console.log(`  Ghi chú: ${notes.join('; ')}`);
-}
+  if (notes.length > 0) lines.push(`  Ghi chú: ${notes.join('; ')}`);
+  return { symbol: a.symbol, side: a.best.side, score: a.best.score, grade: a.grade, lines };
+});
+console.log('\n' + gradedReportLines(graded, args.showB).join('\n'));
 const conflicts = final.filter((a) => a.flags.some((f) => f.startsWith('xung đột')));
 if (conflicts.length > 0) {
   console.log(`\nXung đột tín hiệu (không phát lệnh): ${conflicts.map((a) => `${a.symbol}: ${a.flags.filter((f) => f.startsWith('xung đột')).join('; ')}`).join(' | ')}`);

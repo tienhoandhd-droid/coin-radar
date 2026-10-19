@@ -266,6 +266,23 @@ Mô hình **lọc lệnh và bổ sung tín hiệu**, không thay hệ vùng S/R
 
 Ngoài phạm vi 1c: cốc-tay cầm, mô hình thất bại (busted), ảnh chụp/lưu trạng thái (kế hoạch 3), điều kiện OI giảm mạnh ở nến phá, backtest (kế hoạch 2), kiểm tra “kháng cự dày giữa đường” bằng sổ lệnh.
 
+### 3.12 Hạng A / Hạng B (Task 8, người dùng yêu cầu 19/10/2026)
+
+Người dùng: “Tôi cần điểm vào đẹp, khả năng xu hướng tốt, tỉ lệ thắng cao. Có thể ít lệnh hơn bình thường.” `gradeSignal(a)` (`packages/core/grade.ts`) chỉ chấm tín hiệu đã **Đạt tiêu chí**; **Hạng A = đạt cả 6 tiêu chí**, còn lại là Hạng B kèm danh sách tiêu chí trượt. Mọi ngưỡng ở `COMMON.gradeA` (đề xuất, chưa backtest); mã nguyên tắc `H-A1…H-A6`.
+
+**Hạng A là tiêu chí lọc chặt, KHÔNG phải xác suất thắng. Tỉ lệ thắng thực sẽ đo ở sổ tín hiệu/backtest.**
+
+| # | Tiêu chí | Dữ liệu dùng | Cách xấp xỉ / quyết định |
+|---|---|---|---|
+| 1 | Xu hướng đồng thuận nhiều khung | chế độ thị trường; giá/SMA20/SMA50 khung xu hướng (1D hoặc 1H) và khung vào lệnh (4H hoặc 15m) theo cùng luật `dailyTrend`; Swing thêm BTC 1D | “Cùng chiều lệnh (không ngược xu hướng)” đọc là: chế độ **không ngược** chiều lệnh (đi ngang được chấp nhận). Lệnh ngược chế độ (ngoại lệ điểm ≥ 80 của G-01) luôn là Hạng B. Lướt nhanh không thêm BTC 1D (đã có cổng BTC 1H ở G-01) |
+| 2 | Điểm ≥ 80 | điểm phía lệnh | — |
+| 3 | Điểm vào đẹp | (a) vùng đặt SL độ mạnh ≥ 3; (b) giá vào cách mép vùng ≤ 0,5×ATR (limit tại mép cũng đạt); (c) không vùng nào nằm giữa giá vào và TP1 | Lệnh vùng: đúng vùng mà `buildPlan` chọn. Lệnh **mô hình** không đặt SL theo vùng nên xấp xỉ: có vùng độ mạnh ≥ 3 ngay trước SL (mép xa cách SL ≤ 1×A), và “mép” = đường phá (chân market/chia phải có d ≤ 0,5×A; chỉ limit thì đạt). (c) kiểm bằng `targetSideZones` từ giá vào xa TP1 nhất (với lệnh chia chân là giá limit); `buildPlan` và `buildPatternPlan` đã đặt TP1 trước vùng cản đầu tiên nên tiêu chí này là kiểm lại độc lập |
+| 4 | TP1 ≥ 1,5R sau phí + funding | lệnh mô hình: `tp1NetR` có sẵn; lệnh vùng: R gộp − phí khứ hồi (theo nhóm thanh khoản) − funding phải trả | Lệnh vùng không có TP1 cố định (không vùng cản) → trượt (không đoán) |
+| 5 | Rủi ro coin | mức rủi ro Thấp/Vừa; không F-01 **cùng chiều lệnh**; cầu dao tắt; cổng G-07 qua và không có cờ G-07 (đáo hạn quyền chọn ±24h cũng tính là cửa sổ sự kiện) | — |
+| 6 | Hợp lưu (≥ 1) | mô hình phá vỡ/retest cùng chiều; điểm S-02 ≥ 70% điểm tối đa S-02; coil vừa bung theo chiều lệnh; **hoặc** hai đáy (Long)/hai đỉnh (Short) đã phá cổ (bối cảnh P-C1) | Coil “vừa bung”: dữ liệu chỉ có coil bật/tắt nên xấp xỉ = coil bật ở một trong 6 nến 4H trước nến cuối và nến cuối đóng ngoài biên cao/thấp của 6 nến đó. Hai đáy/hai đỉnh chỉ-bối-cảnh được **tính** là hợp lưu (bằng chứng cấu trúc độc lập đã xác nhận; chúng bị bỏ làm tín hiệu vì TP1 < 1R chứ không vì kém tin cậy) |
+
+In ra: mặc định chỉ in kế hoạch đầy đủ của Hạng A (lời cảnh báo ở đầu khối, điểm cao trước); Hạng B in danh sách ngắn “không đủ: …”; `--show-b` in đủ kế hoạch Hạng B sau Hạng A. Điều kiện top 10% điểm của nhóm thanh khoản (D4) vẫn áp dụng trước khi chấm hạng. Không đổi cổng hay điểm — Hạng chỉ là lớp lọc hiển thị.
+
 ## 4. Đo kết quả
 
 - Kết quả mỗi lệnh = **R thực sau phí, trượt giá và funding**. Giá nhảy qua cắt lỗ → khớp ở giá mở cửa trừ

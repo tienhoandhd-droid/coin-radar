@@ -1,6 +1,6 @@
 import type { Mode } from '../packages/core/types.ts';
 
-export type ScanArgs = { mode: Mode; capital: number; limit: number | null };
+export type ScanArgs = { mode: Mode; capital: number; limit: number | null; showB: boolean };
 
 // Số thường: chỉ chữ số và một dấu chấm thập phân. Dạng "1.000" / "12.500.000" (nhóm 3 chữ số sau dấu chấm,
 // kiểu hàng nghìn của Việt Nam) bị từ chối vì Number("1.000") = 1, sai gấp 1000 lần mà không báo.
@@ -22,12 +22,13 @@ function parseLimit(raw: string): number {
   return Number(raw);
 }
 
-export function parseScanArgs(v: { mode?: string; capital?: string; limit?: string }): ScanArgs {
+export function parseScanArgs(v: { mode?: string; capital?: string; limit?: string; showB?: boolean }): ScanArgs {
   const mode = v.mode ?? 'swing';
   if (mode !== 'swing' && mode !== 'fast') throw new Error(`--mode phải là swing hoặc fast, nhận "${mode}"`);
   return {
     mode,
     capital: v.capital === undefined ? 1000 : parseCapital(v.capital),
     limit: v.limit === undefined ? null : parseLimit(v.limit),
+    showB: v.showB === true,
   };
 }

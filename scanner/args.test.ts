@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { parseScanArgs } from './args.ts';
 
 test('mặc định: swing, vốn 1000, không giới hạn', () => {
-  assert.deepEqual(parseScanArgs({}), { mode: 'swing', capital: 1000, limit: null });
+  assert.deepEqual(parseScanArgs({}), { mode: 'swing', capital: 1000, limit: null, showB: false });
 });
 test('giá trị hợp lệ', () => {
-  assert.deepEqual(parseScanArgs({ mode: 'fast', capital: '2500.5', limit: '20' }), { mode: 'fast', capital: 2500.5, limit: 20 });
+  assert.deepEqual(parseScanArgs({ mode: 'fast', capital: '2500.5', limit: '20' }), { mode: 'fast', capital: 2500.5, limit: 20, showB: false });
 });
 test('--capital sai → lỗi tiếng Việt kèm ví dụ', () => {
   for (const bad of ['abc', '', '0', '-5', '1e3', '1,000', ' 100', 'Infinity', '0.0']) {
@@ -24,4 +24,9 @@ test('--limit phải là số nguyên dương', () => {
 });
 test('--mode sai → lỗi', () => {
   assert.throws(() => parseScanArgs({ mode: 'abc' }), /--mode/);
+});
+
+test('--show-b: bật in đủ kế hoạch Hạng B', () => {
+  assert.equal(parseScanArgs({ showB: true }).showB, true);
+  assert.equal(parseScanArgs({}).showB, false);
 });

@@ -35,3 +35,7 @@ test('cấu hình mô hình: điểm tối thiểu phía tín hiệu mô hình =
   const { COMMON } = await import('./config.ts');
   assert.equal(COMMON.patterns.minSideScore, 70);
 });
+
+test('Hạng A: có mã H-A1…H-A6 cho 6 tiêu chí', () => {
+  for (const n of [1, 2, 3, 4, 5, 6]) assert.match(ruleByCode(`H-A${n}`).title, /^Hạng A/);
+});

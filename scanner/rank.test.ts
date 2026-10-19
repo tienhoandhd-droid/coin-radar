@@ -21,7 +21,7 @@ const mk = (symbol: string, score: number, side: 'long' | 'short' = 'long', gate
     label: gatesPass && score >= 70 ? (side === 'long' ? 'Đạt tiêu chí Long' : 'Đạt tiêu chí Short') : 'Theo dõi',
     best: mkSide(side, score), long: mkSide('long', side === 'long' ? score : 0), short: mkSide('short', side === 'short' ? score : 0),
     gates: [{ code: 'G-02', pass: gatesPass, note: '' }], plan: null, risk: { tier: 'Vừa', notes: [] }, flags: [],
-    patternScope: { ok: false, note: '' }, context: null, patterns: [], patternSignal: null,
+    patternScope: { ok: false, note: '' }, context: null, patterns: [], patternSignal: null, grading: undefined as never, grade: null,
   };
 };
 const sameGroup = (list: Analysis[]) => new Map(list.map((a, i) => [a.symbol, i / 1000])); // mọi mã cùng nhóm thanh khoản cao
@@ -73,5 +73,5 @@ test('applyTopRank: hạ nhãn thì bỏ cả kế hoạch mô hình', () => {
   const out = applyTopRank(list, sameGroup(list));
   const demoted = out.filter((a) => a.label === 'Theo dõi');
   assert.ok(demoted.length > 0);
-  assert.ok(demoted.every((a) => a.patternSignal === null && a.plan === null));
+  assert.ok(demoted.every((a) => a.patternSignal === null && a.plan === null && a.grade === null));
 });

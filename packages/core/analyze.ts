@@ -14,6 +14,7 @@ import { trackPatterns, isTracked, type PatternTf, type TrackedPattern } from '.
 import { buildPatternPlan, type PatternPlan } from './patterns/pattern-plan.ts';
 import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
+import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from './grade.ts';
 
 // Nến cho phần mô hình biểu đồ (kế hoạch 1c), chỉ bắt buộc với hợp đồng trong phạm vi P-G1.
 // c4h / c1d: bối cảnh (vai-đầu-vai, vùng nhiều tháng, coil) và nhận diện Swing; c1h: ATR(1H) tại nến phá.
@@ -76,6 +77,8 @@ export type Analysis = {
   context: ContextFlags | null; // bối cảnh mô hình; null khi ngoài phạm vi P-G1
   patterns: PatternInfo[];
   patternSignal: PatternPlan | null; // kế hoạch lệnh theo mô hình khi tín hiệu được phát là tín hiệu mô hình
+  grading: GradeInput; // dữ kiện để chấm Hạng A/B (gradeSignal)
+  grade: GradeResult | null; // chỉ có khi tín hiệu Đạt tiêu chí; null = không phải tín hiệu
 };
 
 // Một hợp đồng × chế độ chỉ một tín hiệu. Cùng chiều → dùng tín hiệu mô hình; ngược chiều → không phát cả hai.
@@ -285,7 +288,21 @@ export function analyze(i: AnalyzeInput): Analysis {
   ];
   const zoneOk = zoneGates.every((g) => g.pass) && best.score >= COMMON.qualifyScore;
   const chosen = finalizeSignal({ best, zoneGates, zoneOk, plan, pattern, flags });
-  return { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen };
+  // Hạng A/B (Task 8): dữ kiện gom ở đây vì Analysis không giữ nến. TP1 sau phí: lệnh vùng = R gộp trừ phí khứ hồi và funding phải trả (cùng cách tính tp1NetR của lệnh mô hình).
+  const zoneTp1Gross = tp1R(plan);
+  const zoneTp1Net = zoneTp1Gross === null ? null
+    : zoneTp1Gross - (COMMON.costRoundTripPct[costTier(i.liquidityRankPct)] / 100 * plan.entry) / plan.riskPerUnit - Math.max(0, plan.fundingCostR);
+  const grading: GradeInput = {
+    regime: i.regime, breakerTripped: i.breakerTripped,
+    trendSide: dailyTrend(i.trend).trend, entrySide: dailyTrend(i.entry).trend,
+    btcSide: i.mode === 'swing' ? dailyTrend(i.btcTrend).trend : null,
+    zones, atr: atrEntry,
+    tp1NetR: chosen.patternSignal !== null ? chosen.patternSignal.tp1NetR : zoneTp1Net,
+    coilReleased: i.patternData === null ? { long: false, short: false } : coilReleasedAt(i.patternData.c4h),
+  };
+  const result = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen, grading, grade: null as GradeResult | null };
+  if (result.label.startsWith('Đạt') && (result.plan !== null || result.patternSignal !== null)) result.grade = gradeSignal(result);
+  return result;
 }
 
 export type PatternCandidate = { plan: PatternPlan; gates: GateResult[]; score: SideScore };

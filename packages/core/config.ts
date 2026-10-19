@@ -206,6 +206,18 @@ export const COMMON = {
       minHits: 2, // số chỉ báo (trong 3) cùng bật mới gắn cờ — đề xuất, chưa backtest
     },
   },
+  // Hạng A — chỉ hiện lệnh chất lượng cao (người dùng yêu cầu 19/10/2026) — ĐỀ XUẤT, CHƯA BACKTEST.
+  // Hạng A là tiêu chí lọc chặt, KHÔNG phải xác suất thắng.
+  gradeA: {
+    minScore: 80, // tiêu chí 2: điểm phía lệnh ≥ mức này — đề xuất, chưa backtest
+    minStopZoneStrength: 3, // tiêu chí 3: vùng đặt SL có độ mạnh ≥ mức này (1 pivot khung xu hướng = 2, 1 pivot khung vào lệnh = 1) — đề xuất, chưa backtest
+    maxEntryEdgeAtr: 0.5, // tiêu chí 3: giá vào cách mép vùng (hoặc đường phá của mô hình) ≤ mức này (×ATR) — đề xuất, chưa backtest
+    patternStopZoneGapAtr: 1, // tiêu chí 3 (lệnh mô hình): mép xa của vùng mạnh phải cách SL ≤ mức này (×A khung nhận diện) mới coi là "SL đặt sau vùng" — xấp xỉ, đề xuất, chưa backtest
+    minTp1NetR: 1.5, // tiêu chí 4: TP1 sau phí khứ hồi + funding phải trả ≥ mức này (R) — đề xuất, chưa backtest
+    allowedRiskTiers: ['Thấp', 'Vừa'], // tiêu chí 5 — đề xuất, chưa backtest
+    minFlowShare: 0.7, // tiêu chí 6: điểm S-02 (dòng tiền taker) ≥ mức này × điểm tối đa của S-02 — đề xuất, chưa backtest
+    coilLookbackBars: 6, // tiêu chí 6: coil bật ở một nến 4H trong số nến này (không kể nến cuối) và nến cuối đóng ra ngoài biên của chúng theo chiều lệnh = "vừa bung" — xấp xỉ, đề xuất, chưa backtest
+  },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
   maintenanceMarginRate: 0.01,

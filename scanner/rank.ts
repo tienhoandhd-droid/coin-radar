@@ -27,7 +27,7 @@ export function applyTopRank(list: Analysis[], ranks: Map<string, number>): Anal
   }
   return list.map((a) =>
     a.label.startsWith('Đạt') && !keep.has(a.symbol)
-      ? { ...a, label: 'Theo dõi', plan: null, patternSignal: null, flags: [...a.flags, 'Ngoài top 10% điểm trong nhóm thanh khoản (xếp riêng Long/Short, chỉ tính mã đủ điều kiện)'] }
+      ? { ...a, label: 'Theo dõi', plan: null, patternSignal: null, grade: null, flags: [...a.flags, 'Ngoài top 10% điểm trong nhóm thanh khoản (xếp riêng Long/Short, chỉ tính mã đủ điều kiện)'] }
       : a,
   );
 }

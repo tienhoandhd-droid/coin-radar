@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planLines } from './plan-print.ts';
+import { planLines, gradedReportLines, GRADE_A_DISCLAIMER, type GradedItem } from './plan-print.ts';
 import type { TradePlan } from '../packages/core/plan.ts';
 
 const base: TradePlan = {
@@ -193,4 +193,52 @@ test('khối "Mô hình đang theo dõi": loại, khung, trạng thái, đườn
   assert.match(t, /P-G2 qua/);
   assert.match(t, /hai đỉnh 4H \(bối cảnh\) — breakout \(phá xuống\)/);
   assert.match(t, /cờ tăng 1H — armed \| biên trên 120,1 \/ biên dưới 118,2 \| chiều cao 9,0 \| ẩn \(Lướt nhanh: chỉ ghi nhận\)/);
+});
+
+// ---------- Hạng A / Hạng B: thứ tự in và cờ --show-b ----------
+const item = (symbol: string, side: 'long' | 'short', score: number, failed: string[]): GradedItem => ({
+  symbol, side, score, grade: { grade: failed.length === 0 ? 'A' : 'B', failed }, lines: [`${symbol} — KẾ HOẠCH ĐẦY ĐỦ`, '  SL: 1'],
+});
+const items = [
+  item('BBBUSDT', 'long', 76.5, ['Tiêu chí 2 (điểm cao): điểm 76,5 < 80']),
+  item('AAAUSDT', 'short', 82, []),
+  item('CCCUSDT', 'long', 91, []),
+  item('DDDUSDT', 'short', 72, ['Tiêu chí 4 (tỉ lệ lời/lỗ): TP1 chỉ 1,20R sau phí + funding < 1,5R', 'Tiêu chí 6 (hợp lưu): chưa có yếu tố nào']),
+];
+
+test('mặc định: lời cảnh báo Hạng A đứng trên cùng khối Hạng A, kế hoạch đầy đủ chỉ của Hạng A (điểm cao trước)', () => {
+  const out = gradedReportLines(items, false);
+  const text = out.join('\n');
+  assert.equal(GRADE_A_DISCLAIMER, 'Hạng A là tiêu chí lọc chặt, KHÔNG phải xác suất thắng. Tỉ lệ thắng thực sẽ đo ở sổ tín hiệu/backtest.');
+  assert.equal(out[0]!.startsWith('Hạng A'), true);
+  assert.equal(out[1], GRADE_A_DISCLAIMER);
+  assert.ok(text.indexOf(GRADE_A_DISCLAIMER) < text.indexOf('CCCUSDT — KẾ HOẠCH'));
+  assert.ok(text.indexOf('CCCUSDT — KẾ HOẠCH') < text.indexOf('AAAUSDT — KẾ HOẠCH'), 'điểm 91 trước điểm 82');
+  assert.ok(text.indexOf('AAAUSDT — KẾ HOẠCH') < text.indexOf('Hạng B'), 'Hạng A in trước Hạng B');
+  assert.doesNotMatch(text, /BBBUSDT — KẾ HOẠCH|DDDUSDT — KẾ HOẠCH/);
+});
+
+test('mặc định: Hạng B là danh sách ngắn kèm tiêu chí trượt, một dòng mỗi mã', () => {
+  const text = gradedReportLines(items, false).join('\n');
+  assert.match(text, /BBBUSDT — LONG \| điểm 76,5 \| không đủ: Tiêu chí 2 \(điểm cao\): điểm 76,5 < 80/);
+  assert.match(text, /DDDUSDT — SHORT \| điểm 72 \| không đủ: Tiêu chí 4 .*; Tiêu chí 6 /);
+  assert.match(text, /Hạng B \(2\)/);
+});
+
+test('--show-b: in đủ kế hoạch cả Hạng B (sau Hạng A), kèm tiêu chí trượt', () => {
+  const text = gradedReportLines(items, true).join('\n');
+  assert.match(text, /BBBUSDT — KẾ HOẠCH ĐẦY ĐỦ/);
+  assert.match(text, /DDDUSDT — KẾ HOẠCH ĐẦY ĐỦ/);
+  assert.ok(text.indexOf('AAAUSDT — KẾ HOẠCH') < text.indexOf('BBBUSDT — KẾ HOẠCH'));
+  assert.match(text, /Không đủ Hạng A: Tiêu chí 2/);
+  assert.equal(text.split(GRADE_A_DISCLAIMER).length - 1, 1, 'lời cảnh báo chỉ in một lần');
+});
+
+test('không có Hạng A: nói thẳng là 0, vẫn in lời cảnh báo; không có Hạng B thì bỏ khối B', () => {
+  const none = gradedReportLines([item('BBBUSDT', 'long', 76.5, ['Tiêu chí 2 (điểm cao): x'])], false).join('\n');
+  assert.match(none, /Hạng A \(0\)/);
+  assert.match(none, /Không có tín hiệu Hạng A/);
+  assert.match(none, new RegExp(GRADE_A_DISCLAIMER.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')));
+  const onlyA = gradedReportLines([item('AAAUSDT', 'short', 82, [])], false).join('\n');
+  assert.doesNotMatch(onlyA, /Hạng B/);
 });

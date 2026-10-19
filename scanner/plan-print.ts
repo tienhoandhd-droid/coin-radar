@@ -4,6 +4,7 @@ import type { TradePlan } from '../packages/core/plan.ts';
 import type { PatternPlan } from '../packages/core/patterns/pattern-plan.ts';
 import type { PatternKind } from '../packages/core/patterns/types.ts';
 import type { PatternInfo } from '../packages/core/analyze.ts';
+import type { GradeResult } from '../packages/core/grade.ts';
 
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
 const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
@@ -135,4 +136,29 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   lines.push(`  Dừng theo thời gian: chưa đạt +1R sau ${p.timeStopHours} giờ thì đóng; giữ tối đa ${p.maxHoldHours} giờ`);
   if (p.notes.length > 0) lines.push(`  Ghi chú: ${p.notes.join('; ')}`);
   return lines;
+}
+
+// ---------- Hạng A / Hạng B (Task 8) ----------
+
+export const GRADE_A_DISCLAIMER = 'Hạng A là tiêu chí lọc chặt, KHÔNG phải xác suất thắng. Tỉ lệ thắng thực sẽ đo ở sổ tín hiệu/backtest.';
+
+export type GradedItem = { symbol: string; side: 'long' | 'short'; score: number; grade: GradeResult; lines: string[] };
+
+// Khối in cuối của máy quét: Hạng A (lời cảnh báo ở trên cùng, kế hoạch đầy đủ, điểm cao trước), rồi Hạng B.
+// Mặc định Hạng B chỉ là danh sách ngắn kèm tiêu chí trượt; showB = true thì in đủ kế hoạch Hạng B (sau Hạng A).
+export function gradedReportLines(items: GradedItem[], showB: boolean): string[] {
+  const byScore = (x: GradedItem, y: GradedItem) => y.score - x.score;
+  const A = items.filter((x) => x.grade.grade === 'A').sort(byScore);
+  const B = items.filter((x) => x.grade.grade === 'B').sort(byScore);
+  const out: string[] = [`Hạng A (${A.length}):`, GRADE_A_DISCLAIMER];
+  if (A.length === 0) out.push('  Không có tín hiệu Hạng A trong lần quét này.');
+  for (const x of A) out.push('', ...x.lines);
+  if (B.length > 0) {
+    out.push('', `Hạng B (${B.length}) — đạt tiêu chí nhưng chưa đủ Hạng A${showB ? ' (in đủ kế hoạch theo --show-b)' : ' (không in kế hoạch; thêm --show-b để xem)'}:`);
+    for (const x of B) {
+      if (showB) out.push('', ...x.lines, `  Không đủ Hạng A: ${x.grade.failed.join('; ')}`);
+      else out.push(`  ${x.symbol} — ${x.side === 'long' ? 'LONG' : 'SHORT'} | điểm ${dec(x.score)} | không đủ: ${x.grade.failed.join('; ')}`);
+    }
+  }
+  return out;
 }
