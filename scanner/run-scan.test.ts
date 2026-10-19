@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runScan, type ScanInput } from './run-scan.ts';
+import { runScan, hourlySource, type ScanInput } from './run-scan.ts';
 import type { Candle, Contract } from '../packages/core/types.ts';
 
 const NOW = Date.parse('2026-10-19T12:30:00Z');
@@ -160,4 +160,25 @@ test('Task 8: luật vào lệnh mới áp sau khi chấm (ScanResult.entryBlock
     const dat = r.results.filter((a) => a.label.startsWith('Đạt'));
     assert.equal(r.entryBlocks.size, r.regime.regime === 'sideways' ? dat.length : 0);
   });
+});
+
+test('#2 Lướt nhanh khung 4H/1H (tùy chọn): xu hướng tải 4H, nến 1H (khối lượng, G-04, mô hình) tải riêng — không lấy nhầm nến 4H', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  await withConfigOverride({ 'CONFIG.fast.trendInterval': '4h', 'CONFIG.fast.entryInterval': '1h' }, async () => {
+    const calls: string[] = [];
+    const base = input({ mode: 'fast' });
+    const r = await runScan({ ...base, klines: (s, iv, l) => { calls.push(`${s}|${iv}`); return base.klines(s, iv, l); } });
+    assert.deepEqual(r.errors, []);
+    for (const s of ['AAAUSDT', 'BBBUSDT']) {
+      assert.ok(calls.includes(`${s}|4h`) && calls.includes(`${s}|1h`), `${s}: ${calls.filter((c) => c.startsWith(s)).join(',')}`);
+      assert.ok(!calls.includes(`${s}|15m`));
+    }
+  });
+});
+
+test('#2 nguồn nến 1H theo khung của chế độ: Lướt nhanh mặc định = khung xu hướng 1H; 4H/1H = khung vào lệnh; Swing = tải riêng', async () => {
+  const { CONFIG } = await import('../packages/core/config.ts');
+  assert.equal(hourlySource(CONFIG.fast), 'trend');
+  assert.equal(hourlySource(CONFIG.swing), 'fetch');
+  assert.equal(hourlySource({ ...CONFIG.fast, trendInterval: '4h', entryInterval: '1h' }), 'entry');
 });

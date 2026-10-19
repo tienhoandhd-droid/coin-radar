@@ -3,8 +3,8 @@ import type { ExitPolicy } from './exit.ts';
 
 // MỌI ngưỡng dưới đây là điểm khởi đầu theo spec mục 3 — ĐỀ XUẤT, CHƯA BACKTEST.
 export type ModeConfig = {
-  trendInterval: '1h' | '1d';
-  entryInterval: '15m' | '4h';
+  trendInterval: '1h' | '4h' | '1d'; // '4h' (Lướt nhanh) chỉ dùng cho biến thể #2 Task 8 — đề xuất, chưa backtest
+  entryInterval: '15m' | '1h' | '4h'; // '1h' (Lướt nhanh) chỉ dùng cho biến thể #2 Task 8 — đề xuất, chưa backtest
   trendLimit: number;
   entryLimit: number;
   weights: { trend: number; relativeStrength: number; momentum: number; flow: number; path: number };

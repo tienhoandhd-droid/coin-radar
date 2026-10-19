@@ -105,3 +105,16 @@ test('Task 8: tín hiệu bị luật vào lệnh chặn (ScanResult.entryBlocks
   assert.equal(skip.get('luật vào lệnh #5'), 1);
   assert.equal(st.used.size, 0);
 });
+
+test('#2 Lướt nhanh khung 4H/1H (tùy chọn): mốc quyết định theo khung vào lệnh, cooldown 2 nến khung vào lệnh', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  const { decisionTimes } = await import('./replay.ts');
+  const w = { start: Date.UTC(2026, 6, 1), end: Date.UTC(2026, 6, 1, 3) };
+  assert.equal(decisionTimes('fast', w).length, 12, 'mặc định 15m');
+  assert.equal(cooldownMs('fast'), 30 * 60_000);
+  await withConfigOverride({ 'CONFIG.fast.trendInterval': '4h', 'CONFIG.fast.entryInterval': '1h' }, async () => {
+    assert.equal(decisionTimes('fast', w).length, 3);
+    assert.equal(cooldownMs('fast'), 2 * 3_600_000);
+  });
+  assert.equal(decisionTimes('swing', w).length, 3, 'Swing vẫn quyết định mỗi giờ');
+});

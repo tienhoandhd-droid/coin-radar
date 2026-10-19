@@ -231,7 +231,7 @@ export function analyze(i: AnalyzeInput): Analysis {
     if (context.coil) flags.push(`P-C2 coil (nén biến động 4H) — chỉ báo, không phải tín hiệu`);
     const daily = i.mode === 'swing' ? dailyTrend(i.trend) : null; // P-G2 chỉ dùng ở Swing (Lướt nhanh ẩn)
     const candlesFor = (tf: PatternTf): Candle[] =>
-      tf === '4h' ? pd.c4h : tf === '1d' ? pd.c1d : tf === '1h' ? (i.mode === 'fast' ? i.trend : pd.c1h) : i.entry;
+      tf === '4h' ? pd.c4h : tf === '1d' ? pd.c1d : tf === '1h' ? pd.c1h : i.entry; // Lướt nhanh mặc định: pd.c1h = khung xu hướng 1H (run-scan)
     const hidden = i.mode === 'fast';
     const tracked: Array<{ t: TrackedPattern; c: Candle[]; tf: PatternTf }> = [];
     for (const f of COMMON.patterns.frames[i.mode]) {

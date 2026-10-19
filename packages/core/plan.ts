@@ -154,7 +154,9 @@ export function vn(x: number, digits: number): string {
   return x.toFixed(digits).replace('.', ',');
 }
 
-const ENTRY_BAR_HOURS: Record<Mode, number> = { fast: 0.25, swing: 4 }; // 15m / 4H
+const INTERVAL_HOURS: Record<string, number> = { '15m': 0.25, '1h': 1, '4h': 4, '1d': 24 };
+// Số giờ một nến khung vào lệnh (Lướt nhanh 15m / Swing 4H; biến thể #2 Task 8: Lướt nhanh 1H) — đọc CONFIG lúc gọi
+const entryBarHours = (mode: Mode) => INTERVAL_HOURS[CONFIG[mode].entryInterval]!;
 
 export function buildPlan(a: PlanArgs): TradePlan {
   const cfg = CONFIG[a.mode];
@@ -306,7 +308,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     // TP1 đã nằm sai phía giá thị trường (Long ≤, Short ≥) thì điều kiện "chạm TP1 trước" vô nghĩa
     const tp1 = targets[0]!.price;
     const hasTp1 = tp1 !== null && dir * (tp1 - marketPrice) > 0;
-    limitExpiryHours = zc.limitExpiryBars[a.mode] * ENTRY_BAR_HOURS[a.mode];
+    limitExpiryHours = zc.limitExpiryBars[a.mode] * entryBarHours(a.mode);
     entryReason = `Giá đã chạy xa vùng ${sideWord} ${vn(distAtr, 1)}×ATR — đặt limit ${fp(entry)} chờ hồi về vùng ${dz(support)}; hủy nếu sau ${limitExpiryHours} giờ chưa khớp${hasTp1 ? ' hoặc giá chạm TP1 trước' : ''}`;
   } else {
     const inner = support === null ? marketPrice : a.side === 'long' ? Math.max(support.high, stop + 0.5 * atrEntry) : Math.min(support.low, stop - 0.5 * atrEntry);

@@ -44,8 +44,9 @@ export type Filter = 'A' | 'all';
 export type PickState = { used: Set<string>; cooldownUntil: Map<string, number>; active: Set<string> };
 export type Pick = { a: Analysis; plan: PlannerPlan; key: string; kind: 'zone' | 'pattern' };
 
-const ENTRY_BAR_MS: Record<Mode, number> = { swing: 4 * HOUR, fast: 15 * MINUTE };
-export const cooldownMs = (mode: Mode) => 2 * ENTRY_BAR_MS[mode];
+// Cooldown = 2 nến khung vào lệnh (đọc CONFIG lúc gọi — biến thể #2 Task 8 đổi khung Lướt nhanh)
+const ENTRY_BAR_MS: Record<string, number> = { '15m': 15 * MINUTE, '1h': HOUR, '4h': 4 * HOUR };
+export const cooldownMs = (mode: Mode) => 2 * ENTRY_BAR_MS[CONFIG[mode].entryInterval]!;
 
 const inc = (m: Map<string, number>, k: string, n = 1) => m.set(k, (m.get(k) ?? 0) + n);
 

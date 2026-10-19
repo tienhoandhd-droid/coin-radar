@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { runScan, type ScanInput, type ScanResult } from '../scanner/run-scan.ts';
 import { liquidityRanks } from '../scanner/rank.ts';
-import { COMMON } from '../packages/core/config.ts';
+import { COMMON, CONFIG } from '../packages/core/config.ts';
 import { parseEvents, type MacroEvent } from '../packages/core/events.ts';
 import { advanceSignalState, type SignalState } from '../packages/core/signal.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
@@ -79,7 +79,8 @@ export function assertWindowAllowed(w: Window, auth: BlindAuth | undefined, exis
 
 // Mốc quyết định: Swing mỗi giờ; Lướt nhanh mỗi lần đóng nến 15m. t = openTime nến kế tiếp (thời điểm sớm nhất nến trước được coi là đóng).
 export function decisionTimes(mode: Mode, w: Window): number[] {
-  const step = mode === 'swing' ? HOUR : 15 * MINUTE;
+  // Swing: mỗi giờ; Lướt nhanh: mỗi nến khung vào lệnh (mặc định 15m; #2 Task 8: 1H)
+  const step = mode === 'swing' ? HOUR : INTERVAL_MS[CONFIG.fast.entryInterval as Interval];
   const out: number[] = [];
   for (let t = Math.ceil(w.start / step) * step; t < w.end; t += step) out.push(t);
   return out;

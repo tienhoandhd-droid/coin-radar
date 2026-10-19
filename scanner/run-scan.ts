@@ -2,7 +2,7 @@ import { analyze, contractRisk, type Analysis, type PatternData } from '../packa
 import { marketRegime, circuitBreaker, btcSma200ReclaimedAt, type Regime } from '../packages/core/regime.ts';
 import { inPatternScope } from '../packages/core/gates.ts';
 import { candleProblems } from '../packages/core/candles.ts';
-import { CONFIG, COMMON } from '../packages/core/config.ts';
+import { CONFIG, COMMON, type ModeConfig } from '../packages/core/config.ts';
 import { fundingFallbackRate } from '../packages/core/sizing.ts';
 import { entryBlocks } from '../packages/core/entry-filters.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
@@ -60,6 +60,12 @@ export type ScanResult = {
 
 const BAN = /HTTP (418|429)|đang chặn tạm thời/;
 
+// Nến 1H của một mã (khối lượng 1 phút ước, G-04 bơm/xả 1H, ATR 1H của mô hình) lấy từ đâu: khung xu hướng nếu là 1H (Lướt nhanh mặc định),
+// khung vào lệnh nếu là 1H (Lướt nhanh 4H/1H — #2 Task 8), không thì tải riêng (Swing).
+export function hourlySource(cfg: Pick<ModeConfig, 'trendInterval' | 'entryInterval'>): 'trend' | 'entry' | 'fetch' {
+  return cfg.trendInterval === '1h' ? 'trend' : cfg.entryInterval === '1h' ? 'entry' : 'fetch';
+}
+
 export async function runScan(input: ScanInput): Promise<ScanResult> {
   const { mode, contracts, now } = input;
   const cfg = CONFIG[mode];
@@ -88,6 +94,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
   if (mode === 'swing' && COMMON.entryRules.swingUniverseSize !== null) universe = universe.slice(0, COMMON.entryRules.swingUniverseSize); // #7 (hạng tại now)
   if (input.limit !== null) universe = universe.slice(0, input.limit);
 
+  const src1h = hourlySource(cfg);
   const results: Analysis[] = [];
   const errors: Array<{ symbol: string; error: string }> = [];
   let banned = false;
@@ -112,12 +119,14 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
           patternData = { c4h: entry, c1d: trend, c1h, btcSma200ReclaimedAt: btcReclaim };
           hourly = c1h.slice(-30);
         } else {
-          const c4h = fresh(await kl(c.symbol, '4h', FB.h4), '4h', 'Không chấm');
-          patternData = { c4h, c1d: daily, c1h: trend, btcSma200ReclaimedAt: btcReclaim };
-          hourly = trend.slice(-100);
+          // Lướt nhanh mặc định (1H/15m): 1H = khung xu hướng; #2 (4H/1H): 4H = khung xu hướng, 1H = khung vào lệnh
+          const c4h = cfg.trendInterval === '4h' ? trend : fresh(await kl(c.symbol, '4h', FB.h4), '4h', 'Không chấm');
+          const c1h = src1h === 'trend' ? trend : src1h === 'entry' ? entry : fresh(await kl(c.symbol, '1h', FB.h1), '1h', 'Không chấm');
+          patternData = { c4h, c1d: daily, c1h, btcSma200ReclaimedAt: btcReclaim };
+          hourly = c1h.slice(-100);
         }
       } else {
-        hourly = mode === 'fast' ? trend.slice(-100) : fresh(await kl(c.symbol, '1h', 30), '1h', 'Không chấm');
+        hourly = src1h === 'trend' ? trend.slice(-100) : src1h === 'entry' ? entry.slice(-100) : fresh(await kl(c.symbol, '1h', 30), '1h', 'Không chấm');
       }
       const book = input.books.get(c.symbol);
       const premium = input.premiums.get(c.symbol);
