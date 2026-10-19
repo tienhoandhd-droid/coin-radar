@@ -9,10 +9,11 @@ import { createClient } from '../packages/binance/client.ts';
 import { COMMON } from '../packages/core/config.ts';
 import { liquidityRanks } from '../scanner/rank.ts';
 import type { Candle, Contract } from '../packages/core/types.ts';
-import { createFetcher, fetchAll, loadCandles, needFrom, planRange, HOUR, type Plan } from './data.ts';
-import { BLIND_PERIOD, DATA_END, DEV_PERIOD, loadContracts, tickersAt, type Window } from './replay.ts';
+import { createFetcher, fetchAll, loadCandles, needFrom, planRange, type Plan } from './data.ts';
+import { BLIND_PERIOD, DATA_END, DEV_PERIOD, decisionTimes, loadContracts, tickersAt, type Window } from './replay.ts';
 
-// Tập mã từng nằm trong top `size` thanh khoản tại một mốc nào đó của cửa sổ. Xếp hạng đổi theo giờ (nến 1H đóng) nên duyệt mỗi giờ.
+// Tập mã từng nằm trong top `size` thanh khoản tại một mốc nào đó của cửa sổ. Duyệt ĐÚNG các mốc quyết định Lướt nhanh (mỗi 15m,
+// decisionTimes của replay): cửa sổ 24h của tickersAt gồm 24 nến 1H tại :00 nhưng 23 nến tại :15/:30/:45 → hạng khác nhau giữa các mốc.
 // Dùng ĐÚNG tickersAt (replay) + liquidityRanks (máy quét); onboardDate ≤ t như replay (vũ trụ).
 export function pitFastUniverse(
   contracts: readonly Pick<Contract, 'symbol' | 'onboardDate'>[],
@@ -21,7 +22,7 @@ export function pitFastUniverse(
   size: number,
 ): Set<string> {
   const out = new Set<string>();
-  for (let t = Math.ceil(w.start / HOUR) * HOUR; t < w.end; t += HOUR) {
+  for (const t of decisionTimes('fast', w)) {
     const list = contracts.filter((c) => c.onboardDate <= t && hourly.has(c.symbol)).map((c) => ({ symbol: c.symbol, hourly: hourly.get(c.symbol)! }));
     const ranks = liquidityRanks(tickersAt(list, t));
     // liquidityRanks trả phân vị 0..1 (không phải thứ tự) → sắp tăng dần rồi lấy `size` mã đầu, y như runScan (universe.slice(0, fastUniverseSize))
@@ -44,8 +45,14 @@ async function main() {
   const inD = pitFastUniverse(contracts, hourly, DEV_PERIOD, size);
   const inB = pitFastUniverse(contracts, hourly, BLIND_PERIOD, size);
   const union = new Set([...inD, ...inB]);
-  const has15m = (s: string) => existsSync(join(dir, 'klines', s, '15m'));
+  // Có 15m = nạp được cả khoảng cần (loadCandles kiểm tệp phủ đủ), không chỉ thư mục tồn tại; mã dở dang (chạy bị ngắt) sẽ được tải lại
+  const from15 = needFrom('15m', plan.oosStart);
+  const has15m = (s: string): boolean => {
+    try { loadCandles(dir, s, '15m', from15, DATA_END); return true; } catch (e) { console.log(`  ! ${s} 15m chưa đủ, sẽ tải: ${(e as Error).message}`); return false; }
+  };
   const extra = [...union].filter((s) => !has15m(s)).sort();
+  const skipped1h = contracts.length - hourly.size;
+  console.log(`Bỏ qua ${skipped1h}/${contracts.length} hợp đồng vì không nạp được 1h`);
   console.log(`Top-${size} theo thời điểm: D ${inD.size} mã, B ${inB.size} mã, hợp ${union.size}; đã có 15m ${union.size - extra.length}; cần tải thêm ${extra.length}`);
 
   const started = Date.now();
@@ -75,7 +82,7 @@ async function main() {
     pointInTimeFast15m: {
       writtenAt: new Date().toISOString(),
       note: `15m cho mọi mã từng lọt top ${size} thanh khoản THEO THỜI ĐIỂM (xếp hạng từ nến 1H, cùng tickersAt/liquidityRanks với phát lại) trong kỳ D và B. KHÔNG có 5m cho nhóm này (bộ mô phỏng tải 1m theo nhu cầu). Khởi động 500 nến 15m trước ${new Date(plan.oosStart).toISOString()}.`,
-      symbolsInD: inD.size, symbolsInB: inB.size, union: union.size, fetchedExtra: extra, skipped5m: extra,
+      skippedMissing1h: skipped1h, symbolsInD: inD.size, symbolsInB: inB.size, union: union.size, fetchedExtra: extra, skipped5m: extra,
       from: new Date(needFrom('15m', plan.oosStart)).toISOString(), to: new Date(DATA_END).toISOString(),
     },
   });
