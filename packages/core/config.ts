@@ -149,6 +149,16 @@ export const COMMON = {
       confirmCloses: 2, // hoặc số nến 1D liên tiếp đóng ngoài biên — đề xuất, chưa backtest
       nearAtr: 1, // 'ngay dưới/trên biên' = trong khoảng này (×A 1D) — đề xuất, chưa backtest
     },
+    state: {
+      confirmAtr: { '15m': 0.5, '1h': 0.5, '4h': 0.25, '1d': 0.25 }, // đóng cửa vượt đường phá ≥ mức này (×A) mới là phá vỡ; 0 đến mức này → breakout_pending — đề xuất, chưa backtest
+      retestBars: 10, // số nến sau phá vỡ để chờ retest — đề xuất, chưa backtest
+      retestAtr: 0.5, // râu nến chạm lại đường phá ±mức này (×A) tính là retest — đề xuất, chưa backtest
+      failAtr: 0.5, // đóng cửa quay vào trong mô hình > mức này (×A) → failed — đề xuất, chưa backtest
+      armedExpiryRatio: 0.5, // chữ nhật/hai đỉnh/vai-đầu-vai...: ở trạng thái armed > mức này × thời lượng mô hình → expired — đề xuất, chưa backtest
+      triangleWindow: { min: 0.5, max: 0.8 }, // cửa sổ phá vỡ tam giác (tỷ lệ quãng từ đầu mô hình tới apex); phá ngoài cửa sổ chỉ ghi chú — đề xuất, chưa backtest
+      volumeSmaPeriod: 20, // SMA volume để so nến phá vỡ — đề xuất, chưa backtest
+      volumeMult: 1.5, // volume nến phá ≥ mức này × SMA → ghi chú 'dự kiến retest cao' — đề xuất, chưa backtest
+    },
     coil: {
       bbPeriod: 20, // chu kỳ Bollinger — đề xuất, chưa backtest
       bbK: 2, // số độ lệch chuẩn — đề xuất, chưa backtest
