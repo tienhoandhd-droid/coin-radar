@@ -110,13 +110,10 @@ export function gradeSignal(a: Analysis): GradeResult {
   if (a.gates.some((x) => x.code === 'G-07' && !x.pass) || g.eventFlagged) why5.push('trong cửa sổ sự kiện (G-07)');
   if (why5.length > 0) fail(5, 'rủi ro coin', why5.join('; '));
 
-  // 6. Hợp lưu (ít nhất một)
+  // 6. Hợp lưu (ít nhất một), CHỈ hai nguồn: dòng tiền taker ≥ minFlowShare × trần S-02, hoặc coil 4H vừa bung theo chiều lệnh.
+  // Phá vỡ/retest của mô hình KHÔNG còn tính (rà soát cuối 1c, B5): với tín hiệu mô hình nó luôn đúng theo định nghĩa, nên
+  // tín hiệu mô hình được tiêu chí 6 miễn phí và làm lệch so sánh Hạng A/B giữa nguồn vùng và nguồn mô hình.
   const confluence: string[] = [];
-  if (pp !== null) {
-    const ok = a.patterns.some((x) => x.kind === pp.kind && x.timeframe === pp.timeframe && !x.contextOnly
-      && x.side === (side === 'long' ? 'up' : 'down') && (x.state === 'breakout' || x.state === 'retested'));
-    if (ok) confluence.push('mô hình phá vỡ/retest');
-  }
   const flowMax = CONFIG[a.mode].weights.flow;
   const flow = a.best.reasons.find((r) => r.code === 'S-02');
   if (flow !== undefined && flow.points >= G.minFlowShare * flowMax - 1e-9) confluence.push('dòng tiền taker');
@@ -124,7 +121,9 @@ export function gradeSignal(a: Analysis): GradeResult {
   // Chỉ 3 nguồn hợp lưu theo brief. Hai đáy/hai đỉnh đã xác nhận KHÔNG tính (quyết định điều phối 19/10/2026: chất lượng hơn số lượng).
   if (confluence.length === 0) {
     const flowTxt = flow === undefined ? 'không có điểm dòng tiền' : `dòng tiền ${vn(flow.points, 1)}/${vn(flowMax, 0)} điểm < ${Math.round(G.minFlowShare * 100)}%`;
-    fail(6, 'hợp lưu', `chưa có yếu tố nào (mô hình phá vỡ/retest, ${flowTxt}, coil vừa bung)`);
+    fail(6, 'hợp lưu', pp !== null
+      ? `chưa có yếu tố hợp lưu thêm ngoài mô hình (${flowTxt}, coil chưa bung)`
+      : `chưa có yếu tố nào (${flowTxt}, coil chưa bung)`);
   }
 
   return { grade: failed.length === 0 ? 'A' : 'B', failed };

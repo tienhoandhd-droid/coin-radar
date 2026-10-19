@@ -161,8 +161,9 @@ for (const side of ['long', 'short'] as const) {
   });
 
   // ---- Tín hiệu mô hình ----
-  const withPattern = (o: { stop?: number; entryType?: 'market' | 'split' | 'limit'; distanceAtr?: number; zones?: Zone[]; state?: PatternInfo['state']; kind?: PatternInfo['kind']; tp1NetR?: number; flow?: number } = {}): Analysis => {
-    const a = make(side, { flowPoints: o.flow ?? 0, tp1NetR: o.tp1NetR ?? 2, zones: o.zones ?? [zone(side, 94, 99, 3), zone(side, 130, 135, 2)] });
+  // Mặc định có hợp lưu dòng tiền đủ mạnh (B5: bản thân phá vỡ không còn là hợp lưu)
+  const withPattern = (o: { stop?: number; entryType?: 'market' | 'split' | 'limit'; distanceAtr?: number; zones?: Zone[]; state?: PatternInfo['state']; kind?: PatternInfo['kind']; tp1NetR?: number; flow?: number; coil?: boolean } = {}): Analysis => {
+    const a = make(side, { flowPoints: o.flow ?? flowOk(), coilReleased: o.coil ?? false, tp1NetR: o.tp1NetR ?? 2, zones: o.zones ?? [zone(side, 94, 99, 3), zone(side, 130, 135, 2)] });
     const up = side === 'long';
     a.plan = null;
     a.patternSignal = {
@@ -173,12 +174,14 @@ for (const side of ['long', 'short'] as const) {
     a.patterns = [{ id: 'p', kind: o.kind ?? 'rectangle', timeframe: '4h', state: o.state ?? 'breakout', side: up ? 'up' : 'down', upper: 100, lower: 90, breakoutLine: 100, height: 10, pivots: [], notes: [], hidden: false, contextOnly: false }];
     return a;
   };
-  test(`${S}: mô hình — breakout là hợp lưu, SL sau vùng độ mạnh ≥ 3 → Hạng A`, () => {
+  test(`${S}: mô hình + dòng tiền đủ mạnh, SL sau vùng độ mạnh ≥ 3 → Hạng A`, () => {
     assert.deepEqual(gradeSignal(withPattern()), { grade: 'A', failed: [] });
   });
-  test(`${S}: mô hình — retested cũng là hợp lưu; armed/khác thì không`, () => {
-    assert.equal(gradeSignal(withPattern({ state: 'retested' })).grade, 'A');
-    only(withPattern({ state: 'armed' as PatternInfo['state'] }), 6);
+  test(`${S}: B5 — bản thân phá vỡ/retest KHÔNG còn là hợp lưu: cần thêm dòng tiền ≥ 70% hoặc coil vừa bung`, () => {
+    only(withPattern({ flow: 0 }), 6);
+    only(withPattern({ flow: 0, state: 'retested' }), 6);
+    assert.match(failedOf(withPattern({ flow: 0 })).join(' '), /Tiêu chí 6 \(hợp lưu\): chưa có yếu tố hợp lưu thêm ngoài mô hình/);
+    assert.equal(gradeSignal(withPattern({ flow: 0, coil: true })).grade, 'A');
   });
   test(`${S}: mô hình — tiêu chí 3: không có vùng độ mạnh ≥ 3 ngay sau SL → trượt`, () => {
     only(withPattern({ zones: [zone(side, 94, 99, 2), zone(side, 130, 135, 2)] }), 3);
@@ -195,7 +198,7 @@ for (const side of ['long', 'short'] as const) {
   test(`${S}: mô hình — tiêu chí 4 dùng TP1 sau phí của kế hoạch mô hình`, () => {
     only(withPattern({ tp1NetR: 1.4 }), 4);
   });
-  test(`${S}: mô hình — kế hoạch lập sau hợp lưu dòng tiền vẫn cần tiêu chí 6 khi trạng thái không đạt`, () => {
+  test(`${S}: mô hình — trạng thái mô hình không ảnh hưởng tiêu chí 6 (chỉ dòng tiền / coil)`, () => {
     assert.equal(gradeSignal(withPattern({ state: 'armed' as PatternInfo['state'], flow: flowOk() })).grade, 'A');
   });
 }
