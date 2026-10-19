@@ -225,3 +225,17 @@ test('khôi phục khứ hồi → đối chiếu: nhật ký đủ lệnh + sà
   assert.equal(acts[0]!.type, 'place_stop');
   assert.equal((acts[0] as { clientId: string }).clientId, legClientId(t, 'SL', 1));
 });
+
+test('nhật ký: stop_replace_rejected → chân BE bị từ chối + lệnh chuyển sang cancel_then_place, khôi phục giữ nguyên', () => {
+  const dir = tmp();
+  const j = openJournal({ dir, now: () => NOW });
+  const t = plannedTrade();
+  assert.equal(t.stopReplaceFallback, false);
+  j.append({ type: 'signal_accepted', trade: t });
+  const be = legClientId(t, 'BE', 0);
+  j.append({ type: 'order_intent', signalId: t.signalId, role: 'BE', clientId: be, attempt: 0, qty: 30, triggerPrice: 100.1 });
+  j.append({ type: 'stop_replace_rejected', signalId: t.signalId, role: 'BE', clientId: be, code: -4130, msg: 'closePosition existing' });
+  const s = restore({ dir });
+  assert.equal(s.trades[t.signalId]!.stopReplaceFallback, true);
+  assert.equal(s.trades[t.signalId]!.legs.BE!.status, 'rejected');
+});

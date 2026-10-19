@@ -31,6 +31,9 @@ export type JournalEventBody =
   | { type: 'fill'; signalId: string; role: LegRole; fill: Fill }
   | { type: 'algo_update'; signalId: string; role: LegRole; clientId: string; algoStatus: string; activated: boolean | null; orderId: number | null }
   | { type: 'leg_update'; signalId: string; role: LegRole; clientId: string; status: LegStatus; reason?: string }
+  // Lệnh dừng mới bị sàn từ chối khi đang thay mà lệnh dừng cũ còn lành (place_stop.onReject = 'stop_replace_rejected'):
+  // giữ lệnh cũ; từ đó lệnh này thay lệnh dừng theo cancel_then_place
+  | { type: 'stop_replace_rejected'; signalId: string; role: LegRole; clientId: string; code: number | null; msg: string }
   | { type: 'trade_closed'; signalId: string; reason: string }
   | { type: 'position_snapshot'; positions: ExPosition[] }
   | { type: 'protection_tripped'; name: string; reason: string }
@@ -121,6 +124,14 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       const leg = legOf(t, e.role, e.clientId);
       if (leg.clientId === e.clientId) leg.status = e.status;
       if (e.status === 'filled') markFilled(t, e.role);
+      break;
+    }
+    case 'stop_replace_rejected': {
+      const t = tradeOf(e.signalId);
+      if (t === null) break;
+      const leg = legOf(t, e.role, e.clientId);
+      if (leg.clientId === e.clientId) leg.status = 'rejected';
+      t.stopReplaceFallback = true;
       break;
     }
     case 'trade_closed': {

@@ -64,6 +64,8 @@ export type TradeState = {
   fills: AttributedFill[]; // các lần khớp ĐÃ gán cho lệnh này
   tp1Filled: boolean;
   trailingActivated: boolean; // ALGO_UPDATE.ia = true của lệnh trailing
+  // true: lần thay lệnh dừng trước bị sàn từ chối khi lệnh dừng cũ còn sống (stop_replace_rejected) → từ đó thay theo cancel_then_place
+  stopReplaceFallback?: boolean;
 };
 
 // Trạng thái thật trên sàn (REST: positionRisk v3, openOrders, openAlgoOrders, userTrades)
@@ -76,21 +78,37 @@ export type ExAlgoOrder = {
 };
 export type ExchangeState = { positions: ExPosition[]; openOrders: ExOrder[]; openAlgoOrders: ExAlgoOrder[]; recentFills: Fill[] };
 
+// Cách thay lệnh dừng (sàn không cho sửa lệnh algo — tài liệu tra cứu mục 4.5):
+//   place_then_cancel = đặt lệnh mới TRƯỚC, sàn nhận rồi mới hủy cũ (không hở). Tài liệu KHÔNG nói hai lệnh dừng cùng chiều có cùng tồn tại
+//                       được không (mục 4.4) → PHẢI KIỂM TRÊN DEMO, gồm cả việc lỗi kiểu -4130 ("đã có lệnh dừng closePosition cùng
+//                       chiều", không có trong tài liệu tra cứu) có áp cho lệnh algo không.
+//   cancel_then_place = hủy cũ rồi đặt mới NGAY (R5 cho phép khi sàn không cho hai lệnh dừng); đặt hỏng → đóng market khẩn (R2).
+export type StopReplaceMode = 'place_then_cancel' | 'cancel_then_place';
+export const DEFAULT_STOP_REPLACE: StopReplaceMode = 'place_then_cancel'; // phải kiểm trên Demo
+
 export type ReconcileCtx = {
   now: number;
   markPrices: Readonly<Record<string, number>>;
   filters: Readonly<Record<string, Contract>>;
   capital: number; // vốn bot (USDT) — trần rủi ro 2%/lệnh tính trên vốn này
+  stopReplace?: StopReplaceMode; // mặc định DEFAULT_STOP_REPLACE
 };
 
 export type AlertLevel = 'info' | 'warn' | 'urgent';
 export type Action =
-  // Đặt lệnh dừng (STOP_MARKET closePosition). Sàn từ chối (stop_rejected / mọi kết quả không phải 'ok') → nơi gọi đóng market + Telegram khẩn
-  | { type: 'place_stop'; symbol: string; signalId: string; role: 'SL' | 'BE'; purpose: StopPurpose; clientId: string; input: StopLossInput; replaces: string | null; onReject: 'market_close'; reason: string }
+  // Đặt lệnh dừng STOP_MARKET. qty = null: closePosition (SL gốc); qty = số: reduce-only theo khối lượng (dừng sàn hòa vốn — tài liệu
+  // mục 4.2 có `quantity` + `reduceOnly` cho algo, chỉ cấm đi cùng closePosition → cùng tồn tại được với SL gốc closePosition;
+  // orders.ts CHƯA có bộ dựng cho dạng này — B5 phải thêm). Sàn từ chối (mọi kết quả không phải 'ok'):
+  //   onReject 'market_close'          → không có lệnh dừng lành nào khác: hủy onRejectCancelEntries TRƯỚC, rồi đóng market + Telegram khẩn;
+  //   onReject 'stop_replace_rejected' → đang thay, lệnh dừng cũ vẫn lành: GIỮ lệnh cũ, báo, ghi nhật ký stop_replace_rejected
+  //                                       (lần đối chiếu sau dùng cancel_then_place). Mã/lời lỗi "trùng lệnh dừng" cụ thể chưa biết → mọi từ chối.
+  | { type: 'place_stop'; symbol: string; signalId: string; role: 'SL' | 'BE'; purpose: StopPurpose; clientId: string; input: StopLossInput; qty: number | null; replaces: string | null;
+      onReject: 'market_close' | 'stop_replace_rejected'; onRejectCancelEntries: Array<{ clientId: string; orderId: number }>; reason: string }
   | { type: 'place_tp1'; symbol: string; signalId: string; clientId: string; input: TakeProfitInput; replaces: string | null; reason: string }
   | { type: 'place_trailing'; symbol: string; signalId: string; clientId: string; input: TrailingInput; replaces: string | null; reason: string }
-  // onlyAfterPlaced: chỉ hủy khi lệnh có mã này đã được sàn nhận (thay lệnh không để hở)
-  | { type: 'cancel_algo'; symbol: string; signalId: string | null; clientId: string; algoId: number; onlyAfterPlaced: string | null; reason: string }
+  // onlyAfterPlaced: chỉ hủy khi lệnh có mã này đã được sàn nhận (place_then_cancel).
+  // replacedBy: cancel_then_place — lệnh dừng mới (mã này) đứng NGAY SAU trong danh sách, nơi gọi đặt ngay sau khi hủy.
+  | { type: 'cancel_algo'; symbol: string; signalId: string | null; clientId: string; algoId: number; onlyAfterPlaced: string | null; replacedBy: string | null; reason: string }
   | { type: 'cancel_order'; symbol: string; signalId: string | null; clientId: string; orderId: number; reason: string }
   // Đóng market reduce-only toàn bộ khối lượng qty (chiều VỊ THẾ side) + Telegram khẩn
   | { type: 'market_close'; symbol: string; signalId: string | null; side: Side; qty: number; reason: string; urgent: true }
@@ -99,6 +117,8 @@ export type Action =
   | { type: 'alert'; level: AlertLevel; symbol: string | null; signalId: string | null; text: string }
   // Vị thế lạ: nơi gọi khóa mã này (không mở lệnh mới, không đặt/hủy gì) tới khi người dùng xử lý
   | { type: 'adopt_unknown_position_noop'; symbol: string; positionAmt: number; text: string }
+  // Không xác định được lệnh nào sở hữu vị thế: nơi gọi khóa mã (không mở/đặt/hủy gì) tới khi người dùng xử lý
+  | { type: 'block_symbol'; symbol: string; reason: string }
   // Sổ sách (R8 f) — nơi gọi ghi vào nhật ký
   | { type: 'record_fill'; signalId: string; role: LegRole; fill: Fill }
   | { type: 'update_leg'; signalId: string; role: LegRole; clientId: string; status: LegStatus; reason: string }
@@ -142,7 +162,7 @@ export function tradeFromPlan(a: { signalId: string; runId: string; now: number;
       stop: NaN, tp1: NaN, activatePrice: NaN, callbackPct: NaN, costPct: a.costPct, needsBreakevenFloor: false,
       leverage: r.sizing.leverage, qtyStep: r.exitRule.qtyStep, tp1Pct: r.exitRule.tp1Pct, limitCancelAt: null,
     },
-    legs: {}, fills: [], tp1Filled: false, trailingActivated: false,
+    legs: {}, fills: [], tp1Filled: false, trailingActivated: false, stopReplaceFallback: false,
   };
   for (const l of r.legs) {
     const leg = (qty: number | null, trig: number | null): LegState => ({ role: l.role, clientId: l.clientId, attempt: 0, status: 'planned', qty, triggerPrice: trig, orderIds: [] });
@@ -185,15 +205,24 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
   const positions = new Map<string, ExPosition>();
   for (const p of ex.positions) if (p.positionAmt !== 0) positions.set(p.symbol, p);
 
-  // Lệnh còn hiệu lực theo mã. Mỗi mã: vị thế thuộc lệnh MỚI NHẤT cùng chiều (ưu tiên lệnh đã có khớp)
+  // Chủ vị thế: lệnh còn hiệu lực cùng chiều có khớp vào (nhật ký t.fills HOẶC khớp mới gán được). Đúng một → chủ; nhiều lệnh có khớp,
+  // hoặc không lệnh nào có khớp mà nhiều lệnh đang chờ → MƠ HỒ: báo khẩn + khóa mã, không đụng lệnh nào (không bao giờ đóng lệnh cũ).
+  // Lệnh mới đang chờ không bao giờ chiếm vị thế của lệnh cũ đã có khớp.
   const active = desired.filter((t) => t.status !== 'closed');
   const handsOff = new Set<string>();
   const owner = new Map<string, TradeState>(); // mã → lệnh sở hữu vị thế
+  const hasEntryFill = (t: TradeState) => [...t.fills, ...attribute(t, ex.recentFills)].some((f) => ENTRY_ROLES.includes(f.role));
   for (const [symbol, p] of positions) {
-    const cands = active.filter((t) => t.symbol === symbol && t.side === sideOfAmt(p.positionAmt))
-      .sort((a, b) => b.createdAt - a.createdAt);
-    const withFills = cands.find((t) => attribute(t, ex.recentFills).some((f) => ENTRY_ROLES.includes(f.role)));
-    const o = withFills ?? cands[0];
+    const cands = active.filter((t) => t.symbol === symbol && t.side === sideOfAmt(p.positionAmt));
+    const filled = cands.filter(hasEntryFill);
+    const o = filled.length === 1 ? filled[0] : filled.length === 0 && cands.length === 1 ? cands[0] : undefined;
+    if (o === undefined && cands.length > 0) {
+      handsOff.add(symbol);
+      const reason = `Không xác định được lệnh sở hữu vị thế ${symbol} (${p.positionAmt}): ${cands.map((t) => t.signalId).join(', ')} — khóa mã, chờ bạn xử lý`;
+      emit(2, { type: 'block_symbol', symbol, reason });
+      alert(2, 'urgent', symbol, null, `KHẨN ${reason}`);
+      continue;
+    }
     if (o === undefined) {
       handsOff.add(symbol);
       const text = `Vị thế LẠ trên ${symbol}: ${p.positionAmt} (giá vào ${p.entryPrice}) — bot không biết lệnh này, KHÔNG tự giao dịch mã này cho tới khi bạn xử lý`;
@@ -206,6 +235,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
 
   // Lệnh của bot đã được một lệnh còn hiệu lực xử lý (không quét lại ở bước mồ côi)
   const handled = new Set<string>();
+  const cancelledOrders = new Set<string>(); // lệnh thường đã phát cancel_order (không hủy hai lần)
 
   for (const t of active) {
     if (handsOff.has(t.symbol)) continue;
@@ -222,7 +252,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
     if (!isBot(o.clientId) || handled.has(o.clientId) || handsOff.has(o.symbol)) continue;
     const t = desired.find((x) => roleOfClientId(x, o.clientId) !== null) ?? null;
     const why = positions.has(o.symbol) ? 'lệnh của lệnh cũ, vị thế hiện tại thuộc lệnh khác' : 'không còn vị thế';
-    emit(3, { type: 'cancel_algo', symbol: o.symbol, signalId: t?.signalId ?? null, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: null, reason: `Lệnh algo mồ côi (${why})` });
+    emit(3, { type: 'cancel_algo', symbol: o.symbol, signalId: t?.signalId ?? null, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: null, replacedBy: null, reason: `Lệnh algo mồ côi (${why})` });
   }
   for (const o of ex.openOrders) {
     if (!isBot(o.clientId) || handled.has(o.clientId) || handsOff.has(o.symbol)) continue;
@@ -286,6 +316,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
         emit(4, { type: 'update_leg', signalId: sid, role, clientId: leg.clientId, status: 'filled', reason: 'TP1 đã khớp' });
         continue;
       }
+      if (leg.status === 'unknown' && (role === 'SL' || role === 'BE')) continue; // tra lại ở bước bảo vệ (pha 1)
       if (leg.status === 'unknown') emit(4, { type: 'query_algo', symbol: sym, signalId: sid, clientId: leg.clientId, reason: 'Lệnh algo trạng thái không rõ, không thấy trên sàn — tra lại' });
       else emit(4, { type: 'update_leg', signalId: sid, role, clientId: leg.clientId, status: 'gone', reason: 'Không còn trên sàn' });
     }
@@ -294,7 +325,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
     }
 
     const cancelAllOf = (phase: Phase, reason: string) => {
-      for (const o of myAlgos) emit(phase, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: null, reason });
+      for (const o of myAlgos) emit(phase, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: null, replacedBy: null, reason });
       for (const o of myOrders) emit(phase, { type: 'cancel_order', symbol: sym, signalId: sid, clientId: o.clientId, orderId: o.orderId, reason });
     };
 
@@ -307,7 +338,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
         return;
       }
       // Đang chờ khớp: lệnh thoát/dừng không có vị thế là mồ côi; giữ lệnh vào
-      for (const o of myAlgos) emit(3, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: null, reason: 'Lệnh dừng/thoát mồ côi (chưa có vị thế)' });
+      for (const o of myAlgos) emit(3, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: null, replacedBy: null, reason: 'Lệnh dừng/thoát mồ côi (chưa có vị thế)' });
       // Lệnh vào còn sống: đang nằm trên sàn, chưa gửi, hoặc đang tra lại (không rõ trạng thái)
       const entryAlive = ENTRY_ROLES.some((r) => ordersOf(r).length > 0 || t.legs[r]?.status === 'planned' || t.legs[r]?.status === 'unknown');
       if (!entryAlive) emit(4, { type: 'mark_trade_closed', signalId: sid, reason: 'Lệnh vào không khớp (đã hủy/hết hạn)' });
@@ -322,9 +353,21 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
     if (F === 0) alert(5, 'warn', sym, sid, `${sym}: có vị thế ${posQty} nhưng chưa thấy lần khớp nào của lệnh ${sid} — dùng giá vào của sàn ${pos.entryPrice}`);
     else if (posQty > F + eps) alert(5, 'warn', sym, sid, `${sym}: vị thế ${posQty} lớn hơn tổng khớp của bot ${F} — lệnh thoát định cỡ theo phần của bot`);
     const avg = F > 0 ? vwap : pos.entryPrice;
-    const closeNow = (reason: string) => {
-      emit(1, { type: 'market_close', symbol: sym, signalId: sid, side, qty: posQty, reason, urgent: true });
-      alert(1, 'urgent', sym, sid, `KHẨN ${sym}: đóng market ${posQty} — ${reason}`);
+    const latest = <T>(xs: T[]) => xs[xs.length - 1];
+    // Mọi lệnh vào của bot còn treo trên mã (E1/E2 của mọi lệnh, kể cả phần IOC còn sót) — phải hủy TRƯỚC khi đóng khẩn
+    const pendingEntries = () => ex.openOrders.filter((o) => o.symbol === sym && isBot(o.clientId));
+    const cancelEntries = (phase: Phase, reason: string) => {
+      for (const o of pendingEntries()) {
+        if (cancelledOrders.has(o.clientId)) continue;
+        cancelledOrders.add(o.clientId);
+        handled.add(o.clientId);
+        emit(phase, { type: 'cancel_order', symbol: sym, signalId: roleOfClientId(t, o.clientId) !== null ? sid : null, clientId: o.clientId, orderId: o.orderId, reason });
+      }
+    };
+    const closeNow = (reason: string, phase: Phase = 1) => {
+      cancelEntries(phase, 'Đóng khẩn — hủy lệnh vào còn treo trước để không mở lại vị thế');
+      emit(phase, { type: 'market_close', symbol: sym, signalId: sid, side, qty: posQty, reason, urgent: true });
+      alert(phase, 'urgent', sym, sid, `KHẨN ${sym}: đóng market ${posQty} — ${reason}`);
     };
     if (c === undefined) return closeNow('thiếu bộ lọc sàn của mã — không dựng được lệnh dừng');
 
@@ -334,8 +377,11 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       const leg = t.legs[role];
       return leg === undefined || leg.status === 'planned' ? (leg?.attempt ?? 0) : leg.attempt + 1;
     };
+    const mode: StopReplaceMode = t.stopReplaceFallback === true ? 'cancel_then_place' : ctx.stopReplace ?? DEFAULT_STOP_REPLACE;
     // Đặt lệnh dừng; không dựng được (giá mark đã qua mức dừng, thiếu giá mark) → đóng market khẩn. Trả mã lệnh mới hoặc null (đã đóng).
-    const placeStop = (role: 'SL' | 'BE', purpose: StopPurpose, trigger: number, reason: string, replaces: string | null): string | null => {
+    // old = các lệnh dừng đang lành trên sàn sẽ bị thay: place_then_cancel → đặt mới (từ chối thì giữ cũ), hủy cũ sau khi mới lên sàn;
+    // cancel_then_place → hủy lệnh cũ mới nhất ngay trước khi đặt (từ chối thì đóng khẩn), lần thử cũ hơn hủy sau.
+    const placeStop = (role: 'SL' | 'BE', purpose: StopPurpose, trigger: number, reason: string, qty: number | null, old: ExAlgoOrder[]): string | null => {
       if (!(typeof mark === 'number' && mark > 0 && Number.isFinite(mark))) {
         closeNow(`thiếu giá mark — không kiểm được lệnh dừng ${role} ${trigger}`);
         return null;
@@ -349,12 +395,23 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
         return null;
       }
       const clientId = b.clientId!;
-      emit(1, { type: 'place_stop', symbol: sym, signalId: sid, role, purpose, clientId, input, replaces, onReject: 'market_close', reason });
+      const head = latest(old);
+      const replacing = head !== undefined;
+      if (replacing && mode === 'cancel_then_place') {
+        emit(1, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: head.clientId, algoId: head.algoId, onlyAfterPlaced: null, replacedBy: clientId, reason: `Thay lệnh dừng (cancel_then_place) bằng ${clientId}` });
+      }
+      const onReject = replacing && mode === 'place_then_cancel' ? 'stop_replace_rejected' : 'market_close';
+      const onRejectCancelEntries = pendingEntries().map((o) => ({ clientId: o.clientId, orderId: o.orderId }));
+      emit(1, { type: 'place_stop', symbol: sym, signalId: sid, role, purpose, clientId, input, qty, replaces: head?.clientId ?? null, onReject, onRejectCancelEntries, reason });
       placedCount++;
+      for (const o of old) {
+        if (mode === 'cancel_then_place' && o === head) continue;
+        cancelAlgo(o, clientId, `Thay lệnh dừng bằng ${clientId}`);
+      }
       return clientId;
     };
     const cancelAlgo = (o: ExAlgoOrder, after: string | null, reason: string) =>
-      emit(5, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: after, reason });
+      emit(5, { type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: after, replacedBy: null, reason });
 
     // Sàn hòa vốn theo giá khớp TB THẬT (D10, nghĩa vụ B3 #1): không bao giờ dưới giá khớp + phí → làm tròn về phía được bảo vệ
     const beRaw = avg * (1 + (d * t.plan.costPct) / 100);
@@ -365,13 +422,22 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
 
     const sls = algosOf('SL');
     const bes = algosOf('BE');
-    const latest = <T>(xs: T[]) => xs[xs.length - 1];
+    // Lệnh dừng (SL/BE) trạng thái không rõ mà không thấy trên sàn → TRA LẠI trước, không đặt lại mù trong cùng lượt.
+    // Nơi gọi đối chiếu lại ngay khi có kết quả tra: không có trên sàn → leg_update 'gone' → lượt sau đặt lần thử mới.
+    const queryUnknownStop = (role: 'SL' | 'BE'): boolean => {
+      const leg = t.legs[role];
+      if (leg?.status !== 'unknown') return false;
+      emit(1, { type: 'query_algo', symbol: sym, signalId: sid, clientId: leg.clientId, reason: `Lệnh dừng ${role} trạng thái không rõ, không thấy trên sàn — tra lại trước khi đặt lại` });
+      alert(1, 'urgent', sym, sid, `KHẨN ${sym}: chưa xác nhận được lệnh dừng ${role} ${leg.clientId} trên sàn — đang tra lại; tra xong sẽ đặt lại hoặc đóng`);
+      return true;
+    };
 
     if (!tp1Filled) {
       // ---- (c) SL gốc ----
       let stopPx = t.plan.stop;
       if (sls.length === 0 && bes.length === 0) {
-        const id = placeStop('SL', 'initial', t.plan.stop, 'Vị thế thiếu lệnh dừng', null);
+        if (queryUnknownStop('SL')) return;
+        const id = placeStop('SL', 'initial', t.plan.stop, 'Vị thế thiếu lệnh dừng', null, []);
         if (id === null) return;
         alert(1, 'urgent', sym, sid, `${sym}: vị thế ${posQty} THIẾU lệnh dừng trên sàn — đặt lại SL ${t.plan.stop}`);
       } else {
@@ -395,8 +461,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
         const allowed = floorStep(budget / perUnit, step);
         const pct = ((risk / ctx.capital) * 100).toFixed(2).replace('.', ',');
         if (allowed < Math.max(c.minQty, c.marketMinQty)) {
-          emit(5, { type: 'market_close', symbol: sym, signalId: sid, side, qty: posQty, reason: `rủi ro thực ${pct}% > ${COMMON.risk.perTradePct}% và khối lượng cho phép ${allowed} dưới mức tối thiểu`, urgent: true });
-          alert(5, 'urgent', sym, sid, `KHẨN ${sym}: rủi ro thực ${pct}% sau trượt giá, không giảm được về ${COMMON.risk.perTradePct}% — đóng market`);
+          closeNow(`rủi ro thực ${pct}% sau trượt giá > ${COMMON.risk.perTradePct}%, khối lượng cho phép ${allowed} dưới mức tối thiểu — không giảm được`, 5);
           return;
         }
         const cut = fmtQ(posQty - allowed, step);
@@ -459,10 +524,10 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
     const needBE = needsFloor || !trailingOk;
     if (needBE) {
       if (bes.length === 0) {
-        // Dừng sàn hòa vốn trước, rồi mới hủy SL gốc (thay không hở). Giá mark đã lùi qua sàn → đóng market khẩn.
-        const id = placeStop('BE', 'breakeven', beReal, needsFloor ? 'Dừng sàn hòa vốn sau TP1 (callback không bảo đảm hòa vốn)' : 'TP1 đã khớp, trailing chưa xác nhận kích hoạt — dời dừng về hòa vốn', latest(sls)?.clientId ?? null);
+        if (queryUnknownStop('BE')) return;
+        // Dừng sàn hòa vốn (reduce-only theo khối lượng vị thế) thay SL gốc theo chế độ thay lệnh. Giá mark đã lùi qua sàn → đóng market khẩn.
+        const id = placeStop('BE', 'breakeven', beReal, needsFloor ? 'Dừng sàn hòa vốn sau TP1 (callback không bảo đảm hòa vốn)' : 'TP1 đã khớp, trailing chưa xác nhận kích hoạt — dời dừng về hòa vốn', fmtQ(posQty, step), sls);
         if (id === null) return;
-        for (const o of sls) cancelAlgo(o, id, `Thay SL gốc bằng dừng hòa vốn ${id}`);
       } else {
         const keep = latest(bes)!;
         for (const o of [...sls, ...bes]) if (o !== keep) cancelAlgo(o, null, 'Đã có dừng hòa vốn trên sàn');
@@ -472,7 +537,9 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       for (const o of bes.slice(0, -1)) cancelAlgo(o, null, 'Lần thử cũ của dừng hòa vốn');
     }
     for (const o of trs.slice(0, -1)) cancelAlgo(o, null, 'Lần thử cũ của trailing');
-    for (const o of ordersOf('E2')) emit(5, { type: 'cancel_order', symbol: sym, signalId: sid, clientId: o.clientId, orderId: o.orderId, reason: 'TP1 đã khớp — hủy chân limit chưa khớp' });
+    for (const o of ordersOf('E2')) {
+      if (!cancelledOrders.has(o.clientId)) emit(5, { type: 'cancel_order', symbol: sym, signalId: sid, clientId: o.clientId, orderId: o.orderId, reason: 'TP1 đã khớp — hủy chân limit chưa khớp' });
+    }
   }
 }
 
