@@ -1,12 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { createClient } from '../packages/binance/client.ts';
-import { parseBookTickers, parseContracts, parseKlines, parsePremium, parseTickers } from '../packages/binance/parse.ts';
+import { parseFundingInfo, parseBookTickers, parseContracts, parseKlines, parsePremium, parseTickers } from '../packages/binance/parse.ts';
 import { analyze, type Analysis } from '../packages/core/analyze.ts';
 import { marketRegime, circuitBreaker } from '../packages/core/regime.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
-import type { Mode } from '../packages/core/types.ts';
+import { parseScanArgs, type ScanArgs } from './args.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
 
 const { values } = parseArgs({ options: {
@@ -14,10 +14,15 @@ const { values } = parseArgs({ options: {
   limit: { type: 'string' },
   capital: { type: 'string', default: '1000' },
 } });
-const mode = values.mode as Mode;
-if (mode !== 'swing' && mode !== 'fast') throw new Error(`--mode phải là swing hoặc fast, nhận ${values.mode}`);
+let args: ScanArgs;
+try {
+  args = parseScanArgs(values);
+} catch (error) {
+  console.error(`Lỗi tham số: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+const { mode, capital } = args;
 const cfg = CONFIG[mode];
-const capital = Number(values.capital);
 
 const started = Date.now();
 const client = createClient({ fetch: (url) => fetch(url, { signal: AbortSignal.timeout(20_000) }) });
@@ -30,18 +35,21 @@ const contracts = parseContracts(await client.get('/fapi/v1/exchangeInfo'));
 const tickers = parseTickers(await client.get('/fapi/v1/ticker/24hr'));
 const books = new Map(parseBookTickers(await client.get('/fapi/v1/ticker/bookTicker')).map((b) => [b.symbol, b]));
 const premiums = new Map(parsePremium(await client.get('/fapi/v1/premiumIndex')).map((p) => [p.symbol, p]));
+// Chu kỳ funding từng hợp đồng (1 lần/lần quét). Mã không có trong danh sách → mặc định 8h (theo tài liệu Binance).
+const fundingHours = parseFundingInfo(await client.get('/fapi/v1/fundingInfo'));
 const tradable = new Set(contracts.map((c) => c.symbol));
 const ranks = liquidityRanks(tickers.filter((t) => tradable.has(t.symbol)));
 
 const btcDaily = await kl('BTCUSDT', '1d', 400);
+// Cầu dao xét lại mọi nến 1H trong thời gian dừng (tối đa 12h) + 20 nến khởi động → 100 nến là đủ
 const btcHourly = await kl('BTCUSDT', '1h', 100);
 const btcTrend = mode === 'swing' ? btcDaily : await kl('BTCUSDT', cfg.trendInterval, cfg.trendLimit);
 const regime = marketRegime(btcDaily);
-const breaker = circuitBreaker(btcHourly);
+const breaker = circuitBreaker(btcHourly, cfg.breakerPauseHours);
 
 let universe = [...contracts].sort((a, b) => (ranks.get(a.symbol) ?? 1) - (ranks.get(b.symbol) ?? 1));
 if (mode === 'fast') universe = universe.slice(0, COMMON.fastUniverseSize);
-if (values.limit) universe = universe.slice(0, Number(values.limit));
+if (args.limit !== null) universe = universe.slice(0, args.limit);
 
 const results: Analysis[] = [];
 const errors: Array<{ symbol: string; error: string }> = [];
@@ -58,9 +66,10 @@ for (const c of universe) {
     const mid = (book.bid + book.ask) / 2;
     results.push(analyze({
       mode, contract: c, trend, entry, daily, hourly, btcTrend,
-      regime: regime.regime, breakerTripped: breaker.tripped,
+      regime: regime.regime, breakerTripped: breaker.tripped, breakerNote: breaker.reason ?? undefined,
       liquidityRankPct: ranks.get(c.symbol) ?? 1, spreadPct: ((book.ask - book.bid) / mid) * 100,
-      premium, now: new Date(now), events, capital, riskPct: cfg.defaultRiskPct,
+      premium, fundingIntervalHours: fundingHours.get(c.symbol) ?? COMMON.defaultFundingIntervalHours,
+      fundingIntervalDefault: !fundingHours.has(c.symbol), now: new Date(now), events, capital, riskPct: cfg.defaultRiskPct,
     }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -80,6 +89,7 @@ const top = (side: 'long' | 'short') => final
   .sort((a, b) => b.best.score - a.best.score)
   .slice(0, 10);
 
+console.log(`Vốn: ${capital} USDT | Rủi ro mặc định: ${cfg.defaultRiskPct}%/lệnh (coin rủi ro Cao/Rất cao và Lướt nhanh: tối đa ${COMMON.highRiskTierPct}%)`);
 console.log(`Chế độ: ${mode} | Thị trường: ${regime.regime} (${regime.reasons.join('; ')})`);
 console.log(`Cầu dao: ${breaker.tripped ? 'BẬT — ' + breaker.reason : 'tắt'}`);
 console.log(`Hợp đồng: ${contracts.length} | Đã chấm: ${final.length} | Lỗi: ${errors.length} | Thời gian: ${((Date.now() - started) / 1000).toFixed(0)}s`);
@@ -95,6 +105,6 @@ if (errors.length) console.log(`\nLỗi (tối đa 10):\n${errors.slice(0, 10).m
 
 mkdirSync(new URL('../output/', import.meta.url), { recursive: true });
 const file = new URL(`../output/scan-${mode}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`, import.meta.url);
-writeFileSync(file, JSON.stringify({ mode, at: new Date(now).toISOString(), regime, breaker, errors, results: final }, null, 2));
+writeFileSync(file, JSON.stringify({ mode, capital, at: new Date(now).toISOString(), regime, breaker, errors, results: final }, null, 2));
 console.log(`\nĐã ghi ${file.pathname}`);
 if (banned) process.exitCode = 1;
