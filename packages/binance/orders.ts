@@ -106,6 +106,10 @@ function exitQty(qty: number, c: Contract): { qty: number; step: number; problem
   return { qty: q, step, problems: off.length > 0 ? [`Khối lượng thoát ${q} không theo bước ${off.join(' / ')}`] : [] };
 }
 
+// Giá phía LỜI (trigger TP, activatePrice trailing): làm tròn VỀ PHÍA giá vào (Long XUỐNG, Short LÊN), giống towardDir
+// của core (packages/core/plan.ts). Một hàm duy nhất cho cả hai → TP1 và activatePrice luôn trùng nhau.
+const profitSideSnap = (price: number, side: Side, tick: number) => snapToTick(price, tick, side === 'long' ? 'down' : 'up');
+
 const closeSide = (side: Side) => (side === 'long' ? 'SELL' : 'BUY'); // lệnh thoát ngược chiều vị thế
 const openSide = (side: Side) => (side === 'long' ? 'BUY' : 'SELL');
 
@@ -219,9 +223,9 @@ function buildTakeProfit(a: TakeProfitInput): Built {
   if ('problem' in idr) return fail(idr.problem);
   if (!isPos(a.entryPrice) || !isPos(a.triggerPrice)) return fail(`Giá vào ${a.entryPrice} / giá chốt lời ${a.triggerPrice} không hợp lệ`);
   if (!isPos(a.qty)) return fail(`Khối lượng ${a.qty} không hợp lệ`);
-  // Giá: ra XA giá vào (Long LÊN, Short XUỐNG) — giữ nguyên bảo đảm lời ròng TP1 của kế hoạch.
+  // Giá: VỀ PHÍA giá vào (Long XUỐNG, Short LÊN), giống core — dùng chung profitSideSnap với activatePrice.
   // Khối lượng: XUỐNG theo bước lớn hơn của LOT_SIZE/MARKET_LOT_SIZE (khớp bằng market); phần lẻ còn lại vẫn có SL closePosition.
-  const trigger = snapToTick(a.triggerPrice, c.tickSize, a.side === 'long' ? 'up' : 'down');
+  const trigger = profitSideSnap(a.triggerPrice, a.side, c.tickSize);
   const { qty, step, problems: stepProblems } = exitQty(a.qty, c);
   const problems = [...sideProblem('Giá chốt lời', a.side, a.entryPrice, trigger, true), ...exitPartProblems([qty], c), ...stepProblems, ...countProblems(a.openCount, 1, c)];
   if (problems.length > 0) return failId(idr.id, problems);
@@ -249,8 +253,10 @@ function buildTrailing(a: TrailingInput): Built {
   const cb = floorPct2(a.callbackPct); // XUỐNG: mức dừng lúc kích hoạt không thấp hơn kế hoạch (≥ giá vào + phí)
   // Ngoài khoảng thì TỪ CHỐI, không tự kẹp: kẹp lên min có thể phá bảo đảm không lỗ (exit.ts đã kẹp và báo needsBreakevenFloor)
   if (cb < min || cb > max) return fail(`callbackRate ${a.callbackPct} (làm tròn ${cb}) ngoài khoảng tài liệu [${min}; ${max}]`);
-  // activatePrice ra XA giá vào (Long LÊN, Short XUỐNG): mức dừng lúc kích hoạt = activate × (1 ∓ cb%) không lùi về phía giá vào
-  const activate = snapToTick(a.activatePrice, c.tickSize, a.side === 'long' ? 'up' : 'down');
+  // activatePrice làm tròn ĐÚNG như trigger TP1 (profitSideSnap) → activatePrice = TP1 thì gửi ra cùng một số: TP1 khớp
+  // nghĩa là trailing đã tới mức kích hoạt. Giá chưa khớp tick có thể lùi tối đa 1 tick về phía giá vào (mức dừng lúc
+  // kích hoạt thấp hơn kế hoạch ≤ 1 tick); giá do core tạo đã khớp tick nên không đổi.
+  const activate = profitSideSnap(a.activatePrice, a.side, c.tickSize);
   const { qty, step, problems: stepProblems } = exitQty(a.qty, c);
   const problems = [...sideProblem('Giá kích hoạt trailing', a.side, a.entryPrice, activate, true), ...exitPartProblems([qty], c), ...stepProblems, ...countProblems(a.openCount, 1, c)];
   if (problems.length > 0) return failId(idr.id, problems);

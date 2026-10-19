@@ -273,24 +273,24 @@ test('Lệnh vào giữ chỗ cho CẢ bộ lệnh (vào + SL + TP1 + trailing +
   assert.equal(h.calls.length, 1);
 });
 
-test('TP Long: TAKE_PROFIT_MARKET SELL reduceOnly + quantity (làm tròn XUỐNG), MARK_PRICE, priceProtect=true cố định, trigger làm tròn LÊN (xa giá vào)', async () => {
+test('TP Long: TAKE_PROFIT_MARKET SELL reduceOnly + quantity (làm tròn XUỐNG), MARK_PRICE, priceProtect=true cố định, trigger làm tròn XUỐNG (về phía giá vào, như core)', async () => {
   const h = harness();
   await h.orders.placeTakeProfit({ contract: C, side: 'long', entryPrice: 60000, triggerPrice: 62000.01, qty: 0.0019, id: id('TP1'), openCount: 1 });
   assert.deepEqual(h.calls[0], {
     method: 'POST', path: ALGO_PATH,
     params: {
-      algoType: 'CONDITIONAL', symbol: 'BTCUSDT', side: 'SELL', type: 'TAKE_PROFIT_MARKET', triggerPrice: '62000.1',
+      algoType: 'CONDITIONAL', symbol: 'BTCUSDT', side: 'SELL', type: 'TAKE_PROFIT_MARKET', triggerPrice: '62000.0',
       quantity: '0.001', reduceOnly: 'true', workingType: 'MARK_PRICE', priceProtect: 'true', clientAlgoId: makeClientId(id('TP1')),
     },
   });
 });
 
-test('TP Short: BUY, trigger làm tròn XUỐNG; reduce-only miễn MIN_NOTIONAL nhưng vẫn kiểm minQty', async () => {
+test('TP Short: BUY, trigger làm tròn LÊN (về phía giá vào); reduce-only miễn MIN_NOTIONAL nhưng vẫn kiểm minQty', async () => {
   const h = harness();
   // 0,001 × 40000 = 40 USDT < MIN_NOTIONAL 50 nhưng vẫn gửi: reduce-only được miễn
   await h.orders.placeTakeProfit({ contract: C, side: 'short', entryPrice: 60000, triggerPrice: 40000.09, qty: 0.001, id: id('TP1'), openCount: 0 });
   assert.equal(h.calls[0]!.params.side, 'BUY');
-  assert.equal(h.calls[0]!.params.triggerPrice, '40000.0');
+  assert.equal(h.calls[0]!.params.triggerPrice, '40000.1');
   assert.equal(h.calls[0]!.params.quantity, '0.001');
   const tiny = await h.orders.placeTakeProfit({ contract: C, side: 'short', entryPrice: 60000, triggerPrice: 58000, qty: 0.0009, id: id('TP1'), openCount: 0 });
   assert.equal(tiny.kind, 'rejected');
@@ -300,23 +300,23 @@ test('TP Short: BUY, trigger làm tròn XUỐNG; reduce-only miễn MIN_NOTIONAL
   assert.equal(h.calls.length, 1);
 });
 
-test('Trailing Long: TRAILING_STOP_MARKET SELL reduceOnly, activatePrice làm tròn LÊN, callbackRate làm tròn XUỐNG 0,01', async () => {
+test('Trailing Long: TRAILING_STOP_MARKET SELL reduceOnly, activatePrice làm tròn XUỐNG (về phía giá vào), callbackRate làm tròn XUỐNG 0,01', async () => {
   const h = harness();
   await h.orders.placeTrailing({ contract: C, side: 'long', entryPrice: 60000, activatePrice: 62000.01, callbackPct: 1.239, qty: 0.0059, id: id('TR'), openCount: 2 });
   assert.deepEqual(h.calls[0], {
     method: 'POST', path: ALGO_PATH,
     params: {
       algoType: 'CONDITIONAL', symbol: 'BTCUSDT', side: 'SELL', type: 'TRAILING_STOP_MARKET', quantity: '0.005', reduceOnly: 'true',
-      activatePrice: '62000.1', callbackRate: '1.23', workingType: 'MARK_PRICE', clientAlgoId: makeClientId(id('TR')),
+      activatePrice: '62000.0', callbackRate: '1.23', workingType: 'MARK_PRICE', clientAlgoId: makeClientId(id('TR')),
     },
   });
 });
 
-test('Trailing Short: BUY, activatePrice làm tròn XUỐNG; callbackRate ngoài [0,1; 10] bị từ chối', async () => {
+test('Trailing Short: BUY, activatePrice làm tròn LÊN; callbackRate ngoài [0,1; 10] bị từ chối', async () => {
   const h = harness();
   await h.orders.placeTrailing({ contract: C, side: 'short', entryPrice: 60000, activatePrice: 58000.09, callbackPct: 0.1, qty: 0.002, id: id('TR'), openCount: 0 });
   assert.equal(h.calls[0]!.params.side, 'BUY');
-  assert.equal(h.calls[0]!.params.activatePrice, '58000.0');
+  assert.equal(h.calls[0]!.params.activatePrice, '58000.1');
   assert.equal(h.calls[0]!.params.callbackRate, '0.1');
   for (const cb of [0.09, 10.01, Number.NaN]) {
     const r = await h.orders.placeTrailing({ contract: C, side: 'short', entryPrice: 60000, activatePrice: 58000, callbackPct: cb, qty: 0.002, id: id('TR'), openCount: 0 });
@@ -509,4 +509,21 @@ test('TP/trailing: khối lượng phải khớp CẢ hai bước LOT_SIZE và M
   const ok = await h.orders.placeTrailing({ contract: odd, side: 'long', entryPrice: 60000, activatePrice: 62000, callbackPct: 1, qty: 0.0065, id: id('TR'), openCount: 0 });
   assert.equal(ok.kind, 'ok');
   assert.equal(h.calls[0]!.params.quantity, '0.006');
+});
+
+test('TP và activatePrice do core làm tròn (về phía giá vào) đi qua NGUYÊN VẸN; activatePrice === trigger TP1 — Long và Short', async () => {
+  for (const [side, raw, dir, entry] of [['long', 62000.07, 'down', 60000], ['short', 58000.03, 'up', 60000]] as const) {
+    const tp1 = snapToTick(raw, C.tickSize, dir); // như core (towardDir)
+    const h = harness();
+    await h.orders.placeTakeProfit({ contract: C, side, entryPrice: entry, triggerPrice: tp1, qty: 0.002, id: id('TP1'), openCount: 0 });
+    await h.orders.placeTrailing({ contract: C, side, entryPrice: entry, activatePrice: tp1, callbackPct: 1, qty: 0.002, id: id('TR'), openCount: 1 });
+    assert.equal(Number(h.calls[0]!.params.triggerPrice), tp1, side);
+    assert.equal(Number(h.calls[1]!.params.activatePrice), tp1, side);
+    // Giá CHƯA khớp tick: cả hai làm tròn cùng hướng → vẫn trùng nhau đúng từng ký tự
+    const h2 = harness();
+    await h2.orders.placeTakeProfit({ contract: C, side, entryPrice: entry, triggerPrice: raw, qty: 0.002, id: id('TP1'), openCount: 0 });
+    await h2.orders.placeTrailing({ contract: C, side, entryPrice: entry, activatePrice: raw, callbackPct: 1, qty: 0.002, id: id('TR'), openCount: 1 });
+    assert.equal(h2.calls[1]!.params.activatePrice, h2.calls[0]!.params.triggerPrice, side);
+    assert.equal(h2.calls[0]!.params.triggerPrice, side === 'long' ? '62000.0' : '58000.1');
+  }
 });
