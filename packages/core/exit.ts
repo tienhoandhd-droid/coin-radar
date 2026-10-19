@@ -4,7 +4,9 @@ import type { Side } from './types.ts';
 // Chính sách thoát lệnh — id khớp các biến thể của ma trận đối chứng (kế hoạch 2, Task 4):
 //   A0 = TP1/TP2/TP3 cố định 50/30/20, sau TP1 dời SL về giá vào (luật cũ)
 //   C2 = TP1 chốt 50%, 50% còn lại là trailing stop trên sàn kích hoạt tại TP1 (người dùng chốt 19/10/2026)
-export type ExitPolicy = 'A0' | 'C2';
+//   C3 = (Task 8 #6, chỉ mô phỏng) TP1 chốt COMMON.exitC3.tp1Pct%, phần còn lại dừng theo giá ĐÓNG nến 4H:
+//        max(hòa vốn + phí, đỉnh đóng 4H từ TP1 − m×ATR(14) 4H). Bot chưa làm được: cần đặt lại STOP_MARKET reduce-only mỗi nến 4H.
+export type ExitPolicy = 'A0' | 'C2' | 'C3';
 
 // Thông số lệnh TRAILING_STOP_MARKET (qua /fapi/v1/algoOrder) mà bot sẽ đặt cho phần còn lại sau TP1.
 export type TrailingPlan = {

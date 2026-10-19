@@ -147,6 +147,7 @@ async function simulate(o: RunOptions) {
   const pathOf = new Map<string, { interval: Interval; candles: Candle[] }>();
   const pathIntervalOf = new Map<string, Interval>(); // độ phủ: khung đã dùng cho từng mã
   const fundingOf = new Map<string, FundingRow[]>();
+  const h4Of = new Map<string, Candle[]>(); // C3: nến 4H (khởi động ATR + trong kỳ, cắt tại cuối cửa sổ)
   const stats = { steps: 0, scanErrors: 0, signalsDat: 0, signalsA: 0, pausedSignals: 0, plannerRejected: 0, opened: 0,
     fundingFallback: 0, m1Asked: 0, m1FromCache: 0, m1Fetched: 0, m1Missing: 0, m1FetchErrors: 0, m1FetchDisabled: false as boolean, forcedPeriodEnd: 0 };
   const m1Errors: string[] = [];
@@ -167,6 +168,14 @@ async function simulate(o: RunOptions) {
     pathOf.set(symbol, p);
     pathIntervalOf.set(symbol, p.interval);
     return p;
+  }
+  function h4(symbol: string): Candle[] {
+    let c = h4Of.get(symbol);
+    if (c === undefined) {
+      c = loadCandles(o.dir, symbol, '4h', o.window.start - 60 * 4 * HOUR, o.window.end).candles;
+      h4Of.set(symbol, c);
+    }
+    return c;
   }
   function funding(symbol: string): FundingRow[] {
     let f = fundingOf.get(symbol);
@@ -211,14 +220,16 @@ async function simulate(o: RunOptions) {
       const i = active.indexOf(tr);
       if (i >= 0) active.splice(i, 1);
       st.active.delete(tr.k.symbol);
-      if (!active.some((x) => x.k.symbol === tr.k.symbol)) { pathOf.delete(tr.k.symbol); fundingOf.delete(tr.k.symbol); }
+      if (!active.some((x) => x.k.symbol === tr.k.symbol)) { pathOf.delete(tr.k.symbol); fundingOf.delete(tr.k.symbol); h4Of.delete(tr.k.symbol); }
       if (tr.b.firstFillAt !== null) st.cooldownUntil.set(`${tr.k.symbol}|${tr.k.side}`, tr.b.closedAt! + cooldownMs(o.mode));
       done.push(tradeRecord(tr));
     }
   }
 
   async function advanceAll(until: number) {
-    for (const tr of active) await advanceTrade(tr, path(tr.k.symbol).candles, until, { funding: funding(tr.k.symbol), resolve });
+    for (const tr of active) {
+      await advanceTrade(tr, path(tr.k.symbol).candles, until, { funding: funding(tr.k.symbol), resolve, ...(o.policy === 'C3' ? { h4: h4(tr.k.symbol) } : {}) });
+    }
     closeOut(settle(book, active, marks));
   }
 
@@ -358,7 +369,7 @@ async function main() {
   } });
   if (v.mode !== 'swing' && v.mode !== 'fast') throw new Error(`--mode phải là swing hoặc fast, nhận "${v.mode}"`);
   if (v.filter !== 'A' && v.filter !== 'all') throw new Error(`--filter phải là A hoặc all, nhận "${v.filter}"`);
-  if (v.policy !== 'C2' && v.policy !== 'A0') throw new Error(`--policy phải là C2 hoặc A0, nhận "${v.policy}"`);
+  if (v.policy !== 'C2' && v.policy !== 'A0' && v.policy !== 'C3') throw new Error(`--policy phải là C2, A0 hoặc C3, nhận "${v.policy}"`);
   const capital = Number(v.capital);
   if (!(capital > 0)) throw new Error(`--capital không hợp lệ: "${v.capital}"`);
   const pauseHours = Number(v['pause-hours']);

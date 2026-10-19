@@ -78,6 +78,10 @@ export const COMMON = {
     defaultPolicy: 'C2' as ExitPolicy, // người dùng chốt 19/10/2026: TP1 chốt 50%, 50% còn lại trailing stop trên sàn kích hoạt tại TP1. 'A0' = 50/30/20 cố định (luật cũ, để đối chứng)
     // % chốt tại TP1 lấy từ COMMON.zones.exitPcts[0] (một nguồn duy nhất, cả A0 và C2)
   },
+  // #6 thoát C3 (Task 8, chỉ mô phỏng — bot chưa làm): TP1 chốt tp1Pct%, phần còn lại dừng = max(hòa vốn + phí khứ hồi nhóm, đỉnh đóng 4H
+  // kể từ TP1 − trailAtrMult4h × ATR(atrPeriod) 4H), kiểm trên giá đóng nến 4H. Nghiên cứu #6: tp1Pct ∈ {30; 50}, m ∈ {2; 3} — chọn MỘT
+  // tổ hợp 30% / 3×ATR (trailing rộng giữ đuôi phải). Đề xuất, chưa backtest.
+  exitC3: { tp1Pct: 30, trailAtrMult4h: 3, atrPeriod: 14 },
   binanceTrailMaxCallbackPct: 10, // lệnh TRAILING_STOP_MARKET của Binance: callbackRate tối đa 10 (%), tối thiểu 0,1 — developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order (tra 19/10/2026)
   // Vùng hỗ trợ/kháng cự — ĐỀ XUẤT, CHƯA BACKTEST
   zones: {

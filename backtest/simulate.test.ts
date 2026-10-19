@@ -479,3 +479,29 @@ test('#1 tách phí maker/taker (tùy chọn): lệnh LIMIT vào trả phí make
   close(await go(), 0.0005); // mặc định: nửa phí nhóm 0,1%
   close(await withConfigOverride({ 'COMMON.fees.makerTakerSplit': true }, go), 0.0002);
 });
+
+test('#6 C3: TP1 chốt 30% (COMMON.exitC3.tp1Pct); 70% còn lại dừng theo giá ĐÓNG 4H: max(hòa vốn + phí, đỉnh đóng 4H từ TP1 − 3×ATR(14) 4H)', async () => {
+  const H4 = 4 * H;
+  const warm = bars(Array.from({ length: 15 }, () => [100, 101, 99, 100] as [number, number, number, number]), T0 - 15 * H4, H4);
+  const path = bars([[100, 101, 99.5, 100], [100, 126, 100.5, 124], [124, 125, 110, 111]], T0, H4);
+  const tr = createTrade({
+    id: 'c3', symbol: C.symbol, mode: 'swing', policy: 'C3', placedAt: T0, equityAtEntry: CAPITAL, contract: C, plan: plan('long'), cost: NO_IMPACT, pathInterval: '4h',
+    planner: planned(plan('long')), meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  await advanceTrade(tr, path, Infinity, { funding: [], resolve: null, h4: [...warm, ...path] });
+  const r = tradeRecord(tr);
+  assert.deepEqual(r.exits.map((e) => [e.role, e.qty]), [['TP1', 120], ['TR', 280]]);
+  close(r.exits[0]!.price, 125);
+  // ATR(14) 4H: 2 (khởi động) → nến 0: (2×13 + 1,5)/14 → nến 1: (… ×13 + 26)/14 = 3,68112…; dừng = 124 − 3 × 3,68112 = 112,9566
+  const atr0 = (2 * 13 + 1.5) / 14, atr1 = (atr0 * 13 + 26) / 14;
+  close(r.exits[1]!.price, 124 - 3 * atr1, 1e-6);
+  assert.equal(r.reason, 'trailing');
+});
+
+test('#6 C3: thiếu nến 4H trong ctx → lỗi rõ ràng (không âm thầm chạy như C2)', async () => {
+  const tr = createTrade({
+    id: 'c3b', symbol: C.symbol, mode: 'swing', policy: 'C3', placedAt: T0, equityAtEntry: CAPITAL, contract: C, plan: plan('long'), cost: NO_IMPACT, pathInterval: '4h',
+    planner: planned(plan('long')), meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  await assert.rejects(advanceTrade(tr, bars([[100, 126, 100.5, 124]], T0, 4 * H), Infinity, { funding: [], resolve: null }), /C3.*4H/);
+});

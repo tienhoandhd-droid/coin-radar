@@ -2,6 +2,7 @@ import { tickDecimals } from './price.ts';
 import type { Contract } from './types.ts';
 import type { TradePlan } from './plan.ts';
 import type { PatternPlan } from './patterns/pattern-plan.ts';
+import type { ExitPolicy } from './exit.ts';
 
 // Bộ lọc sàn áp lên một lệnh (I2, đánh giá độc lập). Nguồn: exchangeInfo — docs/reference/binance-usdm-api.md.
 export type OrderFilters = Pick<Contract, 'stepSize' | 'minQty' | 'maxQty' | 'marketMinQty' | 'marketMaxQty' | 'marketStepSize' | 'minNotional' | 'maxNumOrders'>;
@@ -43,10 +44,11 @@ export function exitPartProblems(parts: number[], f: OrderFilters): string[] {
   return out;
 }
 
-// Các phần thoát thật sự đặt lệnh: C2 có TP1 = [TP1, phần trailing]; C2 không TP1 = [cả vị thế]; A0 = các phần > 0
-function exitParts(policy: 'A0' | 'C2', hasTp1: boolean, qty: number, q: readonly number[], stepSize: number): number[] {
+// Các phần thoát thật sự đặt lệnh: C2 có TP1 = [TP1, phần trailing]; C2 không TP1 = [cả vị thế]; A0 = các phần > 0.
+// C3 (chỉ mô phỏng, Task 8 #6) cũng hai phần như C2 — kế hoạch máy quét không lập C3.
+function exitParts(policy: ExitPolicy, hasTp1: boolean, qty: number, q: readonly number[], stepSize: number): number[] {
   const snap = (x: number) => Number(x.toFixed(tickDecimals(stepSize)));
-  if (policy === 'C2') return hasTp1 ? [q[0]!, snap(qty - q[0]!)] : [qty];
+  if (policy !== 'A0') return hasTp1 ? [q[0]!, snap(qty - q[0]!)] : [qty];
   return q.filter((x) => x > 0);
 }
 

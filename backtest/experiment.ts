@@ -105,11 +105,9 @@ const list: Variant[] = [
     {}, { 'COMMON.entryRules.swingTrendOnly': true }, { modes: ['swing'] }),
   wired('p5-short-asym', 5, '#5 Short chỉ khi chế độ Xuống + RS 14 ngày thuộc 20% yếu nhất + funding TB 3 ngày ≥ 0',
     `${RESEARCH} #5 — Short PF thấp hơn Long rõ rệt trên D`, {}, { 'COMMON.entryRules.shortAsym': true }, { modes: ['swing'] }),
-  ...([[30, 2], [30, 3], [50, 2], [50, 3]] as const).map(([pct, m]) => unwired(`p6-c3-tp${pct}-m${m}`, 6,
-    `#6 thoát C3: TP1 chốt ${pct}%, phần còn lại trailing theo giá ĐÓNG 4H, dừng = max(hòa vốn+phí, đỉnh đóng − ${m}×ATR(14) 4H)`,
-    `${RESEARCH} #6 — C2 ≈ A0 trên D, callback C2 hẹp`, { policy: 'C3', 'COMMON.exitC3': { tp1Pct: pct, trailAtr4h: m } },
-    ['packages/core/exit.ts: ExitPolicy thêm "C3" (hiện "A0" | "C2")',
-      'simulate.ts: trailing kiểm trên giá đóng nến 4H (đặt lại STOP_MARKET mỗi nến 4H)', 'packages/bot/planner.ts exitSplit: tỉ lệ TP1 theo chính sách'])),
+  // #6: một tổ hợp 30% / 3×ATR(14) 4H (COMMON.exitC3) — không quét 2×2
+  wired('p6-c3-tp30-m3', 6, '#6 thoát C3: TP1 chốt 30%, 70% còn lại dừng theo giá ĐÓNG 4H = max(hòa vốn + phí, đỉnh đóng từ TP1 − 3×ATR(14) 4H)',
+    `${RESEARCH} #6 — C2 ≈ A0 trên D, callback C2 hẹp (bot chưa làm được C3: phải đặt lại STOP_MARKET mỗi nến 4H)`, { policy: 'C3' }, {}, { modes: ['swing'] }),
   // #7: một giá trị N = 150 (như phạm vi Lướt nhanh, nghiên cứu "~150 hợp đồng thanh khoản nhất") — không thử thêm 100
   wired('p7-swing-top150', 7, '#7 Swing chỉ xét 150 hợp đồng thanh khoản nhất (hạng tại thời điểm) + Long cần RS 14 ngày ≥ trung vị',
     `${RESEARCH} #7 — quán tính chỉ ở coin lớn`, {}, { 'COMMON.entryRules.swingUniverseSize': 150, 'COMMON.entryRules.swingLongRsTopHalf': true }, { modes: ['swing'] }),

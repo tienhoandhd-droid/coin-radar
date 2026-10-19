@@ -36,6 +36,7 @@ import { COMMON, CONFIG } from '../packages/core/config.ts';
 import { snapToTick, tickDecimals } from '../packages/core/price.ts';
 import { liquidationPrice, mmrFor, splitQuantity } from '../packages/core/plan.ts';
 import { fundingGuard } from '../packages/core/funding-guard.ts';
+import { atr } from '../packages/core/indicators.ts';
 import { exitSplit, type PlannerPlan, type PlannerResult } from '../packages/bot/planner.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
@@ -52,7 +53,8 @@ export type SimCost = {
   vol1m: number; // KL giao dịch 1 phút (USDT); Infinity = bỏ trượt theo cỡ (chỉ dùng trong test)
 };
 
-export type TrailState = { kind: 'callback'; actX: number; cbPct: number; peakX: number | null } | { kind: 'atr'; dist: number };
+export type TrailState = { kind: 'callback'; actX: number; cbPct: number; peakX: number | null } | { kind: 'atr'; dist: number }
+  | { kind: 'close4h'; levelX: number | null }; // C3: mức dừng chỉ đổi khi nến 4H ĐÓNG (bot đặt lại STOP_MARKET), giữa nến là dừng tĩnh
 export type Part = { name: 'TP1' | 'TP2' | 'TP3' | 'TR'; qty: number; targetX: number | null; trail: TrailState | null; open: boolean };
 export type EntryLeg = {
   role: 'E1' | 'E2'; ioc: boolean; limitX: number; qty: number; expireAt: number | null; cancelX: number | null;
@@ -64,6 +66,7 @@ export type EntryLeg = {
 type State = {
   legs: EntryLeg[]; parts: Part[]; posQty: number; avgX: number; stopX: number; floorX: number | null; tp1Done: boolean;
   peakX: number | null; troughX: number | null;
+  tp1At: number | null; maxCloseX: number | null; // C3: lúc TP1 khớp, đỉnh đóng 4H từ đó
 };
 
 export type Exit = { role: string; qty: number; price: number; time: number };
@@ -88,7 +91,7 @@ export type SimTrade = {
   s: State;
   b: {
     gross: number; costs: number; funding: number; exits: Exit[]; flows: Array<{ t: number; amount: number }>;
-    firstFillAt: number | null; maxPosQty: number; entryNotional: number; nextT: number; lastFundingT: number;
+    firstFillAt: number | null; maxPosQty: number; entryNotional: number; nextT: number; lastFundingT: number; h4Idx: number;
     closedAt: number | null; reason: string | null; flags: Flags; liqX: number | null;
   };
 };
@@ -134,9 +137,9 @@ export function createTrade(a: {
       sizing: { plannedRiskPct: pr.sizing.realRiskPct, requestedQty: pr.sizing.requestedQty, qty: pr.sizing.qty, notes: pr.reasons },
       riskModel: { a: pr.sizing.riskModel.a, b: pr.sizing.riskModel.b, fundingPerUnit: pr.sizing.riskModel.fundingPerUnit },
     },
-    s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null },
+    s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null, tp1At: null, maxCloseX: null },
     b: {
-      gross: 0, costs: 0, funding: 0, exits: [], flows: [], firstFillAt: null, maxPosQty: 0, entryNotional: 0, nextT: a.placedAt, lastFundingT: a.placedAt,
+      gross: 0, costs: 0, funding: 0, exits: [], flows: [], firstFillAt: null, maxPosQty: 0, entryNotional: 0, nextT: a.placedAt, lastFundingT: a.placedAt, h4Idx: 0,
       closedAt: null, reason: null, flags: { gap: false, resolvedBars: 0, unresolvedBars: 0, unresolvedTrailing: 0, iocPartial: false, liquidation: false, limitCancelledUnresolved: 0,
         fundingGuardTightened: 0, fundingGuardClosed: 0 },
       liqX: null,
@@ -163,6 +166,15 @@ function rebuildParts(tr: SimTrade, s: State): void {
     ].filter((p) => p.qty > 0);
     return;
   }
+  if (k.policy === 'C3') {
+    const p = COMMON.exitC3.tp1Pct;
+    const [tp1Qty, trailQty] = splitQuantity(s.posQty, k.qStep, [p, 100 - p]);
+    s.parts = [
+      { name: 'TP1' as const, qty: tp1Qty!, targetX: k.tp1X, trail: null, open: true },
+      { name: 'TR' as const, qty: trailQty!, targetX: null, trail: { kind: 'close4h' as const, levelX: null }, open: true },
+    ].filter((x) => x.qty > 0);
+    return;
+  }
   const q = splitQuantity(s.posQty, k.qStep, COMMON.zones.exitPcts);
   const xs = [k.tp1X, k.tp2X, k.tp3X];
   const names = ['TP1', 'TP2', 'TP3'] as const;
@@ -183,6 +195,7 @@ function trailLevel(tr: SimTrade, s: State, p: Part): number {
     if (t.peakX === null) return -Infinity;
     return roundPx(tr.k.d > 0 ? t.peakX * (1 - t.cbPct / 100) : t.peakX * (1 + t.cbPct / 100));
   }
+  if (t.kind === 'close4h') return t.levelX ?? -Infinity;
   if (!Number.isFinite(t.dist) || s.peakX === null) return -Infinity;
   return s.peakX - t.dist;
 }
@@ -272,14 +285,17 @@ function closePart(tr: SimTrade, s: State, p: Part, levelX: number, t: number, r
 function stopRole(tr: SimTrade, s: State, p: Part): string {
   const shared = sharedStop(s);
   if (trailLevel(tr, s, p) > shared) return p.trail?.kind === 'atr' ? 'TRA' : 'TR';
-  if (s.tp1Done && s.floorX !== null && s.floorX > s.stopX) return tr.k.policy === 'C2' ? 'BE' : 'A1';
+  if (s.tp1Done && s.floorX !== null && s.floorX > s.stopX) return tr.k.policy === 'A0' ? 'A1' : 'BE';
   return 'SL';
 }
 
-function onTp1(tr: SimTrade, s: State): void {
+function onTp1(tr: SimTrade, s: State, t: number): void {
   s.tp1Done = true;
+  s.tp1At = t;
   const k = tr.k;
   if (k.policy === 'C2') { s.floorX = k.beX; return; }
+  // C3: sàn hòa vốn = giá vào TB + phí khứ hồi nhóm (không gian x: luôn "lên là có lợi")
+  if (k.policy === 'C3') { s.floorX = s.avgX + Math.abs(s.avgX) * (k.cost.tierPct / 100); return; }
   // A0: dời SL sau TP1 — vùng: về giá khớp thật; mô hình: theo afterTp1Rule của kế hoạch (đường phá ∓ 0,5×A nếu khớp gần đường phá)
   const avg = realPx(tr, s.avgX);
   const fillStop = snapToTick(avg, k.tick, k.d > 0 ? 'up' : 'down');
@@ -312,7 +328,7 @@ function applyLow(tr: SimTrade, s: State, e: Ev, priceX: number, t: number, rec:
 function applyHigh(tr: SimTrade, s: State, e: Ev, priceX: number, t: number, rec: boolean): void {
   if (e.kind === 'target') {
     closePart(tr, s, e.part, priceX, t, e.part.name, rec);
-    if (e.part.name === 'TP1') onTp1(tr, s);
+    if (e.part.name === 'TP1') onTp1(tr, s, t);
   } else if (e.kind === 'activate' && e.part.trail?.kind === 'callback') {
     e.part.trail.peakX = Math.max(priceX, e.part.trail.actX);
   } else if (e.kind === 'cancel') {
@@ -499,10 +515,30 @@ function applyFundingGuard(tr: SimTrade, T: number, openReal: number): void {
 }
 
 // Trước mỗi nến: hết hạn limit, funding đã chốt, dừng theo thời gian.
-function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[]): void {
+// C3: xử lý các nến 4H đã ĐÓNG trước T (closeTime < T — không nhìn trước): nâng mức dừng phần còn lại theo đỉnh đóng 4H từ TP1 − m×ATR
+function onH4Closes(tr: SimTrade, T: number, h4: H4Ctx): void {
+  const s = tr.s;
+  const b = tr.b;
+  const d = tr.k.d;
+  while (b.h4Idx < h4.c.length && h4.c[b.h4Idx]!.closeTime < T) {
+    const i = b.h4Idx++;
+    const bar = h4.c[i]!;
+    if (!s.tp1Done || s.tp1At === null || bar.closeTime < s.tp1At || s.posQty <= 0) continue;
+    const cx = d * bar.close;
+    s.maxCloseX = Math.max(s.maxCloseX ?? -Infinity, cx);
+    const a = h4.atr[i]!;
+    if (!Number.isFinite(a)) continue;
+    const level = Math.max(s.floorX ?? -Infinity, s.maxCloseX - COMMON.exitC3.trailAtrMult4h * a);
+    for (const p of s.parts) if (p.open && p.trail?.kind === 'close4h') p.trail.levelX = Math.max(p.trail.levelX ?? -Infinity, level);
+  }
+}
+export type H4Ctx = { c: readonly Candle[]; atr: readonly number[] };
+
+function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[], h4: H4Ctx | null): void {
   const s = tr.s;
   const b = tr.b;
   const T = bar.openTime;
+  if (h4 !== null) onH4Closes(tr, T, h4);
   for (const leg of s.legs) if (leg.status === 'pending' && !leg.ioc && leg.expireAt !== null && leg.expireAt <= T) leg.status = 'expired';
   let settled = false;
   for (const row of funding) {
@@ -528,13 +564,17 @@ function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[]): void
 }
 
 // Chạy lệnh qua các nến có openTime trong [tr.b.nextT, until). series tăng dần theo openTime.
-export async function advanceTrade(tr: SimTrade, series: readonly Candle[], until: number, ctx: { funding: readonly FundingRow[]; resolve: Resolver | null }): Promise<void> {
+// ctx.h4: nến 4H của mã (C3 bắt buộc — có nến khởi động trước lúc vào để tính ATR), chỉ nến đã đóng trong kỳ.
+export async function advanceTrade(tr: SimTrade, series: readonly Candle[], until: number,
+  ctx: { funding: readonly FundingRow[]; resolve: Resolver | null; h4?: readonly Candle[] }): Promise<void> {
+  if (tr.k.policy === 'C3' && ctx.h4 === undefined) throw new Error(`${tr.k.symbol}: thoát C3 cần nến 4H (ctx.h4)`);
+  const h4: H4Ctx | null = tr.k.policy === 'C3' && ctx.h4 !== undefined ? { c: ctx.h4, atr: atr([...ctx.h4], COMMON.exitC3.atrPeriod) } : null;
   let lo = 0, hi = series.length;
   while (lo < hi) { const m = (lo + hi) >>> 1; if (series[m]!.openTime < tr.b.nextT) lo = m + 1; else hi = m; }
   for (let i = lo; i < series.length && !isDone(tr); i++) {
     const bar = series[i]!;
     if (bar.openTime >= until) break;
-    preBar(tr, bar, ctx.funding);
+    preBar(tr, bar, ctx.funding, h4);
     if (!isDone(tr)) await feedBar(tr, bar, ctx.resolve);
     tr.b.nextT = bar.openTime + 1;
   }
