@@ -35,6 +35,7 @@
 import { COMMON, CONFIG } from '../packages/core/config.ts';
 import { snapToTick, tickDecimals } from '../packages/core/price.ts';
 import { liquidationPrice, mmrFor, splitQuantity } from '../packages/core/plan.ts';
+import { fundingGuard } from '../packages/core/funding-guard.ts';
 import { exitSplit, type PlannerPlan, type PlannerResult } from '../packages/bot/planner.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
@@ -69,6 +70,7 @@ export type Exit = { role: string; qty: number; price: number; time: number };
 export type Flags = {
   gap: boolean; resolvedBars: number; unresolvedBars: number; unresolvedTrailing: number; iocPartial: boolean; liquidation: boolean;
   limitCancelledUnresolved: number;
+  fundingGuardTightened: number; fundingGuardClosed: number; // F1: chốt chặn funding khi chạy (siết SL / đóng)
 };
 export type AfterTp1 = { rule: AfterTp1Rule; ruleIfMarketOnly: AfterTp1Rule | null } | null;
 export type TradeMeta = { grade: string | null; label: string; kind: 'zone' | 'pattern'; score: number; signalId: string; key: string; afterTp1: AfterTp1 };
@@ -135,7 +137,8 @@ export function createTrade(a: {
     s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null },
     b: {
       gross: 0, costs: 0, funding: 0, exits: [], flows: [], firstFillAt: null, maxPosQty: 0, entryNotional: 0, nextT: a.placedAt, lastFundingT: a.placedAt,
-      closedAt: null, reason: null, flags: { gap: false, resolvedBars: 0, unresolvedBars: 0, unresolvedTrailing: 0, iocPartial: false, liquidation: false, limitCancelledUnresolved: 0 },
+      closedAt: null, reason: null, flags: { gap: false, resolvedBars: 0, unresolvedBars: 0, unresolvedTrailing: 0, iocPartial: false, liquidation: false, limitCancelledUnresolved: 0,
+        fundingGuardTightened: 0, fundingGuardClosed: 0 },
       liqX: null,
     },
   };
@@ -362,7 +365,7 @@ function finishIfFlat(tr: SimTrade, t: number): void {
 function reasonOf(role: string): string {
   const m: Record<string, string> = {
     SL: 'stop_loss', TR: 'trailing', TRA: 'trailing', BE: 'breakeven_floor', A1: 'after_tp1_stop', TP1: 'take_profit', TP2: 'take_profit', TP3: 'take_profit',
-    TIME: 'time_stop', HOLD: 'max_hold', END: 'period_end', LIQ: 'liquidation',
+    TIME: 'time_stop', HOLD: 'max_hold', END: 'period_end', LIQ: 'liquidation', FUND: 'funding_guard',
   };
   return m[role] ?? role;
 }
@@ -475,12 +478,32 @@ export function forceClose(tr: SimTrade, t: number, priceReal: number, reason: '
   closeAll(tr, t, priceReal, reason === 'period_end' ? 'END' : reason);
 }
 
+// F1: chốt chặn funding sau mỗi kỳ chốt (cùng hàm với bot — packages/core/funding-guard.ts). Giá mark ≈ giá mở nến kế tiếp sau kỳ chốt.
+function applyFundingGuard(tr: SimTrade, T: number, openReal: number): void {
+  const s = tr.s;
+  const b = tr.b;
+  if (!(s.posQty > 0)) return;
+  const exitCostFrac = tr.k.cost.tierPct / 200 + avgImpact(tr.k.cost, s.posQty * openReal);
+  const g = fundingGuard({
+    side: tr.k.side, qty: s.posQty, avgEntry: realPx(tr, s.avgX), stop: realPx(tr, sharedStop(s)), markPrice: openReal,
+    equityAtEntry: tr.k.equityAtEntry, riskPct: COMMON.risk.perTradePct, lockedLoss: b.costs - b.gross - b.funding, exitCostFrac, tickSize: tr.k.tick,
+  });
+  if (g.action === 'tighten') {
+    s.stopX = Math.max(s.stopX, toX(tr.k.d, g.stop));
+    b.flags.fundingGuardTightened++;
+  } else if (g.action === 'close') {
+    b.flags.fundingGuardClosed++;
+    closeAll(tr, T, openReal, 'FUND');
+  }
+}
+
 // Trước mỗi nến: hết hạn limit, funding đã chốt, dừng theo thời gian.
 function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[]): void {
   const s = tr.s;
   const b = tr.b;
   const T = bar.openTime;
   for (const leg of s.legs) if (leg.status === 'pending' && !leg.ioc && leg.expireAt !== null && leg.expireAt <= T) leg.status = 'expired';
+  let settled = false;
   for (const row of funding) {
     const ft = Math.floor(row.fundingTime / 60_000) * 60_000;
     if (ft <= b.lastFundingT || ft > T) continue;
@@ -489,9 +512,11 @@ function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[]): void
       const amt = -tr.k.d * s.posQty * mark * row.fundingRate;
       b.funding += amt;
       b.flows.push({ t: ft, amount: amt });
+      settled = true;
     }
   }
   b.lastFundingT = Math.max(b.lastFundingT, T);
+  if (settled && COMMON.risk.fundingRuntimeGuard) applyFundingGuard(tr, T, bar.open);
   if (s.posQty > 0 && b.firstFillAt !== null) {
     const held = T - b.firstFillAt;
     const oneR = s.avgX - tr.k.initialStopX;

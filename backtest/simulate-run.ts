@@ -328,7 +328,10 @@ export function report(res: Awaited<ReturnType<typeof runSimulation>>, o: Omit<R
       const rp = filled.map((r) => r.sizing.plannedRiskPct).sort((x, y) => x - y);
       const notes = new Map<string, number>();
       for (const r of filled) for (const n of r.sizing.notes) inc(notes, bucket(n));
+      const oneR = filled.map((r) => (r.riskAtFill / r.equityAtEntry) * 100).sort((x, y) => x - y); // 1R của khối lượng đã khớp, % vốn lúc vào
       return { plannedRiskPctMedian: rp.length > 0 ? rp[rp.length >> 1]! : null, plannedUnder1_9pct: rp.filter((x) => x < 1.9).length,
+        oneRPctMedian: oneR.length > 0 ? oneR[oneR.length >> 1]! : null,
+        fundingGuard: { tightenedTrades: filled.filter((r) => r.flags.fundingGuardTightened > 0).length, closedTrades: filled.filter((r) => r.flags.fundingGuardClosed > 0).length },
         reductionReasons: Object.fromEntries([...notes].sort((x, y) => y[1] - x[1]).slice(0, 12)) };
     })(),
     protections: { lossTrips: res.book.trips.losses, dailyTrips: res.book.trips.daily, ddAlerts30: res.book.ddAlerts, pauses: res.book.pauses.map((p) => ({ from: new Date(p.from).toISOString(), until: new Date(p.until).toISOString(), why: p.why })) },

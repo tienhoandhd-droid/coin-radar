@@ -445,3 +445,25 @@ test('M7 thanh lý: gap qua cả SL lẫn giá thanh lý → thanh lý isolated 
   assert.equal(r.flags.liquidation, true);
   close(r.gross, -400 * 20); // isolated: mất đúng ký quỹ 400 × 100 / 5 = 8 000 (giá phá sản 80), không phải 400 × 30
 });
+
+test('F1: chốt chặn funding khi chạy — đệm theo thời gian giữ dự kiến, funding thật vượt đệm → siết SL, lỗ thật ≤ 2% vốn lúc vào', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  const p = { ...plan('long'), capital: 100_000 };
+  const fb = { maxAbsRate: 0.0005, intervalHours: 8 };
+  const mk = () => createTrade({
+    id: 'g', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: 100_000, contract: C, plan: p, cost: NO_IMPACT, pathInterval: '1h',
+    planner: planned(p, { capital: 100_000, fundingBuffer: fb }),
+    meta: { grade: 'A', label: 'Đạt', kind: 'zone', score: 85, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  // Nến đầu chạm +1R (105,5 — dừng theo thời gian không áp dụng), rồi 30 kỳ +0,1% (gấp đôi mức đệm, nhiều hơn 21 kỳ dự kiến),
+  // rồi gap xuống 94 (chạm SL 95)
+  const rows = Array.from({ length: 241 }, (_, i) => [100, i === 0 ? 105.5 : 100.5, 99.5, 100] as [number, number, number, number]);
+  rows.push([99.8, 99.9, 94, 94.5]);
+  const funding = Array.from({ length: 30 }, (_, j) => ({ fundingTime: T0 + (j + 1) * 8 * H, fundingRate: 0.001, markPrice: 100 }));
+  const off = await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected' }, () => run(mk(), bars(rows, T0, H), { funding }));
+  assert.ok(off.pctEquity < -2, `không có chốt chặn: lỗ ${off.pctEquity}% vượt 2%`);
+  const on = await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true },
+    () => run(mk(), bars(rows, T0, H), { funding }));
+  assert.ok(on.pctEquity >= -2 - 1e-9, `có chốt chặn: lỗ ${on.pctEquity}%`);
+  assert.ok(on.flags.fundingGuardTightened > 0);
+});

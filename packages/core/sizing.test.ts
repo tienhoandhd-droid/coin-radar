@@ -35,3 +35,14 @@ test('maxAbsFundingRate: |funding| lớn nhất trong N ngày tới t, chỉ k�
   assert.equal(maxAbsFundingRate(rows, T, 30), 0.0007);
   assert.equal(maxAbsFundingRate([], T, 30), 0);
 });
+
+test('F1: tùy chọn đệm funding theo thời gian giữ DỰ KIẾN (fundingHoldHours) — mặc định vẫn là thời gian giữ tối đa', async () => {
+  const { withConfigOverride } = await import('./config-override.ts');
+  assert.equal(COMMON.risk.fundingBufferHorizon, 'max');
+  assert.equal(fundingSettlements('swing', 8), 63);
+  await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected' }, async () => {
+    assert.equal(fundingSettlements('swing', 8), 21); // 168 / 8
+    assert.equal(fundingSettlements('fast', 8), 1); // 8 / 8
+  });
+  assert.equal(fundingSettlements('swing', 8), 63);
+});

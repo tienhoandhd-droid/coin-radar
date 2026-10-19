@@ -34,10 +34,13 @@ export function fundingBufferProblems(fb: FundingBuffer | undefined): string[] {
   return [];
 }
 
-// Số kỳ funding đệm = thời gian giữ TỐI ĐA chiến lược cho phép (CONFIG.maxHoldHours: Swing 504 giờ, Lướt nhanh 24 giờ) ÷ chu kỳ,
-// làm tròn lên (rà soát lại Task 3 vòng 2: thời gian giữ dự kiến 168/8 giờ không bảo vệ lệnh giữ lâu hơn).
+// Số kỳ funding đệm = thời gian giữ ÷ chu kỳ, làm tròn lên. Thời gian giữ theo COMMON.risk.fundingBufferHorizon:
+//  'max' (mặc định): CONFIG.maxHoldHours (Swing 504 giờ, Lướt nhanh 24 giờ) — rà soát lại Task 3 vòng 2. Lưu ý: maxHoldHours KHÔNG phải trần
+//    giữ thật (dừng theo thời gian bỏ qua lệnh đã ≥ +1R hoặc qua TP1) → chốt chặn khi chạy (B8b) mới là bảo vệ thực sự.
+//  'expected' (F1, Task 8): CONFIG.fundingHoldHours (Swing 168 giờ, Lướt nhanh 8 giờ) + chốt chặn khi chạy fundingRuntimeGuard.
 export function fundingSettlements(mode: Mode, intervalHours: number): number {
-  return Math.ceil(CONFIG[mode].maxHoldHours / intervalHours - 1e-9);
+  const hours = COMMON.risk.fundingBufferHorizon === 'expected' ? CONFIG[mode].fundingHoldHours : CONFIG[mode].maxHoldHours;
+  return Math.ceil(hours / intervalHours - 1e-9);
 }
 
 // |funding| lớn nhất mỗi kỳ trong lookbackDays ngày tới t — chỉ các kỳ ĐÃ chốt (fundingTime ≤ t, không nhìn trước). Không có kỳ nào → 0

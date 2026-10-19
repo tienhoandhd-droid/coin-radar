@@ -282,6 +282,13 @@ export const COMMON = {
     maxDrawdown90Pct: 60, // sụt > mức này (%) trong 90 ngày thì tăng 1 bậc
     newListingDays: 90, // tuổi < mức này (ngày) thì tối thiểu 'Cao'
     fundingBufferLookbackDays: 30, // đệm funding trong định cỡ (ràng buộc lỗ ≤ 2%): |funding| lớn nhất mỗi kỳ trong N ngày gần nhất × số kỳ trong CONFIG.maxHoldHours — đề xuất, chưa backtest
+    // F1 (kế hoạch 2, Task 8 — sửa định cỡ, không phải luật vào lệnh). 'max' (mặc định hiện tại): đệm funding × số kỳ trong maxHoldHours —
+    // Swing 63 kỳ, rủi ro thật trung vị bị ép còn ~1%. 'expected': số kỳ trong CONFIG.fundingHoldHours (Swing 168 giờ, Lướt nhanh 8 giờ);
+    // lệnh giữ lâu hơn được bảo vệ bằng chốt chặn khi chạy (fundingRuntimeGuard, packages/core/funding-guard.ts, nghĩa vụ B8b của bot).
+    fundingBufferHorizon: 'max' as 'max' | 'expected', // đề xuất, chưa backtest
+    // Chốt chặn khi chạy: mỗi kỳ funding, lỗ-tại-SL + lỗ đã chốt (phí, funding đã trả − lãi đã chốt) > 2% vốn lúc vào → siết SL (reduce-only)
+    // để tổng ≤ 2%, không siết được (SL phải qua giá mark) → đóng lệnh. Bộ mô phỏng và bot (B8b) dùng cùng hàm fundingGuard.
+    fundingRuntimeGuard: false as boolean, // đề xuất, chưa backtest
     fundingFallbackPer8h: 0.001, // thiếu lịch sử funding (hoặc toàn 0) → đệm theo mức thận trọng này mỗi 8 giờ (= ngưỡng cực đoan G-09 0,1%/8h), KHÔNG dùng 0 — đề xuất, chưa backtest
   }, // đề xuất, chưa backtest
   // ĐIỂM S-01/S-02/S-03 — ĐỀ XUẤT, CHƯA BACKTEST:
