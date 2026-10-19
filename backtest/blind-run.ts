@@ -9,7 +9,8 @@
 //                      "base": "baseline|<biến thể gốc, vd. f1-funding-fix>" }] }
 //   Cấu hình chạy = stackRun(gốc, biến thể) như experiment.ts (ghi output/blind/<id>/effective.json trước khi chạy); policy/filter phải trùng.
 //
-// TỪ CHỐI nếu: HEAD ≠ lockedCommit; có thay đổi chưa commit (kể cả tệp chưa theo dõi) trong packages/ scanner/ backtest/; configHash ≠
+// TỪ CHỐI nếu: HEAD ≠ lockedCommit; có thay đổi chưa commit ở BẤT KỲ tệp đã theo dõi nào trừ tệp khóa, hoặc tệp mới trong packages/
+// scanner/ backtest/ data/events/; output/blind/ đã có lần chạy dưới tệp khóa khác (id lạ, lockedCommit/configHash/sha256 tệp khóa khác); configHash ≠
 // mặc định hiện tại; thủ tục mở kỳ mù sai (replay.ts checkBlindAuth — tệp khóa phải đúng LOCK_FILE và tồn tại); biến thể không có/chưa nối/
 // lệch chế độ, policy hoặc filter của chính biến thể; output/blind/<id>/ đã có lần chạy.
 // MỘT LẦN MỖI ỨNG VIÊN: output/blind/<id>/started.json được ghi TRƯỚC khi mô phỏng bắt đầu → tiến trình đổ giữa chừng không cho chạy lại âm
@@ -20,8 +21,8 @@
 // mã UTF-16), không khoảng trắng; số không hữu hạn → lỗi. Tính lúc chưa áp ghi đè nào (mặc định trong packages/core/config.ts).
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { COMMON, CONFIG } from '../packages/core/config.ts';
@@ -36,7 +37,20 @@ import { computeStats, type StatTrade } from './stats.ts';
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 // Bootstrap cố định (như mặc định experiment.ts): 5000 lần, hạt 20261019, alpha 0,05 — không chỉnh sau khi xem B
 export const BOOT = { resamples: 5000, seed: 20261019, alpha: 0.05 };
-const GUARDED_DIRS = ['packages', 'scanner', 'backtest'];
+// Tệp MỚI (chưa theo dõi) chỉ bị tính là "bẩn" trong các thư mục ảnh hưởng quyết định; tệp ĐÃ theo dõi thì mọi thay đổi đều bẩn (trừ tệp khóa).
+const GUARDED_DIRS = ['packages/', 'scanner/', 'backtest/', 'data/events/'];
+const sha256 = (t: string | Buffer) => createHash('sha256').update(t).digest('hex');
+
+// Dòng `git status --porcelain` không được phép: thay đổi tệp đã theo dõi (trừ tệp khóa), hoặc tệp mới trong GUARDED_DIRS.
+export function dirtyLines(porcelain: string, lockRel: string): string[] {
+  return porcelain.split('\n').filter((l) => l.trim() !== '').filter((l) => {
+    const raw = l.slice(3);
+    const path = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+    if (path === lockRel) return false;
+    if (l.startsWith('??')) return GUARDED_DIRS.some((d) => path.startsWith(d));
+    return true;
+  });
+}
 
 // ---------------------------------------------------------------- configHash -------------------------------------------------------
 export function canonicalJson(v: unknown): string {
@@ -143,10 +157,28 @@ export type BlindDeps = {
   log: (m: string) => void;
   simulate: (req: SimRequest) => Promise<SimResult>;
 };
-export type BlindArgs = { lock: string; rerunAfterCrash?: string };
+export type BlindArgs = { lock: string; rerunAfterCrash?: string; dir?: string };
 
 type Attempt = { startedAt: string; rerunAfterCrash: boolean };
-type Marker = { candidate: Candidate; lockedCommit: string; configHash: string; window: { start: string; end: string }; attempts: Attempt[] };
+type Inputs = { dir: string; sha256: Record<string, string | null> };
+type Marker = { candidate: Candidate; lockedCommit: string; configHash: string; lockSha256: string; inputs: Inputs; window: { start: string; end: string };
+  attempts: Attempt[] };
+
+function readMarker(path: string): Marker {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as Marker;
+  } catch (e) {
+    throw new Error(`không đọc được marker ${path} (started.json hỏng?): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+// Ảnh chụp đầu vào để kiểm lại sau: thư mục đệm + sha256 các tệp quyết định vũ trụ/sự kiện (null = không có tệp)
+function snapshotInputs(root: string, dir: string): Inputs {
+  const h = (p: string) => (existsSync(p) ? sha256(readFileSync(p)) : null);
+  const abs = resolvePath(root, dir);
+  return { dir, sha256: { 'exchange-info.json': h(join(abs, 'exchange-info.json')), 'universe.json': h(join(abs, 'universe.json')),
+    'data/events/events.json': h(join(root, 'data/events/events.json')) } };
+}
 
 const iso = (t: number) => new Date(t).toISOString();
 
@@ -160,14 +192,16 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
     throw new Error(`không đọc được tệp khóa ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
   }
   const lock = parseLock(text);
+  const lockSha = sha256(text);
+  const lockRel = relative(d.repoRoot, lockPath).split(sep).join('/');
   // 2. Thủ tục mở kỳ mù (cùng cổng với replay.ts / runSimulation) — trước mọi ghi tệp
   const auth: BlindAuth = { blind: true, lockFile: a.lock };
   assertWindowAllowed(d.period, auth);
   // 3. Mã đã khóa
   const head = d.git(['rev-parse', 'HEAD']).trim();
   if (head !== lock.lockedCommit) throw new Error(`Từ chối: HEAD ${head} khác lockedCommit ${lock.lockedCommit}`);
-  const dirty = d.git(['status', '--porcelain', '--untracked-files=all', '--', ...GUARDED_DIRS]).trim();
-  if (dirty !== '') throw new Error(`Từ chối: có thay đổi chưa commit trong ${GUARDED_DIRS.join('/, ')}/:\n${dirty}`);
+  const dirty = dirtyLines(d.git(['status', '--porcelain', '--untracked-files=all']), lockRel);
+  if (dirty.length > 0) throw new Error(`Từ chối: có thay đổi chưa commit (tệp đã theo dõi ngoài tệp khóa, hoặc tệp mới trong ${GUARDED_DIRS.join(' ')}):\n${dirty.join('\n')}`);
   const hash = configHash();
   if (hash !== lock.configHash) throw new Error(`Từ chối: configHash của mặc định hiện tại ${hash} khác tệp khóa ${lock.configHash}`);
   // 4. Ứng viên: biến thể hợp lệ (kiểm hết trước khi chạy)
@@ -175,6 +209,19 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
   // 5. Một lần mỗi ứng viên
   const outRoot = join(d.repoRoot, 'output/blind');
   const dirOf = (id: string) => join(outRoot, id);
+  // 5a. B chỉ một lần cho MỌI tệp khóa: mọi thư mục đã có trong output/blind/ phải là của ĐÚNG tệp khóa này (cùng nội dung, SHA, configHash, id)
+  const ids = new Set(lock.candidates.map((c) => c.id));
+  for (const name of existsSync(outRoot) ? readdirSync(outRoot).sort() : []) {
+    const mp = join(outRoot, name, 'started.json');
+    if (!existsSync(mp)) throw new Error(`Từ chối: ${join(outRoot, name)} không có started.json — kỳ mù đã bị chạm, không chạy tiếp`);
+    const m = readMarker(mp);
+    const why: string[] = [];
+    if (!ids.has(name)) why.push(`id "${name}" không có trong tệp khóa hiện tại`);
+    if (m.lockedCommit !== lock.lockedCommit) why.push(`lockedCommit ${m.lockedCommit} ≠ ${lock.lockedCommit}`);
+    if (m.configHash !== lock.configHash) why.push(`configHash ${m.configHash} ≠ ${lock.configHash}`);
+    if (m.lockSha256 !== lockSha) why.push(`tệp khóa khác (sha256 ${m.lockSha256} ≠ ${lockSha})`);
+    if (why.length > 0) throw new Error(`Từ chối: kỳ mù B đã chạy dưới tệp khóa khác (${mp}): ${why.join('; ')} — B chỉ chạy một lần, không tệp khóa mới nào được chạy`);
+  }
   const rerun = a.rerunAfterCrash;
   let todo = lock.candidates;
   if (rerun !== undefined) {
@@ -196,13 +243,14 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
       if (existsSync(dir)) throw new Error(`Từ chối: ứng viên "${c.id}" đã chạy (${dir} có marker, chưa xong — có thể đổ giữa chừng). Chạy lại chỉ với --rerun-after-crash ${c.id} (được ghi vào kết quả)`);
     }
   }
+  const inputs = snapshotInputs(d.repoRoot, a.dir ?? 'data/cache');
   for (const c of todo) {
     const dir = dirOf(c.id);
     mkdirSync(dir, { recursive: true });
     const mp = join(dir, 'started.json');
-    const prev: Attempt[] = existsSync(mp) ? (JSON.parse(readFileSync(mp, 'utf8')) as Marker).attempts : [];
+    const prev: Attempt[] = existsSync(mp) ? readMarker(mp).attempts : [];
     const isRerun = rerun === c.id;
-    const marker: Marker = { candidate: c, lockedCommit: lock.lockedCommit, configHash: hash, window: { start: iso(d.period.start), end: iso(d.period.end) },
+    const marker: Marker = { candidate: c, lockedCommit: lock.lockedCommit, configHash: hash, lockSha256: lockSha, inputs, window: { start: iso(d.period.start), end: iso(d.period.end) },
       attempts: [...prev, { startedAt: d.now().toISOString(), rerunAfterCrash: isRerun }] };
     writeFileSync(mp, JSON.stringify(marker, null, 2)); // TRƯỚC khi mô phỏng
     const eff = effective.get(c.id)!;
@@ -212,7 +260,7 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
       pauseHours: lock.pauseHours, configOverride: eff.configOverride, auth };
     const res = await d.simulate(req);
     writeOutputs(dir, req, res, { lockedCommit: lock.lockedCommit, configHash: hash, criteria: lock.criteria, rerunAfterCrash: isRerun, attempts: marker.attempts,
-      lockFile: a.lock, finishedAt: d.now().toISOString() });
+      lockFile: a.lock, lockSha256: lockSha, inputs, finishedAt: d.now().toISOString() });
     d.log(`[${c.id}] xong → ${dir}`);
   }
 }
@@ -259,7 +307,7 @@ async function main() {
         configOverride: req.configOverride, auth: req.auth, contracts, events, fetcher: null, log: (m) => console.log(`  [${req.candidate.id}] ${m}`) });
     },
   };
-  await runBlind({ lock: v.lock, ...(v['rerun-after-crash'] !== undefined ? { rerunAfterCrash: v['rerun-after-crash'] } : {}) }, deps);
+  await runBlind({ lock: v.lock, dir, ...(v['rerun-after-crash'] !== undefined ? { rerunAfterCrash: v['rerun-after-crash'] } : {}) }, deps);
 }
 
 if (import.meta.main) {

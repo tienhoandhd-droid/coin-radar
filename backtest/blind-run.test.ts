@@ -130,13 +130,24 @@ test('từ chối: HEAD khác lockedCommit', async () => {
   assert.equal(existsSync(join(w.root, 'output/blind')), false);
 });
 
-test('từ chối: cây làm việc có thay đổi trong packages/ scanner/ backtest/', async () => {
-  const w = world();
-  w.dirty = ' M backtest/simulate.ts\n';
-  await assert.rejects(runBlind(args, w.deps), /thay đổi chưa commit/);
-  assert.equal(w.calls.length, 0);
-  const st = w.gitCalls.find((a) => a[0] === 'status')!;
-  for (const d of ['packages', 'scanner', 'backtest']) assert.ok(st.includes(d), 'phải kiểm ' + d);
+test('từ chối: cây làm việc có thay đổi — mọi tệp đã theo dõi (trừ tệp khóa), tệp mới trong packages/ scanner/ backtest/ data/events/', async () => {
+  const bad = [' M backtest/simulate.ts', ' M data/events/events.json', 'M  packages/core/config.ts', ' M reports/x.md', ' D README.md',
+    '?? backtest/moi.ts', '?? packages/core/moi.ts', '?? scanner/moi.ts', '?? data/events/moi.json', 'R  a.ts -> b.ts'];
+  for (const line of bad) {
+    const w = world();
+    w.dirty = line + '\n';
+    await assert.rejects(runBlind(args, w.deps), /thay đổi chưa commit/, line);
+    assert.equal(w.calls.length, 0);
+    const st = w.gitCalls.find((a) => a[0] === 'status')!;
+    assert.ok(!st.includes('--'), 'kiểm cả kho, không giới hạn thư mục');
+  }
+  // tệp khóa (mới hoặc đã sửa) và tệp mới ngoài vùng ảnh hưởng quyết định → được
+  for (const ok of [`?? ${LOCK_FILE}`, ` M ${LOCK_FILE}`, '?? reports/nhap.md', `?? ${LOCK_FILE}\n?? docs/ghi-chu.md`]) {
+    const w = world();
+    w.dirty = ok + '\n';
+    await runBlind(args, w.deps);
+    assert.equal(w.calls.length, 2, ok);
+  }
 });
 
 test('từ chối: configHash không khớp mặc định hiện tại', async () => {
@@ -219,6 +230,66 @@ test('--rerun-after-crash chỉ cho ứng viên có marker mà chưa xong; ứng
   await assert.rejects(runBlind({ ...args, rerunAfterCrash: 'swing-base' }, w.deps), /chưa có lần chạy nào/);
   await assert.rejects(runBlind({ ...args, rerunAfterCrash: 'khong-co' }, w.deps), /không có ứng viên/);
   assert.equal(w.calls.length, 0);
+  // hai ứng viên dở dang → chạy lại một cái bị từ chối cả lượt
+  const crash = w.deps.simulate;
+  w.deps.simulate = async () => { throw new Error('đổ'); };
+  await assert.rejects(runBlind(args, w.deps), /đổ/);
+  await assert.rejects(runBlind({ ...args, rerunAfterCrash: 'swing-base' }, w.deps), /đổ/); // swing-base đổ lần 2
+  w.deps.simulate = crash;
+  const m = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-base/started.json'), 'utf8'));
+  mkdirSync(join(w.root, 'output/blind/swing-tp1'), { recursive: true });
+  writeFileSync(join(w.root, 'output/blind/swing-tp1/started.json'), JSON.stringify({ ...m, candidate: lockObj().candidates[1] }));
+  await assert.rejects(runBlind({ ...args, rerunAfterCrash: 'swing-base' }, w.deps), /swing-tp1.*cũng có marker/);
+  assert.equal(w.calls.length, 0);
+});
+
+test('--rerun-after-crash: started.json hỏng → lỗi nêu rõ tệp', async () => {
+  const w = world(md(lockObj({ candidates: [lockObj().candidates[0]!] })));
+  mkdirSync(join(w.root, 'output/blind/swing-base'), { recursive: true });
+  writeFileSync(join(w.root, 'output/blind/swing-base/started.json'), '{ hỏng');
+  await assert.rejects(runBlind({ ...args, rerunAfterCrash: 'swing-base' }, w.deps), /started\.json.*hỏng|không đọc được marker/);
+});
+
+// ---------------------------------------------------------------- B chỉ một lần cho MỌI tệp khóa -----------------------------------
+test('một lần TOÀN CỤC: đã có lần chạy B dưới tệp khóa khác (thêm id, đổi lockedCommit, đổi nội dung) → không tệp khóa mới nào được chạy', async () => {
+  const one = lockObj({ candidates: [lockObj().candidates[0]!] });
+  const runFirst = async () => { const w = world(md(one)); await runBlind(args, w.deps); w.calls.length = 0; return w; };
+  // thêm id mới
+  let w = await runFirst();
+  writeFileSync(join(w.root, LOCK_FILE), md(lockObj()));
+  await assert.rejects(runBlind(args, w.deps), /tệp khóa khác/);
+  // đổi lockedCommit (HEAD cũng đổi theo)
+  w = await runFirst();
+  const B = 'b'.repeat(40);
+  w.head = B;
+  writeFileSync(join(w.root, LOCK_FILE), md({ ...one, lockedCommit: B, candidates: [{ ...one.candidates[0]!, id: 'moi' }] }));
+  await assert.rejects(runBlind(args, w.deps), /lockedCommit/);
+  // chỉ đổi nội dung (văn bản ngoài khối json)
+  w = await runFirst();
+  writeFileSync(join(w.root, LOCK_FILE), md(one) + '\nsửa sau\n');
+  await assert.rejects(runBlind(args, w.deps), /tệp khóa khác/);
+  // thư mục lạ không có marker, hoặc marker của id không có trong tệp khóa
+  w = world(md(one));
+  mkdirSync(join(w.root, 'output/blind/la'), { recursive: true });
+  await assert.rejects(runBlind(args, w.deps), /không có started\.json|không có trong tệp khóa/);
+  assert.equal(w.calls.length, 0);
+});
+
+test('marker và summary ghi sha256 tệp khóa + ảnh chụp đầu vào (thư mục đệm, băm exchange-info/universe/events)', async () => {
+  const w = world(md(lockObj({ candidates: [lockObj().candidates[0]!] })));
+  mkdirSync(join(w.root, 'data/events'), { recursive: true });
+  writeFileSync(join(w.root, 'data/events/events.json'), '[]');
+  await runBlind(args, w.deps);
+  const { createHash } = await import('node:crypto');
+  const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+  const m = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-base/started.json'), 'utf8'));
+  assert.equal(m.lockSha256, sha(readFileSync(join(w.root, LOCK_FILE), 'utf8')));
+  assert.equal(m.inputs.dir, 'data/cache');
+  assert.equal(m.inputs.sha256['data/events/events.json'], sha('[]'));
+  assert.equal(m.inputs.sha256['exchange-info.json'], null);
+  const sum = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-base/summary.json'), 'utf8'));
+  assert.equal(sum.blind.lockSha256, m.lockSha256);
+  assert.deepEqual(sum.blind.inputs, m.inputs);
 });
 
 // ---------------------------------------------------------------- chạy đúng ---------------------------------------------------------
