@@ -1,0 +1,68 @@
+import { allowedSide, type Regime } from './regime.ts';
+import { COMMON, CONFIG } from './config.ts';
+import type { Mode, Side } from './types.ts';
+
+export type GateResult = { code: string; pass: boolean; note: string };
+export type GateContext = {
+  mode: Mode;
+  side: Side;
+  score: number;
+  regime: Regime;
+  breakerTripped: boolean;
+  warmupBars: number;
+  coverage: number;
+  liquidityRankPct: number; // 0 = thanh khoản cao nhất, 1 = thấp nhất
+  spreadPct: number;
+  move1hPct: number;
+  volumeZ1h: number;
+  ageDays: number;
+  eventBlocked: boolean;
+  liquidationOk: boolean;
+  fundingRate: number; // mỗi 8h, dương = Long trả
+  minutesToFunding: number;
+};
+
+export function evaluateGates(c: GateContext): GateResult[] {
+  const dir = c.side === 'long' ? 1 : -1;
+  const adverseFunding = dir * c.fundingRate; // > 0 nghĩa là lệnh phải trả funding
+  return [
+    {
+      code: 'G-01',
+      pass: !c.breakerTripped && allowedSide(c.regime, c.side, c.score),
+      note: c.breakerTripped ? 'Cầu dao biến động đang bật' : `Chế độ ${c.regime}`,
+    },
+    {
+      code: 'G-02',
+      pass: c.warmupBars >= COMMON.minWarmupBars && c.coverage >= COMMON.minCoverage,
+      note: `${c.warmupBars} nến, độ phủ ${Math.round(c.coverage * 100)}%`,
+    },
+    {
+      code: 'G-03',
+      pass: c.liquidityRankPct <= 1 - COMMON.liquidityExcludeBottomPct && c.spreadPct <= COMMON.maxSpreadPct,
+      note: `Hạng thanh khoản ${Math.round(c.liquidityRankPct * 100)}%, spread ${c.spreadPct.toFixed(3)}%`,
+    },
+    {
+      code: 'G-04',
+      pass: !(Math.abs(c.move1hPct) > COMMON.pumpMovePct && c.volumeZ1h > COMMON.pumpVolumeZ),
+      note: `1H ${c.move1hPct.toFixed(1)}%, z khối lượng ${c.volumeZ1h.toFixed(1)}`,
+    },
+    {
+      code: 'G-05',
+      pass: c.ageDays >= CONFIG[c.mode].minAgeDays,
+      note: `${Math.floor(c.ageDays)} ngày tuổi`,
+    },
+    { code: 'G-06', pass: true, note: 'chưa đánh giá — chưa có nguồn hack/hủy niêm yết (kế hoạch sau)' },
+    { code: 'G-07', pass: !c.eventBlocked, note: c.eventBlocked ? 'Trong cửa sổ sự kiện' : 'Ngoài cửa sổ sự kiện' },
+    { code: 'G-08', pass: c.liquidationOk, note: c.liquidationOk ? 'Thanh lý ước tính xa hơn cắt lỗ' : 'Thanh lý quá gần cắt lỗ' },
+    {
+      code: 'G-09',
+      pass: adverseFunding <= COMMON.fundingExtremePer8h,
+      note: `Funding ${(c.fundingRate * 100).toFixed(4)}%/8h`,
+    },
+    {
+      code: 'G-10',
+      pass: !(c.mode === 'fast' && adverseFunding > 0 && c.minutesToFunding < COMMON.fundingCutoffMinutes),
+      note: `${Math.round(c.minutesToFunding)} phút tới mốc funding`,
+    },
+  ];
+}

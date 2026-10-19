@@ -67,6 +67,19 @@ export const COMMON = {
   liquidationBufferStops: 1, // giá thanh lý phải xa hơn cắt lỗ ≥ 1 khoảng cắt lỗ
   roundNumberProximityAtr: 0.2, // cắt lỗ cách số tròn trong khoảng này (×ATR) thì đẩy qua số tròn — đề xuất, chưa backtest
   riskAtrPctTiers: [4, 6, 10],
+  // G-07 / G-10 / mức rủi ro — đề xuất, chưa backtest:
+  eventWindowsHours: {
+    FOMC: { before: 4, after: 2 },
+    CPI: { before: 2, after: 2 },
+    BOJ: { before: 2, after: 2 },
+  }, // cửa sổ chặn quanh sự kiện vĩ mô (giờ) — đề xuất, chưa backtest
+  expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
+  fundingCutoffMinutes: 30, // G-10: Lướt nhanh không vào lệnh phải trả funding khi còn < 30 phút — đề xuất, chưa backtest
+  risk: {
+    lowLiquidityRank: 0.5, // hạng thanh khoản > mức này thì tăng 1 bậc rủi ro
+    maxDrawdown90Pct: 60, // sụt > mức này (%) trong 90 ngày thì tăng 1 bậc
+    newListingDays: 90, // tuổi < mức này (ngày) thì tối thiểu 'Cao'
+  }, // đề xuất, chưa backtest
   // ĐIỂM S-01/S-02/S-03 — ĐỀ XUẤT, CHƯA BACKTEST:
   score: {
     smaFast: 20, // SMA ngắn cho điểm xu hướng
