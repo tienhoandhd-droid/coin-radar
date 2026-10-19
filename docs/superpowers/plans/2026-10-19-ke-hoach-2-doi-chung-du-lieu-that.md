@@ -10,6 +10,14 @@
 
 **Nguồn:** `reports/Bot giao dịch mã nguồn mở.md` (ma trận A/B 12 biến thể, yêu cầu R1–R18), `reports/Phản biện bộ nguyên tắc.md` (phí theo nhóm, Wilson, expectancy, walk-forward, PBO, point-in-time), `reports/Mô hình biểu đồ cho BTC.md` mục (5).
 
+## Quy trình mô phỏng MÙ (người dùng ủy quyền 19/10/2026, khóa trước khi chạy)
+
+- **Phần phát triển (D):** 3 tháng trước 30 ngày gần nhất — `[2026-06-21T00:00Z, 2026-09-19T00:00Z)` (ghi đúng mốc theo dữ liệu đã tải; nếu lệch thì dùng mốc thật và ghi lại). Mọi phân tích điểm yếu, mọi thay đổi hàm/tham số chỉ được nhìn kết quả trên D.
+- **Phần mù (B):** 30 ngày gần nhất — `[2026-09-19T00:00Z, 2026-10-19T00:00Z)`. Không ai (kể cả các agent) được chạy mô phỏng trên B cho tới khi luật được **khóa**: ghi commit SHA + bản sao `config.ts` vào `docs/verification/khoa-luat-mo-phong-mu.md`. Sau đó chạy B **đúng một lần** với commit đã khóa; kết quả B không được dùng để chỉnh tiếp (nếu có chỉnh sau đó, phải ghi rõ “sau khi xem B” và coi B không còn là mù).
+- **Chỉ số chính (lợi nhuận, không phải tỉ lệ thắng):** kỳ vọng R/lệnh sau phí+trượt+funding (kèm khoảng tin cậy bootstrap), tổng lãi % vốn với định cỡ thật (2%/lệnh, ≤ 10 lệnh còn rủi ro, ≤ 10% tổng rủi ro, ký quỹ, cầu chì người dùng), profit factor, sụt giảm lớn nhất (% vốn), chuỗi thua dài nhất, số lệnh; tỉ lệ thắng chỉ là phụ. Tách **Long / Short**, Swing / Lướt nhanh, Hạng A / B, vùng / mô hình, chế độ thị trường.
+- **Ràng buộc cứng của người dùng:** lỗ thật mỗi lệnh (gồm trượt giá, gap) ≤ 2% vốn — đo phân bố; có lệnh vượt → tăng đệm trượt giá trong định cỡ và chạy lại trên D.
+- **Điều chỉnh để tăng lợi nhuận:** chỉ trên D, ghi nhật ký mọi lần thử (`docs/verification/nhat-ky-thu.md`: thay đổi, lý do, kết quả D); không tăng mức rủi ro người dùng đã chốt; tiêu chí nhận thay đổi: kỳ vọng R trên D tăng với cận dưới khoảng tin cậy (hiệu chỉnh Bonferroni theo số lần thử) > 0 và DD không tệ hơn.
+
 ## Global Constraints
 
 - Dùng lại `packages/core` không sửa luật để “dễ thắng”; mọi thay đổi luật chỉ ở bước điều chỉnh (Task 8) và phải qua quy trình ngoài mẫu.
