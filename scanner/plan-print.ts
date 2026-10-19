@@ -8,6 +8,7 @@ import type { PatternInfo } from '../packages/core/analyze.ts';
 import type { GradeResult } from '../packages/core/grade.ts';
 import type { CanOpenResult } from '../packages/core/portfolio.ts';
 import type { CalendarStatus } from '../packages/core/events.ts';
+import type { SignalIdentity } from '../packages/core/signal.ts';
 
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
 const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
@@ -25,11 +26,17 @@ function trailingText(t: TrailingPlan, tickSize: number, trailQty: number): stri
 }
 
 // Các dòng in ra cho một kế hoạch lệnh. Mọi giá in theo tickSize; khoảng cách trailing in kèm %.
-export function planLines(head: { symbol: string; score: number; riskTier: string }, p: TradePlan, tickSize: number): string[] {
+// I5: độ mới + id tất định của tín hiệu (bot khử trùng theo id)
+function signalTag(sig: SignalIdentity | null | undefined): string {
+  if (!sig) return '';
+  return sig.fresh ? ` | TÍN HIỆU MỚI (id ${sig.id})` : ` | tín hiệu đang giữ, đã phát ở lần quét trước (id ${sig.id})`;
+}
+
+export function planLines(head: { symbol: string; score: number; riskTier: string; signal?: SignalIdentity | null }, p: TradePlan, tickSize: number): string[] {
   const px = (x: number) => formatTick(x, tickSize);
   const long = p.side === 'long';
   const lines: string[] = [];
-  lines.push(`${head.symbol} — ${long ? 'LONG' : 'SHORT'} | điểm ${dec(head.score)} | rủi ro ${head.riskTier}`);
+  lines.push(`${head.symbol} — ${long ? 'LONG' : 'SHORT'} | điểm ${dec(head.score)} | rủi ro ${head.riskTier}${signalTag(head.signal)}`);
   lines.push(p.entryType === 'market'
     ? `  Kiểu vào lệnh: VÀO TRỰC TIẾP — ${p.entryReason}`
     : `  Kiểu vào lệnh: ĐẶT LIMIT CHỜ HỒI về ${px(p.entry)}, hết hạn sau ${p.limitExpiryHours} giờ — ${p.entryReason}`);

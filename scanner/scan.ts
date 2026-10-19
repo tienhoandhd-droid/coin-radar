@@ -39,7 +39,7 @@ const premiums = new Map(parsePremium(await client.get('/fapi/v1/premiumIndex'))
 // Chu kỳ funding từng hợp đồng (1 lần/lần quét). Mã không có trong danh sách → mặc định 8h (theo tài liệu Binance).
 const fundingIntervals = parseFundingInfo(await client.get('/fapi/v1/fundingInfo'));
 const scan = await runScan({
-  mode, contracts, tickers, books, premiums, fundingIntervals, now, events, capital, limit: args.limit, openTrades: [],
+  mode, contracts, tickers, books, premiums, fundingIntervals, now, events, capital, limit: args.limit, openTrades: [], prevSignals: new Map(),
   klines: async (symbol, interval, limit) => parseKlines(await client.get(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`), now),
 });
 const { regime, breaker, btcReclaim, errors, banned, inScope } = scan;
@@ -99,7 +99,7 @@ const graded: GradedItem[] = qualified.map((a) => {
   const ps = a.patternSignal;
   const lines = ps !== null
     ? (ps.fresh || args.showOld ? patternPlanLines(head, ps, tickOf(a.symbol)) : [oldPatternSignalLine(head, ps)])
-    : planLines(head, a.plan!, tickOf(a.symbol));
+    : planLines({ ...head, signal: a.signal }, a.plan!, tickOf(a.symbol));
   if (a.portfolio !== null) lines.push(...portfolioLines(a.portfolio));
   const notes = a.flags.filter((f) => /cùng chiều|xung đột/.test(f));
   if (notes.length > 0) lines.push(`  Ghi chú: ${notes.join('; ')}`);

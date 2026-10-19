@@ -30,7 +30,7 @@ function input(over: Partial<ScanInput> = {}, fail: Record<string, string> = {})
       const n = Math.min(limit, 500);
       return series(n, interval === '1d' ? 1 : 0.2, interval);
     },
-    now: NOW, events: [{ kind: 'FOMC' as const, time: '2027-01-27T19:00:00Z', source: 'test: lịch còn hạn, xa cửa sổ' }], capital: 1000, limit: null, openTrades: [],
+    now: NOW, events: [{ kind: 'FOMC' as const, time: '2027-01-27T19:00:00Z', source: 'test: lịch còn hạn, xa cửa sổ' }], capital: 1000, limit: null, openTrades: [], prevSignals: new Map(),
     ...over,
   };
 }

@@ -41,7 +41,8 @@ export const CONFIG: Record<Mode, ModeConfig> = {
 };
 
 export const COMMON = {
-  qualifyScore: 70,
+  qualifyScore: 70, // vào: điểm ≥ 70
+  exitScore: 60, // I5 hysteresis (spec 3.6): tín hiệu đang mở cùng chiều chỉ rời khi điểm < 60
   counterTrendScore: 80,
   counterTrendRsZ: 1.5, // G-01: lệnh ngược chế độ cần |z sức mạnh tương đối so BTC| ≥ mức này, đúng chiều lệnh (Short: z ≤ −1,5; Long: z ≥ +1,5) — quyết định D2, đề xuất, chưa backtest
   minCoverage: 0.7,

@@ -12,10 +12,11 @@ const tierOf = (rank: number) =>
   rank <= COMMON.costTierRank.high ? 'cao' : rank <= COMMON.costTierRank.mid ? 'vừa' : 'thấp';
 
 // D4: chỉ xếp hạng các mã đã qua MỌI cổng và điểm ≥ qualifyScore, tách riêng Long/Short, trong từng nhóm thanh khoản.
-// Mã trượt cổng hoặc điểm thấp không được tính vào mẫu, nên không chiếm suất top 10%.
+// Mã trượt cổng hoặc điểm thấp không được tính vào mẫu, nên không chiếm suất top 10%. Tín hiệu đang giữ theo hysteresis (I5) giữ nguyên.
 export function applyTopRank(list: Analysis[], ranks: Map<string, number>): Analysis[] {
   const groups = new Map<string, Analysis[]>();
   for (const a of list) {
+    if (a.signal?.held) continue; // I5: tín hiệu đang giữ (hysteresis) không xếp hạng lại
     if (!a.gates.every((g) => g.pass) || a.best.score < COMMON.qualifyScore) continue;
     const key = `${tierOf(ranks.get(a.symbol) ?? 1)}|${a.best.side}`;
     groups.set(key, [...(groups.get(key) ?? []), a]);
@@ -26,8 +27,8 @@ export function applyTopRank(list: Analysis[], ranks: Map<string, number>): Anal
     [...members].sort((a, b) => b.best.score - a.best.score).slice(0, top).forEach((a) => keep.add(a.symbol));
   }
   return list.map((a) =>
-    a.label.startsWith('Đạt') && !keep.has(a.symbol)
-      ? { ...a, label: 'Theo dõi', plan: null, patternSignal: null, grade: null, flags: [...a.flags, 'Ngoài top 10% điểm trong nhóm thanh khoản (xếp riêng Long/Short, chỉ tính mã đủ điều kiện)'] }
+    a.label.startsWith('Đạt') && !keep.has(a.symbol) && !a.signal?.held
+      ? { ...a, label: 'Theo dõi', plan: null, patternSignal: null, grade: null, portfolio: null, signal: null, flags: [...a.flags, 'Ngoài top 10% điểm trong nhóm thanh khoản (xếp riêng Long/Short, chỉ tính mã đủ điều kiện)'] }
       : a,
   );
 }

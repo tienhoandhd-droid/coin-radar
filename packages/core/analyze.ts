@@ -19,6 +19,7 @@ import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from '
 import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
 import { sizeSlippagePct } from './margin.ts';
 import { canOpen, type CanOpenResult, type OpenTrade } from './portfolio.ts';
+import { zoneQualifies, zoneSignalId, signalIdentity, type SignalState, type SignalIdentity } from './signal.ts';
 
 // Nến cho phần mô hình biểu đồ (kế hoạch 1c), chỉ bắt buộc với hợp đồng trong phạm vi P-G1.
 // c4h / c1d: bối cảnh (vai-đầu-vai, vùng nhiều tháng, coil) và nhận diện Swing; c1h: ATR(1H) tại nến phá.
@@ -63,6 +64,7 @@ export type AnalyzeInput = {
   riskPct: number;
   patternData: PatternData | null; // null = không tải (hợp đồng ngoài phạm vi P-G1); trong phạm vi mà null → ném lỗi
   openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3). Máy quét: [] hoặc danh sách người dùng đưa vào → chỉ để thông tin
+  prevSignal: SignalState | null; // I5: tín hiệu đang mở của hợp đồng × chế độ ở lần quét trước (bot/backtest giữ); máy quét: null
 };
 
 export type Label = 'Đạt tiêu chí Long' | 'Đạt tiêu chí Short' | 'Theo dõi' | 'Không đạt';
@@ -85,6 +87,7 @@ export type Analysis = {
   grading: GradeInput; // dữ kiện để chấm Hạng A/B (gradeSignal)
   grade: GradeResult | null; // chỉ có khi tín hiệu Đạt tiêu chí; null = không phải tín hiệu
   portfolio: CanOpenResult | null; // C1/C3: khối lượng tối đa cho phép theo danh mục + ký quỹ + thanh khoản; null = không có tín hiệu
+  signal: SignalIdentity | null; // I5: id tất định + cờ MỚI của tín hiệu được phát; null = không có tín hiệu
 };
 
 // Một hợp đồng × chế độ chỉ một tín hiệu. Cùng chiều → dùng tín hiệu mô hình; ngược chiều → không phát cả hai.
@@ -317,7 +320,10 @@ export function analyze(i: AnalyzeInput): Analysis {
     ...gatesFor(best, { riskPerUnit: plan.riskPerUnit, entry: plan.entry, notional: plan.notional, valid: plan.valid, note: plan.invalidReason ?? plan.stopReason }),
     contextGate(context, best.side),
   ];
-  const zoneOk = zoneGates.every((g) => g.pass) && best.score >= COMMON.qualifyScore;
+  // I5 hysteresis: vào ≥ 70; tín hiệu vùng cùng chiều đang mở (prevSignal) thì giữ tới khi điểm < 60
+  const zq = zoneQualifies({ score: best.score, gatesPass: zoneGates.every((g) => g.pass), side: best.side, prev: i.prevSignal?.kind === 'zone' ? i.prevSignal : null });
+  if (zq.note) flags.push(zq.note);
+  const zoneOk = zq.ok;
   const chosen = finalizeSignal({ best, zoneGates, zoneOk, plan, pattern, flags });
   // Hạng A/B (Task 8): dữ kiện gom ở đây vì Analysis không giữ nến. TP1 sau phí ở giá khớp XẤU NHẤT cho phép (M2, rà soát cuối 1c):
   // lệnh vùng = worstTp1NetR (market: giá tối đa; limit: giá limit), cùng công thức tp1NetRAt với lệnh mô hình.
@@ -340,7 +346,15 @@ export function analyze(i: AnalyzeInput): Analysis {
     symbol: i.contract.symbol, side: sig.side, entry: sig.entry, stop: sig.stop, qty: sig.qty, leverage: sig.suggestedLeverage, costPct: sig.costPct,
     entryType: sig.entryType === 'limit' ? 'limit' : 'market', filters: i.contract, maxNotional: COMMON.slippage.maxParticipation * quoteVolPerMin,
   }, i.openTrades, i.capital);
-  const result = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen, grading, grade: null as GradeResult | null, portfolio };
+  const lastEntryOpen = i.entry[i.entry.length - 1]!.openTime;
+  const signal: SignalIdentity | null = chosen.patternSignal !== null
+    ? signalIdentity({ kind: 'pattern', side: chosen.patternSignal.side, prev: i.prevSignal, patternFresh: chosen.patternSignal.fresh,
+      candidateId: `${i.contract.symbol}|${i.mode}|${chosen.patternSignal.side}|pattern|${chosen.patternSignal.patternId}` })
+    : chosen.plan !== null
+      ? signalIdentity({ kind: 'zone', side: chosen.plan.side, prev: i.prevSignal, patternFresh: true,
+        candidateId: zoneSignalId({ symbol: i.contract.symbol, mode: i.mode, side: chosen.plan.side, entryOpenTime: lastEntryOpen, stop: chosen.plan.stop }) })
+      : null;
+  const result = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen, grading, grade: null as GradeResult | null, portfolio, signal };
   if (result.label.startsWith('Đạt') && (result.plan !== null || result.patternSignal !== null)) result.grade = gradeSignal(result);
   return result;
 }

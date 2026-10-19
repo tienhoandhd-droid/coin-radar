@@ -26,7 +26,7 @@ const base: AnalyzeInput = {
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false,
   now: new Date('2026-10-19T12:00:00Z'), events: [{ kind: 'FOMC' as const, time: '2027-01-27T19:00:00Z', source: 'test: lịch còn hạn, xa cửa sổ' }], capital: 1000, riskPct: 2,
-  patternData: null, openTrades: [],
+  patternData: null, openTrades: [], prevSignal: null,
 };
 // TESTUSDT ở base thuộc phạm vi mô hình (rủi ro Thấp/Vừa, hạng thanh khoản 5%) → phải có dữ liệu mô hình.
 base.patternData = { c4h: base.entry, c1d: base.daily, c1h: base.hourly, btcSma200ReclaimedAt: null };
@@ -440,4 +440,18 @@ test('I4: hợp đồng có ngày tất toán thật → G-06 trượt, không �
   const a = analyze({ ...base, contract: { ...base.contract, deliveryDate: Date.parse('2026-10-28T09:00:00Z') } });
   assert.equal(a.gates.find((g) => g.code === 'G-06')!.pass, false);
   assert.ok(!a.label.startsWith('Đạt'));
+});
+
+test('I5: tín hiệu vùng có id tất định + MỚI; cùng dữ liệu quét lại với trạng thái lần trước → cùng id, KHÔNG mới (một lệnh)', () => {
+  const a = analyze(base);
+  assert.ok(a.plan !== null && a.signal !== null);
+  assert.equal(a.signal.kind, 'zone');
+  assert.equal(a.signal.fresh, true);
+  assert.match(a.signal.id, /^TESTUSDT\|swing\|long\|zone\|\d+\|/);
+  assert.equal(analyze(base).signal!.id, a.signal.id, 'tất định');
+  const again = analyze({ ...base, prevSignal: { id: a.signal.id, side: a.plan.side, kind: 'zone' } });
+  assert.equal(again.signal!.id, a.signal.id);
+  assert.equal(again.signal!.fresh, false);
+  assert.equal(again.signal!.held, true);
+  assert.equal(analyze({ ...base, breakerTripped: true }).signal, null);
 });
