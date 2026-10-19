@@ -96,3 +96,30 @@ export function netRAt(m: RiskModel, q: number, side: 'long' | 'short', entry: n
   const half = (px: number) => px * (m.cost.tierPct / 200 + (Number.isFinite(m.cost.quoteVolPerMin) ? (COMMON.slippage.pctPerParticipation / 100) * (q * px) / m.cost.quoteVolPerMin / 2 : 0));
   return (d * (tp - entry) - half(entry) - half(tp)) / (oneR(m, q) / q);
 }
+
+// #1 sàn chi phí (Task 8): chi phí CHẮC CHẮN trả của một lệnh tính bằng R thô (khoảng SL |e − s|), thắng hay thua đều trả:
+//   phí + trượt chiều vào (limit + COMMON.fees.makerTakerSplit → chỉ phí maker) + chiều ra ở giá SL (nửa phí nhóm + trượt theo cỡ)
+//   + funding dự kiến = max(0, chiều × funding TB mỗi kỳ) × số kỳ trong CONFIG.fundingHoldHours × giá vào.
+// fundingMeanRate thiếu → null (nơi gọi từ chối — fail closed).
+export function costR(a: { side: 'long' | 'short'; entryType: 'market' | 'limit' | 'split'; entry: number; stop: number; qty: number; cost: CostModel;
+  fundingMeanRate: number | undefined; mode: Mode; intervalHours: number }): number | null {
+  if (a.fundingMeanRate === undefined || !Number.isFinite(a.fundingMeanRate)) return null;
+  const k = COMMON.slippage.pctPerParticipation / 100;
+  const slipHalf = (px: number) => (Number.isFinite(a.cost.quoteVolPerMin) ? (k * a.qty * px) / a.cost.quoteVolPerMin / 2 : 0);
+  const maker = a.entryType === 'limit' && COMMON.fees.makerTakerSplit;
+  const entryC = maker ? (COMMON.fees.makerPct / 100) * a.entry : (a.cost.tierPct / 200 + slipHalf(a.entry)) * a.entry;
+  const exitC = (a.cost.tierPct / 200 + slipHalf(a.stop)) * a.stop;
+  const d = a.side === 'long' ? 1 : -1;
+  const n = Math.ceil(CONFIG[a.mode].fundingHoldHours / a.intervalHours - 1e-9);
+  const fund = Math.max(0, d * a.fundingMeanRate) * n * a.entry;
+  return (entryC + exitC + fund) / Math.abs(a.entry - a.stop);
+}
+
+// Funding TB có dấu mỗi kỳ trong lookbackDays ngày tới t (chỉ kỳ đã chốt). Không có kỳ nào → 0.
+export function meanFundingRate(rows: ReadonlyArray<{ fundingTime: number; fundingRate: number }>, t: number,
+  lookbackDays: number = COMMON.risk.fundingBufferLookbackDays): number {
+  const from = t - lookbackDays * 86_400_000;
+  let sum = 0, n = 0;
+  for (const r of rows) if (r.fundingTime > from && r.fundingTime <= t) { sum += r.fundingRate; n++; }
+  return n > 0 ? sum / n : 0;
+}

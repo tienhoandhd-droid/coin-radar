@@ -467,3 +467,15 @@ test('F1: chốt chặn funding khi chạy — đệm theo thời gian giữ d�
   assert.ok(on.pctEquity >= -2 - 1e-9, `có chốt chặn: lỗ ${on.pctEquity}%`);
   assert.ok(on.flags.fundingGuardTightened > 0);
 });
+
+test('#1 tách phí maker/taker (tùy chọn): lệnh LIMIT vào trả phí maker 0,02% (không trượt); chiều ra giữ nửa phí nhóm', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  const p = plan('long', { entryType: 'limit', limitPrice: 100 });
+  const go = async () => {
+    const tr = trade(p);
+    await advanceTrade(tr, bars([[100.5, 101, 99.9, 100.2]]), Infinity, { funding: [], resolve: null });
+    return tr.b.costs / (tr.b.maxPosQty * 100);
+  };
+  close(await go(), 0.0005); // mặc định: nửa phí nhóm 0,1%
+  close(await withConfigOverride({ 'COMMON.fees.makerTakerSplit': true }, go), 0.0002);
+});

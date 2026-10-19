@@ -46,3 +46,11 @@ test('F1: tùy chọn đệm funding theo thời gian giữ DỰ KIẾN (funding
   });
   assert.equal(fundingSettlements('swing', 8), 63);
 });
+
+test('meanFundingRate: TB có dấu trong N ngày tới t, chỉ kỳ đã chốt; rỗng → 0', async () => {
+  const { meanFundingRate } = await import('./sizing.ts');
+  const D = 86_400_000, T = 100 * D;
+  const rows = [{ fundingTime: T - 40 * D, fundingRate: 1 }, { fundingTime: T - D, fundingRate: 0.0003 }, { fundingTime: T, fundingRate: -0.0001 }, { fundingTime: T + 1, fundingRate: 5 }];
+  assert.ok(Math.abs(meanFundingRate(rows, T, 30) - 0.0001) < 1e-15);
+  assert.equal(meanFundingRate([], T, 30), 0);
+});

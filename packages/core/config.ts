@@ -233,6 +233,10 @@ export const COMMON = {
     minFlowShare: 0.7, // tiêu chí 6: điểm S-02 (dòng tiền taker) ≥ mức này × điểm tối đa của S-02 — đề xuất, chưa backtest
     coilLookbackBars: 6, // tiêu chí 6: coil bật ở một nến 4H trong số nến này (không kể nến cuối) và nến cuối đóng ra ngoài biên của chúng theo chiều lệnh = "vừa bung" — xấp xỉ, đề xuất, chưa backtest
   },
+  // Phí sàn USDⓈ-M (ví dụ Regular User: maker 0,02%, taker 0,05% — bài hỗ trợ Binance 360033544231, sàn ghi là ví dụ). makerTakerSplit = false
+  // (mặc định): mọi lần khớp trả nửa phí nhóm costRoundTripPct (gồm trượt). true: lệnh LIMIT vào lệnh (GTD, maker) chỉ trả makerPct, không
+  // trượt; lệnh khớp kiểu market (IOC, STOP/TP/TRAILING_STOP_MARKET) giữ nửa phí nhóm (= taker + trượt nền). Dùng ở sàn chi phí (#1) và mô phỏng.
+  fees: { makerTakerSplit: false as boolean, makerPct: 0.02, takerPct: 0.05 }, // đề xuất, chưa backtest
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
   // Bậc ký quỹ duy trì (I7, đánh giá độc lập; rà soát B0b #3). Bậc THẬT của từng mã: GET /fapi/v1/leverageBracket (CẦN API key; trường
@@ -289,6 +293,9 @@ export const COMMON = {
     // Chốt chặn khi chạy: mỗi kỳ funding, lỗ-tại-SL + lỗ đã chốt (phí, funding đã trả − lãi đã chốt) > 2% vốn lúc vào → siết SL (reduce-only)
     // để tổng ≤ 2%, không siết được (SL phải qua giá mark) → đóng lệnh. Bộ mô phỏng và bot (B8b) dùng cùng hàm fundingGuard.
     fundingRuntimeGuard: false as boolean, // đề xuất, chưa backtest
+    // #1 sàn chi phí (Task 8): bỏ kế hoạch khi (phí vào + phí ra ở SL + trượt + funding dự kiến trong fundingHoldHours) / khoảng SL > mức này (R).
+    // null = tắt (mặc định hiện tại). Nguồn: reports/Nghiên cứu cải thiện lợi nhuận.md #1 (k ∈ {0,10; 0,15}) — đề xuất, chưa backtest
+    maxCostR: null as number | null,
     fundingFallbackPer8h: 0.001, // thiếu lịch sử funding (hoặc toàn 0) → đệm theo mức thận trọng này mỗi 8 giờ (= ngưỡng cực đoan G-09 0,1%/8h), KHÔNG dùng 0 — đề xuất, chưa backtest
   }, // đề xuất, chưa backtest
   // ĐIỂM S-01/S-02/S-03 — ĐỀ XUẤT, CHƯA BACKTEST:

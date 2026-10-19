@@ -3,7 +3,7 @@ import { snapToTick, tickDecimals } from '../core/price.ts';
 import { entryLegProblems, exitPartProblems, isStepMultiple } from '../core/filters.ts';
 import { canOpen, type OpenTrade } from '../core/portfolio.ts';
 import { mmrFor, liquidationPrice, splitQuantity, type TradePlan } from '../core/plan.ts';
-import { riskModel, riskAt as riskAtModel, qtyForRisk, costPctAt, costModelProblems, fundingBufferProblems, type CostModel, type FundingBuffer } from '../core/sizing.ts';
+import { riskModel, riskAt as riskAtModel, qtyForRisk, costPctAt, costModelProblems, fundingBufferProblems, costR, type CostModel, type FundingBuffer } from '../core/sizing.ts';
 import type { ExitPolicy } from '../core/exit.ts';
 import type { MarginBracket } from '../core/margin.ts';
 import type { Contract, Mode } from '../core/types.ts';
@@ -47,6 +47,9 @@ export type PlannerInput = {
   // của mã trong COMMON.risk.fundingBufferLookbackDays ngày gần nhất (biết tại thời điểm lập lệnh); intervalHours = chu kỳ funding.
   // Số kỳ = ceil(CONFIG[mode].fundingHoldHours / intervalHours). Bắt buộc — thiếu thì không định cỡ được đúng ràng buộc.
   fundingBuffer: FundingBuffer;
+  // #1 sàn chi phí (Task 8, COMMON.risk.maxCostR): funding TB có dấu mỗi kỳ trong COMMON.risk.fundingBufferLookbackDays ngày (dương = Long trả)
+  // để ước funding DỰ KIẾN; bắt buộc khi bật sàn chi phí (fail closed), bỏ qua khi tắt.
+  fundingMeanRate?: number;
 };
 
 export type EntryRole = 'E1' | 'E2';
@@ -254,6 +257,14 @@ export function planOrders(i: PlannerInput): PlannerResult {
     problems.push(...exitPartProblems([s.tp1Qty, s.trailQty], c).map((x) => `${s.filled.length === 1 && p.entryType === 'split' ? 'Chỉ chân market khớp: ' : ''}${x}`));
   }
   const full = scenarios[scenarios.length - 1]!;
+
+  // ---- 5b. #1 sàn chi phí (tùy chọn): chi phí chắc chắn trả của lệnh, tính bằng R thô (khoảng SL) ---------------------------------
+  const maxCostR = COMMON.risk.maxCostR;
+  if (maxCostR !== null) {
+    const cr = costR({ side, entryType: p.entryType, entry: worstEntry, stop, qty, cost, fundingMeanRate: i.fundingMeanRate, mode: i.mode, intervalHours: fb.intervalHours });
+    if (cr === null) problems.push('Sàn chi phí bật nhưng thiếu fundingMeanRate (funding TB gần đây) — không ước được funding dự kiến');
+    else if (cr > maxCostR) problems.push(`Bỏ theo sàn chi phí (#1): phí + trượt + funding dự kiến = ${cr.toFixed(2).replace('.', ',')}R > ${String(maxCostR).replace('.', ',')}R`);
+  }
 
   // ---- 6. Bậc ký quỹ + thanh lý ở khối lượng thật: thanh lý cách giá vào ≥ (1 + đệm) × khoảng SL, ở mọi giá khớp --------
   const notional = qty * worstEntry;

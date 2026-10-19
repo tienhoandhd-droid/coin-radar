@@ -235,7 +235,8 @@ function fillEntry(tr: SimTrade, s: State, leg: EntryLeg, qty: number, priceX: n
   if (!rec) return;
   const b = tr.b;
   const px = realPx(tr, priceX);
-  const cost = (qty * px * tr.k.cost.tierPct) / 200;
+  // #1 (tùy chọn COMMON.fees.makerTakerSplit): lệnh LIMIT chờ khớp = maker, chỉ phí maker; chân IOC giữ nửa phí nhóm (taker + trượt nền)
+  const cost = !leg.ioc && COMMON.fees.makerTakerSplit ? (qty * px * COMMON.fees.makerPct) / 100 : (qty * px * tr.k.cost.tierPct) / 200;
   b.costs += cost;
   b.flows.push({ t, amount: -cost });
   b.firstFillAt ??= t;

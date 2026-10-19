@@ -454,3 +454,41 @@ test('costModel KL 1 phút = Infinity (trượt theo cỡ = 0) → từ chối, 
   assert.equal(r.allowed, false);
   assert.match(r.reasons.join(' | '), /KL 1 phút Infinity không hữu hạn/);
 });
+
+// ---- Task 8 #1: sàn chi phí (cost floor) — tùy chọn, mặc định tắt ----
+test('#1 sàn chi phí: tắt mặc định; bật → bỏ kế hoạch khi (phí vào + phí ra ở SL + trượt + funding dự kiến) / khoảng SL > maxCostR', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  assert.equal(COMMON.risk.maxCostR, null);
+  const plan = mkPlan('long', 'market', false); // giá xấu nhất 100,5, SL 97 → d = 3,5
+  const cm = (tierPct: number) => ({ costModel: { tierPct, quoteVolPerMin: BIG_VOL } });
+  assert.equal(planOrders(input(plan, cm(1))).allowed, true, 'mặc định không lọc');
+  await withConfigOverride({ 'COMMON.risk.maxCostR': 0.1 }, async () => {
+    // thiếu funding dự kiến → fail closed
+    const miss = planOrders(input(plan, cm(0.25)));
+    assert.equal(miss.allowed, false);
+    assert.match(miss.reasons.join(' '), /fundingMeanRate/);
+    // 0,25%: (100,5 + 97) × 0,125% = 0,247 → 0,0705R ≤ 0,10 → cho vào
+    assert.equal(planOrders(input(plan, { ...cm(0.25), fundingMeanRate: 0 })).allowed, true);
+    // 1%: 0,9875 / 3,5 = 0,282R > 0,10 → bỏ
+    const r = planOrders(input(plan, { ...cm(1), fundingMeanRate: 0 }));
+    assert.equal(r.allowed, false);
+    assert.match(r.reasons.join(' '), /sàn chi phí.*0,28R/);
+    // funding dự kiến Long trả 0,01%/kỳ × 21 kỳ (168 giờ / 8) × 100,5 = 0,211 → tổng 0,131R > 0,10; Short được nhận → không tính
+    assert.equal(planOrders(input(plan, { ...cm(0.25), fundingMeanRate: 0.0001 })).allowed, false);
+    assert.equal(planOrders(input(mkPlan('short', 'market', false), { ...cm(0.25), fundingMeanRate: 0.0001 })).allowed, true);
+  });
+});
+
+test('#1 sàn chi phí: lệnh limit vào = maker khi bật tách phí maker/taker (COMMON.fees.makerTakerSplit)', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  const plan = mkPlan('long', 'limit', false); // limit 99, SL 97 → d = 2
+  const over = { costModel: { tierPct: 0.25, quoteVolPerMin: BIG_VOL }, fundingMeanRate: 0 };
+  await withConfigOverride({ 'COMMON.risk.maxCostR': 0.1 }, async () => {
+    // không tách: (99 + 97) × 0,125% = 0,245 → 0,1225R > 0,10
+    assert.equal(planOrders(input(plan, over)).allowed, false);
+    // tách: 99 × 0,02% + 97 × 0,125% = 0,141 → 0,0705R
+    await withConfigOverride({ 'COMMON.fees.makerTakerSplit': true }, async () => {
+      assert.equal(planOrders(input(plan, over)).allowed, true);
+    });
+  });
+});

@@ -31,7 +31,7 @@ import type { Analysis } from '../packages/core/analyze.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { createReplay, decisionTimes, signalDedupeKey, loadContracts, DEV_PERIOD, type FundingRow, type Window } from './replay.ts';
-import { fundingFallbackRate, maxAbsFundingRate } from '../packages/core/sizing.ts';
+import { fundingFallbackRate, maxAbsFundingRate, meanFundingRate } from '../packages/core/sizing.ts';
 import { loadCandles, createFetcher, fetchWindow1m, HOUR, MINUTE, DAY, type Interval, type Fetcher } from './data.ts';
 import {
   createTrade, advanceTrade, forceClose, tradeRecord, portfolioView, createBook, bookFlow, bookClose, isPaused, summarize, groupStats, isDone,
@@ -250,6 +250,7 @@ async function simulate(o: RunOptions) {
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t,
         costModel: { tierPct: COMMON.costRoundTripPct[tierOf(r.ranks.get(a.symbol) ?? 1)], quoteVolPerMin: vol1m },
         fundingBuffer: { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours },
+        fundingMeanRate: meanFundingRate(funding(a.symbol), t), // #1 sàn chi phí (chỉ dùng khi bật)
       });
       if (!pr.allowed) {
         stats.plannerRejected++;
