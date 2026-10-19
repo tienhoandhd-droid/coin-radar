@@ -25,7 +25,7 @@ const base: AnalyzeInput = {
   regime: 'up', breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false,
-  now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 2,
+  now: new Date('2026-10-19T12:00:00Z'), events: [{ kind: 'FOMC' as const, time: '2027-01-27T19:00:00Z', source: 'test: lịch còn hạn, xa cửa sổ' }], capital: 1000, riskPct: 2,
   patternData: null, openTrades: [],
 };
 // TESTUSDT ở base thuộc phạm vi mô hình (rủi ro Thấp/Vừa, hạng thanh khoản 5%) → phải có dữ liệu mô hình.
@@ -428,4 +428,16 @@ test('I7: khối lượng 1H thấp → phí kế hoạch tăng theo cỡ lệnh
   assert.ok(t.plan.costPct > a.plan.costPct, `phí tăng khi thanh khoản mỏng: ${t.plan.costPct} > ${a.plan.costPct}`);
   assert.ok(t.portfolio !== null && t.portfolio.adjustedQty <= (COMMON.slippage.maxParticipation * 1000) / t.plan.entry + 1e-9);
   assert.throws(() => analyze({ ...base, hourly: [] }), /khối lượng 1H/);
+});
+
+test('I4: lịch sự kiện rỗng/hết hạn → G-07 trượt với mọi mã, không Đạt', () => {
+  const a = analyze({ ...base, events: [] });
+  assert.equal(a.gates.find((g) => g.code === 'G-07')!.pass, false);
+  assert.ok(!a.label.startsWith('Đạt'));
+});
+
+test('I4: hợp đồng có ngày tất toán thật → G-06 trượt, không Đạt', () => {
+  const a = analyze({ ...base, contract: { ...base.contract, deliveryDate: Date.parse('2026-10-28T09:00:00Z') } });
+  assert.equal(a.gates.find((g) => g.code === 'G-06')!.pass, false);
+  assert.ok(!a.label.startsWith('Đạt'));
 });

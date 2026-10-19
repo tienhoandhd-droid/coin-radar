@@ -7,6 +7,7 @@ import type { PatternKind } from '../packages/core/patterns/types.ts';
 import type { PatternInfo } from '../packages/core/analyze.ts';
 import type { GradeResult } from '../packages/core/grade.ts';
 import type { CanOpenResult } from '../packages/core/portfolio.ts';
+import type { CalendarStatus } from '../packages/core/events.ts';
 
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
 const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
@@ -71,6 +72,14 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   }
   lines.push(`  Tiền mất ước tính nếu chạm SL: ${num(p.estLoss, 2)} USDT (đã gồm phí ước tính; ngân sách rủi ro ${dec(p.riskPct)}% vốn = ${num(p.riskAmount, 2)} USDT)`);
   return lines;
+}
+
+// I4: cảnh báo ở ĐẦU bản in — các cổng chưa đánh giá đầy đủ và lịch sự kiện sắp/hết hạn
+export function headerWarningLines(calendar: CalendarStatus): string[] {
+  const out: string[] = [];
+  if (calendar.warning !== null) out.push(`!!! ${calendar.warning}`);
+  out.push('Lưu ý G-06: chỉ kiểm ngày tất toán hợp đồng (deliveryDate); hack 7 ngày / thông báo hủy niêm yết / lệch neo stablecoin: CHƯA ĐÁNH GIÁ (chưa có nguồn) — tự kiểm thông báo Binance trước khi vào lệnh');
+  return out;
 }
 
 // C1/C3/I7: khối lượng tối đa cho phép theo danh mục đang mở + ký quỹ + thanh khoản (portfolio.canOpen).

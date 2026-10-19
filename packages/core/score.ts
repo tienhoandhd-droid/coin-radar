@@ -84,7 +84,7 @@ export function scoreSide(input: ScoreInput, side: Side, tp1R: number | null, tp
     const pts = w.flow * (S.flowTakerShare * clamp01(0.5 + (dir * imb) / S.imbalanceScale) + S.flowVolumeShare * volBonus);
     earned += pts;
     available += w.flow;
-    reasons.push({ code: 'S-02', text: `Taker: ${(imb * 100).toFixed(1)}% mất cân bằng; khối lượng z=${z.toFixed(1)}`, points: round(pts) });
+    reasons.push({ code: 'S-02', text: `Taker: ${(imb * 100).toFixed(1)}% mất cân bằng; khối lượng z=${Number.isNaN(z) ? 'thiếu dữ liệu' : z.toFixed(1)}`, points: round(pts) });
   }
 
   // S-03 Đường đi: TP1 càng xa so với rủi ro (R) càng tốt — 1R → 0 điểm, ≥ 2R → đủ; không có vùng cản → đủ

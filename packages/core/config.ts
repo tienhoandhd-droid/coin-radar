@@ -267,7 +267,10 @@ export const COMMON = {
     CPI: { before: 2, after: 2 },
     BOJ: { before: 2, after: 2 },
   }, // cửa sổ chặn quanh sự kiện vĩ mô (giờ) — đề xuất, chưa backtest
-  expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
+  eventCalendarWarnDays: 14, // I4: lịch sự kiện còn < 14 ngày → cảnh báo đầu bản in; đã qua sự kiện cuối → G-07 trượt — brief B0b
+  perpetualDeliveryFloor: Date.UTC(2100, 0, 1), // G-06: hợp đồng vĩnh cửu có deliveryDate TRƯỚC mốc này = có ngày tất toán thật (thường do lịch hủy niêm yết).
+  // Quan sát exchangeInfo 19/10/2026: 523/525 hợp đồng = 2100-12-25; EPICUSDT 2026-10-20, VELODROMEUSDT 2026-10-28. Chưa có câu chữ tài liệu Binance xác nhận.
+    expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
   fundingCutoffMinutes: 30, // G-10: Lướt nhanh không vào lệnh phải trả funding khi còn < 30 phút — đề xuất, chưa backtest
   risk: {
     perTradePct: 2, // % vốn bot rủi ro mỗi lệnh — người dùng chốt 19/10/2026. Không còn phân tầng 0,5%/0,25%; mức rủi ro (Thấp…Rất cao) chỉ để hiển thị/lọc Hạng A

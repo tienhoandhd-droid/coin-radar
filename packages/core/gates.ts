@@ -26,6 +26,8 @@ export type GateContext = {
   volumeZ1h: number;
   ageDays: number;
   eventBlocked: boolean;
+  eventCalendarExpired: boolean; // I4: lịch sự kiện đã qua sự kiện cuối (hoặc rỗng) → G-07 trượt
+  deliveryDate: number; // G-06: deliveryDate của hợp đồng (exchangeInfo)
   liquidation: { ok: boolean; note: string }; // G-08 — từ liquidationCheck
   stopDistPct: number; // khoảng cắt lỗ theo % giá vào lệnh
   stopDistAtr: number; // khoảng cắt lỗ chia ATR(14) nến NGÀY; NaN nếu thiếu ATR ngày
@@ -91,18 +93,28 @@ export function evaluateGates(c: GateContext): GateResult[] {
       pass: c.liquidityRankPct <= 1 - COMMON.liquidityExcludeBottomPct && c.spreadPct <= COMMON.maxSpreadPct,
       note: `Hạng thanh khoản ${Math.round(c.liquidityRankPct * 100)}%, spread ${c.spreadPct.toFixed(3)}%`,
     },
-    {
-      code: 'G-04',
-      pass: !(Math.abs(c.move1hPct) > COMMON.pumpMovePct && c.volumeZ1h > COMMON.pumpVolumeZ),
-      note: `1H ${c.move1hPct.toFixed(1)}%, z khối lượng ${c.volumeZ1h.toFixed(1)}`,
-    },
+    // I4: thiếu dữ liệu 1H (NaN) → trượt, không coi là "không bị bơm/xả"
+    (Number.isNaN(c.move1hPct) || Number.isNaN(c.volumeZ1h))
+      ? { code: 'G-04', pass: false, note: `thiếu dữ liệu 1H để kiểm bơm/xả (biến động ${Number.isNaN(c.move1hPct) ? 'NaN' : c.move1hPct.toFixed(1) + '%'}, z khối lượng ${Number.isNaN(c.volumeZ1h) ? 'NaN' : c.volumeZ1h.toFixed(1)}) — chặn` }
+      : {
+        code: 'G-04',
+        pass: !(Math.abs(c.move1hPct) > COMMON.pumpMovePct && c.volumeZ1h > COMMON.pumpVolumeZ),
+        note: `1H ${c.move1hPct.toFixed(1)}%, z khối lượng ${c.volumeZ1h.toFixed(1)}`,
+      },
     {
       code: 'G-05',
       pass: c.ageDays >= CONFIG[c.mode].minAgeDays,
       note: `${Math.floor(c.ageDays)} ngày tuổi`,
     },
-    { code: 'G-06', pass: true, note: 'chưa đánh giá — chưa có nguồn hack/hủy niêm yết (kế hoạch sau)' },
-    { code: 'G-07', pass: !c.eventBlocked, note: c.eventBlocked ? 'Trong cửa sổ sự kiện' : 'Ngoài cửa sổ sự kiện' },
+    // I4: G-06 chỉ kiểm được ngày tất toán (deliveryDate); hack 7 ngày / thông báo hủy niêm yết / lệch neo stablecoin CHƯA có nguồn
+    c.deliveryDate < COMMON.perpetualDeliveryFloor
+      ? { code: 'G-06', pass: false, note: `Hợp đồng có ngày tất toán ${new Date(c.deliveryDate).toISOString().slice(0, 16).replace('T', ' ')} UTC — có thể sắp hủy niêm yết` }
+      : { code: 'G-06', pass: true, note: 'Chỉ kiểm ngày tất toán (không có); hack/thông báo hủy niêm yết/lệch neo: CHƯA ĐÁNH GIÁ (chưa có nguồn)' },
+    {
+      code: 'G-07',
+      pass: !c.eventBlocked && !c.eventCalendarExpired,
+      note: c.eventCalendarExpired ? 'Lịch sự kiện đã hết hạn — không biết có sự kiện vĩ mô hay không, chặn' : c.eventBlocked ? 'Trong cửa sổ sự kiện' : 'Ngoài cửa sổ sự kiện',
+    },
     { code: 'G-08', pass: c.liquidation.ok, note: c.liquidation.note },
     {
       code: 'G-09',

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { quarterlyExpiry, eventWindow } from './events.ts';
+import { quarterlyExpiry, eventWindow, eventCalendarStatus, parseEvents } from './events.ts';
+import { volumeZ } from './flow.ts';
 import { evaluateGates, liquidationCheck, type GateContext } from './gates.ts';
 import { riskTier } from './risk.ts';
 
@@ -19,14 +20,64 @@ test('cửa sổ FOMC chặn Lướt nhanh, không chặn Swing', () => {
 const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
-  move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
+  move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false, eventCalendarExpired: false, deliveryDate: 4133404800000,
   btcHourly: null, rsZ: 0, riskTier: 'Vừa', liquidation: { ok: true, note: 'Thanh lý ước tính xa hơn cắt lỗ' }, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200, planValid: true, planNote: 'SL sau vùng hỗ trợ',
 };
 
-test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
+test('đủ điều kiện → mọi cổng qua; G-06 chỉ kiểm ngày tất toán, phần hack/hủy niêm yết ghi rõ CHƯA ĐÁNH GIÁ', () => {
   const g = evaluateGates(ok);
   assert.ok(g.every((x) => x.pass), JSON.stringify(g.filter((x) => !x.pass)));
-  assert.match(g.find((x) => x.code === 'G-06')!.note, /chưa đánh giá/);
+  assert.match(g.find((x) => x.code === 'G-06')!.note, /CHƯA ĐÁNH GIÁ/);
+});
+
+test('I4 G-06: hợp đồng vĩnh cửu có ngày tất toán thật (không phải 2100) → trượt (có thể sắp hủy niêm yết)', () => {
+  const g = evaluateGates({ ...ok, deliveryDate: Date.parse('2026-10-20T09:00:00Z') }).find((x) => x.code === 'G-06')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /2026-10-20/);
+});
+
+test('I4 G-04: thiếu dữ liệu 1H (biến động/z khối lượng là NaN) → trượt, không coi là bình thường', () => {
+  for (const patch of [{ move1hPct: NaN }, { volumeZ1h: NaN }]) {
+    const g = evaluateGates({ ...ok, ...patch }).find((x) => x.code === 'G-04')!;
+    assert.equal(g.pass, false, JSON.stringify(patch));
+    assert.match(g.note, /thiếu dữ liệu/);
+  }
+});
+
+test('I4 volumeZ: thiếu nến → NaN (trước đây trả 0 làm G-04 qua)', () => {
+  const c = (v: number) => ({ openTime: 0, closeTime: 0, open: 1, high: 1, low: 1, close: 1, volume: 1, quoteVolume: v, takerBuyQuote: 0 });
+  assert.ok(Number.isNaN(volumeZ([c(1), c(2)], 20)));
+  assert.equal(volumeZ(Array.from({ length: 21 }, () => c(5)), 20), 0); // đủ nến, khối lượng đều → 0
+});
+
+test('I4 G-07: lịch sự kiện hết hạn → trượt (không âm thầm coi là "không có sự kiện")', () => {
+  const g = evaluateGates({ ...ok, eventCalendarExpired: true }).find((x) => x.code === 'G-07')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /hết hạn/);
+});
+
+test('I4 lịch sự kiện: còn ≥ 14 ngày → không cảnh báo; < 14 ngày → cảnh báo; đã qua sự kiện cuối hoặc rỗng → hết hạn', () => {
+  const ev = [{ kind: 'CPI' as const, time: '2026-12-10T13:30:00Z', source: 'x' }, { kind: 'FOMC' as const, time: '2026-10-28T18:00:00Z', source: 'x' }];
+  const far = eventCalendarStatus(ev, new Date('2026-10-19T00:00:00Z'));
+  assert.equal(far.expired, false);
+  assert.equal(far.warning, null);
+  assert.equal(Math.floor(far.daysLeft), 52);
+  const near = eventCalendarStatus(ev, new Date('2026-12-01T00:00:00Z'));
+  assert.equal(near.expired, false);
+  assert.match(near.warning!, /còn 9 ngày/);
+  const gone = eventCalendarStatus(ev, new Date('2026-12-11T00:00:00Z'));
+  assert.equal(gone.expired, true);
+  assert.match(gone.warning!, /HẾT HẠN/);
+  assert.equal(eventCalendarStatus([], new Date()).expired, true);
+});
+
+test('M3/I4 parseEvents: thời gian sai, loại lạ, thiếu nguồn → ném lỗi (không bỏ qua âm thầm)', () => {
+  const okEv = { kind: 'FOMC', time: '2026-10-28T18:00:00Z', source: 'https://x' };
+  assert.equal(parseEvents({ events: [okEv] }).length, 1);
+  assert.throws(() => parseEvents({ events: [{ ...okEv, time: '28/10/2026' }] }), /thời gian/);
+  assert.throws(() => parseEvents({ events: [{ ...okEv, kind: 'NFP' }] }), /loại/);
+  assert.throws(() => parseEvents({ events: [{ ...okEv, source: '' }] }), /nguồn/);
+  assert.throws(() => parseEvents({}), /events/);
 });
 
 test('từng cổng chặn đúng', () => {

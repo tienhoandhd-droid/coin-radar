@@ -325,3 +325,14 @@ test('C1/C3 portfolioLines: vào đủ / giảm khối lượng (rủi ro thực
   assert.match(no, /KHÔNG VÀO/);
   assert.match(no, /10 lệnh/);
 });
+
+test('I4 headerWarningLines: luôn nêu G-06 chưa đánh giá đầy đủ; lịch sự kiện sắp/hết hạn in nổi bật', async () => {
+  const { headerWarningLines } = await import('./plan-print.ts');
+  const okCal = { expired: false, daysLeft: 52, lastEvent: '2026-12-10T13:30:00.000Z', warning: null };
+  const a = headerWarningLines(okCal).join('\n');
+  assert.match(a, /G-06/);
+  assert.match(a, /CHƯA ĐÁNH GIÁ/);
+  assert.doesNotMatch(a, /LỊCH SỰ KIỆN/);
+  const b = headerWarningLines({ ...okCal, daysLeft: 3, warning: 'LỊCH SỰ KIỆN SẮP HẾT HẠN: còn 3 ngày' }).join('\n');
+  assert.match(b, /!!! LỊCH SỰ KIỆN SẮP HẾT HẠN/);
+});

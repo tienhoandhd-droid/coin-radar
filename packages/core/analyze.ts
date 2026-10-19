@@ -5,7 +5,7 @@ import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
 import { buildPlan, tp1R, worstTp1NetR, type TradePlan, type CostTier } from './plan.ts';
 import { evaluateGates, liquidationCheck, ratePer8h, fundingNote, inPatternScope, dailyTrend, patternTrendGate, contextGate, type GateResult } from './gates.ts';
-import { eventWindow, type MacroEvent } from './events.ts';
+import { eventWindow, eventCalendarStatus, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
 import { COMMON, CONFIG } from './config.ts';
 import { btcHourlySide, type Regime } from './regime.ts';
@@ -192,7 +192,8 @@ export function analyze(i: AnalyzeInput): Analysis {
   const ev = eventWindow(i.now, i.events, i.mode);
   if (ev.flag) flags.push(`G-07 ${ev.flag}`);
   const h = i.hourly;
-  const move1hPct = h.length >= 2 ? (last(h.map((k) => k.close)) / h[h.length - 2]!.close - 1) * 100 : 0;
+  const move1hPct = h.length >= 2 ? (last(h.map((k) => k.close)) / h[h.length - 2]!.close - 1) * 100 : NaN; // I4: thiếu → NaN, G-04 trượt
+  const calendar = eventCalendarStatus(i.events, i.now);
   // Cổng hiện có cho một chiều + một kế hoạch (vùng hoặc mô hình) — dùng chung để tín hiệu mô hình qua đủ các cổng như tín hiệu vùng.
   const gatesFor = (s: SideScore, p: { riskPerUnit: number; entry: number; notional: number; valid: boolean; note: string }): GateResult[] => {
     const stopDistPct = p.riskPerUnit / p.entry;
@@ -202,7 +203,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       liquidityRankPct: i.liquidityRankPct, spreadPct: i.spreadPct,
       move1hPct, volumeZ1h: volumeZ(h, 20),
       ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
-      eventBlocked: ev.blocked,
+      eventBlocked: ev.blocked, eventCalendarExpired: calendar.expired, deliveryDate: i.contract.deliveryDate,
       stopDistPct: stopDistPct * 100, stopDistAtr: p.riskPerUnit / dailyAtr,
       liquidation: liquidationCheck({ stopDistFrac: stopDistPct, notional: p.notional, leverageCap: CONFIG[i.mode].maxLeverage }),
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,

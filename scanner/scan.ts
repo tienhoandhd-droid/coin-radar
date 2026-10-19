@@ -3,9 +3,9 @@ import { parseArgs } from 'node:util';
 import { createClient } from '../packages/binance/client.ts';
 import { parseFundingInfo, parseBookTickers, parseContracts, parseKlines, parsePremium, parseTickers } from '../packages/binance/parse.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
-import type { MacroEvent } from '../packages/core/events.ts';
+import { parseEvents, eventCalendarStatus } from '../packages/core/events.ts';
 import { parseScanArgs, type ScanArgs } from './args.ts';
-import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, portfolioLines, type GradedItem } from './plan-print.ts';
+import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, portfolioLines, headerWarningLines, type GradedItem } from './plan-print.ts';
 import { runScan } from './run-scan.ts';
 
 const { values } = parseArgs({ options: {
@@ -30,7 +30,8 @@ const client = createClient({ fetch: (url) => fetch(url, { signal: AbortSignal.t
 const now = Date.now();
 
 // I/O ở đây; toàn bộ bước quét nằm trong runScan (dùng chung với phát lại/backtest)
-const events = (JSON.parse(readFileSync(new URL('../data/events/events.json', import.meta.url), 'utf8')) as { events: MacroEvent[] }).events;
+const events = parseEvents(JSON.parse(readFileSync(new URL('../data/events/events.json', import.meta.url), 'utf8')));
+const calendar = eventCalendarStatus(events, new Date(now));
 const contracts = parseContracts(await client.get('/fapi/v1/exchangeInfo'));
 const tickers = parseTickers(await client.get('/fapi/v1/ticker/24hr'));
 const books = new Map(parseBookTickers(await client.get('/fapi/v1/ticker/bookTicker')).map((b) => [b.symbol, b]));
@@ -57,6 +58,7 @@ const top = (side: 'long' | 'short') => final
 mkdirSync(new URL('../output/', import.meta.url), { recursive: true });
 const file = new URL(`../output/scan-${mode}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`, import.meta.url);
 writeFileSync(file, JSON.stringify({ mode, capital, at: new Date(now).toISOString(), regime, breaker, errors, results: final }, null, 2));
+console.log(headerWarningLines(calendar).join('\n'));
 console.log(`Vốn: ${capital} USDT | Rủi ro: ${COMMON.risk.perTradePct}% vốn/lệnh (người dùng chốt 19/10/2026; mức rủi ro coin chỉ để hiển thị) = ${(capital * COMMON.risk.perTradePct / 100).toFixed(2).replace('.', ',')} USDT | Trần ${COMMON.portfolio.maxOpenTrades} lệnh mở, tổng rủi ro mở ≤ ${COMMON.portfolio.maxOpenRiskPct}%, ký quỹ ≤ ${COMMON.portfolio.marginSafetyFactor * 100}% vốn (máy quét không biết lệnh đang mở của anh: kiểm với danh mục trống) | Thoát lệnh: ${COMMON.exit.defaultPolicy}`);
 console.log(`Chế độ: ${mode} | Thị trường: ${regime.regime} (${regime.reasons.join('; ')})`);
 console.log(`Cầu dao: ${breaker.tripped ? 'BẬT — ' + breaker.reason : 'tắt'}`);

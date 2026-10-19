@@ -226,7 +226,7 @@ const baseIn = {
   trend: up(300, 1), entry: upWaves(500, 0.2, 0.6, 2, 40), daily: up(300, 1), hourly: up(100, 0.05), btcTrend: up(300, 0.3),
   regime: 'up' as const, breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
-  fundingIntervalHours: 8, fundingIntervalDefault: false, now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 0.5,
+  fundingIntervalHours: 8, fundingIntervalDefault: false, now: new Date('2026-10-19T12:00:00Z'), events: [{ kind: 'FOMC' as const, time: '2027-01-27T19:00:00Z', source: 'test: lịch còn hạn, xa cửa sổ' }], capital: 1000, riskPct: 0.5,
   patternData: null as null | { c4h: ReturnType<typeof up>; c1d: ReturnType<typeof up>; c1h: ReturnType<typeof up>; btcSma200ReclaimedAt: null },
   openTrades: [],
 };
