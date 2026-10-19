@@ -14,7 +14,7 @@ const base: TradePlan = {
   ],
   afterTp1Stop: 0.6143, exit: { policy: 'A0', tp1Qty: 14, trailQty: 0, trailing: null }, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
   riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, costPct: 0.25, marginSource: 'giả định', safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
-  fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2,
+  fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2, capital: 1000, skippedZones: [],
   fillTable: [
     { label: 'giá hiện tại', fill: 0.6143, qty: 29, q: [14, 8, 7], estLoss: 2.43 },
     { label: 'giữa', fill: 0.6203, qty: 27, q: [13, 8, 6], estLoss: 2.45 },
@@ -369,4 +369,18 @@ test('C1 portfolioLines in số lệnh mở cùng chiều', async () => {
   const { portfolioLines } = await import('./plan-print.ts');
   const t = portfolioLines({ requestedQty: 1, openCount: 6, atRiskCount: 4, pastTp1Count: 2, sameSideOpen: 3, openRiskPct: 6, openMarginPct: 20, allowed: true, adjustedQty: 1, riskAmount: 20, riskPctActual: 2, marginNeeded: 50, reasons: [] }).join('');
   assert.match(t, /4 lệnh còn rủi ro \/ 2 lệnh đã qua TP1 \(3 cùng chiều\)/);
+});
+
+test('B3b in kế hoạch vùng: mỗi vùng yếu bị bỏ qua có một dòng "bỏ qua vùng … — TP1 lấy vùng kế tiếp"', () => {
+  const weak = { low: 0.65, high: 0.66, strength: 1, touches: 1, sources: ['t'] };
+  const t = planLines(head, { ...base, skippedZones: [weak] }, 0.0001).join('\n');
+  assert.match(t, /bỏ qua vùng 0,6500–0,6600 \(độ mạnh 1\) — TP1 lấy vùng kế tiếp/);
+  assert.doesNotMatch(planLines(head, base, 0.0001).join('\n'), /bỏ qua vùng/);
+});
+
+test('B3b in kế hoạch mô hình: dòng bỏ qua vùng yếu', () => {
+  const p = patternPlan(110.5, { stopRef: { up: 108.5, down: 101 } });
+  const weak = { low: 112, high: 112.5, strength: 1.5, touches: 1, sources: ['t'] };
+  const t = patternPlanLines(ph, { ...p, skippedZones: [weak] }, 0.01).join('\n');
+  assert.match(t, /bỏ qua vùng 112,00–112,50 \(độ mạnh 1,5\) — TP1 lấy vùng kế tiếp/);
 });

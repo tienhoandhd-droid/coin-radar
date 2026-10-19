@@ -109,9 +109,33 @@ export function targetSideZones(zones: Zone[], price: number, side: Side): Zone[
     : zones.filter((z) => z.high < price).sort((p, q) => q.high - p.high);
 }
 
-// tickSize có → in theo tickSize; vùng chỉ có một mức (low = high) in một giá
-export function describeZone(z: Zone, tickSize?: number): string {
+// Vùng cản đủ mạnh để chặn TP1 (B3b): độ mạnh ≥ minSlStrength. Cờ tp1SkipWeak = false → mọi vùng đều chặn (biến thể so sánh).
+export function isBlockingZone(z: Zone): boolean {
+  return !COMMON.zones.tp1SkipWeak || z.strength >= COMMON.zones.minSlStrength;
+}
+
+// Vùng phía mục tiêu, gần giá nhất trước, tách thành: vùng chặn (đủ mạnh) và vùng yếu bị bỏ qua.
+// skipped = chỉ các vùng yếu NẰM TRƯỚC `until` (mặc định: trước vùng chặn đầu tiên; không có vùng chặn thì tất cả) — đúng các vùng TP1 đã "bước qua".
+export function targetZonesSplit(zones: Zone[], price: number, side: Side, until?: number): { blocking: Zone[]; skipped: Zone[] } {
+  const all = targetSideZones(zones, price, side);
+  const blocking = all.filter(isBlockingZone);
+  const edge = (z: Zone) => (side === 'long' ? z.low : z.high);
+  const limit = until ?? (blocking[0] !== undefined ? edge(blocking[0]) : undefined);
+  const skipped = all.filter((z) => !isBlockingZone(z) && (limit === undefined || (side === 'long' ? edge(z) < limit : edge(z) > limit)));
+  return { blocking, skipped };
+}
+
+// Khoảng giá của vùng, in theo tickSize; vùng chỉ có một mức (low = high) in một giá
+export function describeZoneRange(z: Zone, tickSize?: number): string {
   const f = (x: number) => (tickSize === undefined ? formatPrice(x) : formatTick(x, tickSize));
-  const range = f(z.low) === f(z.high) ? f(z.low) : `${f(z.low)}–${f(z.high)}`;
-  return `${range} (${z.sources.join(', ')})`;
+  return f(z.low) === f(z.high) ? f(z.low) : `${f(z.low)}–${f(z.high)}`;
+}
+
+export function describeZone(z: Zone, tickSize?: number): string {
+  return `${describeZoneRange(z, tickSize)} (${z.sources.join(', ')})`;
+}
+
+// Dòng lý do cho mỗi vùng yếu bị bỏ qua khi chọn TP1 (B3b)
+export function skippedZoneLine(z: Zone, tickSize?: number): string {
+  return `bỏ qua vùng ${describeZoneRange(z, tickSize)} (độ mạnh ${String(z.strength).replace('.', ',')}) — TP1 lấy vùng kế tiếp`;
 }

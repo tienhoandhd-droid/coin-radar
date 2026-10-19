@@ -39,14 +39,14 @@ function mkPlan(side: Side, entryType: 'market' | 'limit' | 'split', floor: bool
     ],
     exit: { policy: 'C2', tp1Qty, trailQty: qty - tp1Qty, trailing: trailingFor(side, worst, tp1, 3, COST) },
     valid: true, invalidReason: null, qty, costPct: COST, suggestedLeverage: 5,
-    limitExpiryHours: entryType === 'market' ? null : 24, riskPct: 2,
+    limitExpiryHours: entryType === 'market' ? null : 24, riskPct: 2, capital: 100_000,
     ...over,
   };
 }
 
 function input(plan: PlannerPlan, over: Partial<PlannerInput> = {}): PlannerInput {
   return {
-    plan, grade: 'A', signal: { id: 'AAAUSDT|swing|long|zone|1|98', fresh: true }, mode: 'swing', contract: C, capital: 100_000,
+    plan, grade: 'A', signal: { id: 'AAAUSDT|swing|long|zone|1|98', fresh: true }, mode: 'swing', contract: C, capital: plan.capital,
     openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, ...over,
   };
 }
@@ -292,8 +292,8 @@ for (const side of ['long', 'short'] as const) {
         const fills = [...(entryType !== 'limit' ? [base.marketPrice] : []), ...(entryType !== 'market' ? [base.limitPrice!] : [])];
         const nearest = side === 'long' ? Math.min(...fills) : Math.max(...fills);
         const stop = Number((nearest - d * dist).toFixed(2));
-        const plan = mkPlan(side, entryType, false, { stop, qty: 1_000_000, riskPct: 2, suggestedLeverage: lev });
-        const r = planOrders(input(plan, { capital: 10_000 }));
+        const plan = mkPlan(side, entryType, false, { stop, qty: 1_000_000, riskPct: 2, suggestedLeverage: lev, capital: 10_000 });
+        const r = planOrders(input(plan));
         assert.equal(r.allowed, true, r.reasons.join('; '));
         const want = qty2pct(10_000, plan);
         assert.equal(r.sizing!.qty, want);
@@ -311,7 +311,7 @@ for (const side of ['long', 'short'] as const) {
 }
 
 test('B3 rà soát repro: Long market vốn 1.000, kế hoạch qty 60 (lập cho vốn khác) → cắt về 2% ở giá tối đa, KHÔNG bao giờ 10%', () => {
-  const r = planOrders(input(mkPlan('long', 'market', false), { capital: 1_000 }));
+  const r = planOrders(input(mkPlan('long', 'market', false, { capital: 1_000 })));
   assert.equal(r.allowed, true, r.reasons.join('; '));
   // perUnit ở 100,5 = 3,6005 → 20 / 3,6005 = 5,5547… → 5,554
   assert.equal(r.sizing!.qty, 5.554);
@@ -319,13 +319,13 @@ test('B3 rà soát repro: Long market vốn 1.000, kế hoạch qty 60 (lập ch
   assert.equal(r.sizing!.requestedQty, 5.554);
   assert.equal(r.sizing!.adjusted, false);
   // vốn 9.300: 186 / 3,6005 = 51,659 coin (trước đây vào 60 coin = 2,32% ở giá tối đa)
-  const r2 = planOrders(input(mkPlan('long', 'market', false), { capital: 9_300 }));
+  const r2 = planOrders(input(mkPlan('long', 'market', false, { capital: 9_300 })));
   assert.equal(r2.sizing!.qty, 51.659);
   assert.ok(r2.sizing!.realRiskPct <= 2 + 1e-9);
 });
 
 test('B3 kế hoạch nhỏ hơn 2% (vd chỉ đặt limit 50%) → giữ khối lượng kế hoạch, không phóng to', () => {
-  const r = planOrders(input(mkPlan('long', 'limit', false, { qty: 10 }), { capital: 10_000 }));
+  const r = planOrders(input(mkPlan('long', 'limit', false, { qty: 10, capital: 10_000 })));
   assert.equal(r.allowed, true, r.reasons.join('; '));
   assert.equal(r.sizing!.qty, 10);
   assert.ok(r.sizing!.realRiskPct < 2);
@@ -336,4 +336,39 @@ test('B3 khớp IOC một phần: bộ lệnh thoát định cỡ theo khối l�
   assert.equal(r.allowed, true, r.reasons.join('; '));
   assert.equal(r.exitRule.basis, 'filled_qty');
   assert.deepEqual(exitSplit(17.001, r.exitRule.qtyStep), { tp1Qty: 8.5, trailQty: 8.501 });
+});
+
+// ---- B3b: plan.capital phải khớp vốn của bot; mọi giới hạn làm giảm khối lượng đều ghi lý do + rủi ro thực ----
+test('B3b kế hoạch lập cho vốn khác vốn của bot -> TỪ CHỐI, yêu cầu lập lại kế hoạch với vốn của bot', () => {
+  const r = planOrders(input(mkPlan('long', 'market', false, { capital: 100_000 }), { capital: 50_000 }));
+  assert.equal(r.allowed, false);
+  assert.equal(r.legs.length, 0);
+  assert.match(r.reasons.join('; '), /vốn 100000.*vốn bot là 50000.*lập lại/);
+});
+
+// Số tính tay: Long limit 99, SL 97, phí 0,1% khứ hồi; vốn 10.000 -> ngân sách 2% = 200 USDT.
+//   perUnit = |99 − 97| + 99 × 0,1/100 = 2 + 0,099 = 2,099 USDT/coin
+//   200 / 2,099 = 95,28347… -> làm tròn xuống bước 0,001 = 95,283 coin
+//   tiền lỗ thật = 95,283 × 2,099 = 190,566 + 9,433017 = 199,999017 USDT = 1,99999017% vốn (≤ 2%, sát biên)
+test('B3b biên 2% bằng số tính tay: kế hoạch qty lớn -> cắt về 95,283 coin, lý do nêu "trần 2% vốn" và rủi ro thực 2,00%', () => {
+  const r = planOrders(input(mkPlan('long', 'limit', false, { qty: 1_000_000, capital: 10_000 })));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  assert.equal(r.sizing!.qty, 95.283);
+  assert.ok(Math.abs(r.sizing!.riskAmount - 199.999017) < 1e-6, String(r.sizing!.riskAmount));
+  assert.ok(Math.abs(r.sizing!.realRiskPct - 1.99999017) < 1e-6);
+  assert.match(r.reasons.join('; '), /trần 2% vốn: kế hoạch 1000000 → 95\.283.*rủi ro thực 2,00%/);
+});
+// kế hoạch qty 10: 10 × 2,099 = 20,99 USDT = 0,2099% vốn 10.000 -> "0,21%"
+test('B3b khối lượng kế hoạch nhỏ hơn trần 2% -> lý do nêu "khối lượng kế hoạch" và rủi ro thực 0,21%', () => {
+  const r = planOrders(input(mkPlan('long', 'limit', false, { qty: 10, capital: 10_000 })));
+  assert.equal(r.sizing!.qty, 10);
+  assert.match(r.reasons.join('; '), /Khối lượng kế hoạch 10 coin.*trần 2% vốn 95\.283.*rủi ro thực 0,21%/);
+});
+// maxNotional 5.000 USDT: floor(5000 / 99) bước 0,001 = 50,505 coin; rủi ro = 50,505 × 2,099 = 101,01 + 4,999995 = 106,009995 USDT = 1,06% vốn
+test('B3b trần notional theo thanh khoản làm giảm khối lượng -> lý do nêu giới hạn và rủi ro thực 1,06%', () => {
+  const r = planOrders(input(mkPlan('long', 'limit', false, { qty: 1_000_000, capital: 10_000 }), { maxNotional: 5_000 }));
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  assert.equal(r.sizing!.qty, 50.505);
+  assert.match(r.reasons.join('; '), /trần notional theo thanh khoản 5000/);
+  assert.match(r.reasons.join('; '), /rủi ro thực 1,06%/);
 });

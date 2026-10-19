@@ -585,3 +585,43 @@ test('I2 bộ lọc sàn cho kế hoạch mô hình: hợp lệ với bộ lọc
   assert.match(patternPlanFilterProblems(p, { ...F, minNotional: 1e7 }).join(), /MIN_NOTIONAL/);
   assert.match(patternPlanFilterProblems(p, { ...F, marketMaxQty: 0.002 }).join(), /MARKET_LOT_SIZE/);
 });
+
+// ---- B3b: TP1 của lệnh mô hình bỏ qua vùng cản yếu (độ mạnh < 2) ----
+// Long: giá 110,5, đường phá 110, SL 108, T_ngắn 115. Vùng yếu [112; 112,5] độ mạnh 1 (TP trước nó = 111,8, chỉ 0,52R) bị bỏ;
+// vùng mạnh [114; 114,5] → TP1 = 114 − 0,2×A (A = 1) = 113,8.
+const zoneS = (low: number, high: number, strength: number): Zone => ({ low, high, strength, touches: 2, sources: ['test'] });
+const gShort = () => geom({ upper: () => 120, lower: () => 110, stopRef: { up: 118, down: 111.5 } });
+// Short: giá 109,5. Vùng yếu [107,5; 108,5] bị bỏ (TP 108,7); vùng mạnh [105,5; 106,5] → TP1 = 106,5 + 0,2 = 106,7.
+const sh = (zones: Zone[], close = 109.5) => args({ close, side: 'short', geometry: gShort(), state: st({ side: 'down' }), zones });
+for (const side of ['long', 'short'] as const) {
+  const S = side === 'long' ? 'Long' : 'Short';
+  const mk = (zones: Zone[]) => (side === 'long' ? args({ zones }) : sh(zones));
+  const weakFar = side === 'long' ? zoneS(112, 112.5, 1) : zoneS(107.5, 108.5, 1);
+  const strongFar = side === 'long' ? zoneS(114, 114.5, 2) : zoneS(105.5, 106.5, 2);
+  const tpStrong = side === 'long' ? 113.8 : 106.7;
+  test(`B3b ${S} mô hình: vùng cản đầu yếu bị bỏ qua, TP1 trước vùng mạnh kế tiếp, ghi skippedZones`, () => {
+    const p = ready(mk([weakFar, strongFar]));
+    assert.equal(r6(p.targets[0]!.price!), tpStrong);
+    assert.deepEqual(p.skippedZones.map((z) => z.strength), [1]);
+  });
+  test(`B3b ${S} mô hình: vùng cản đầu mạnh giữ nguyên làm TP1`, () => {
+    const p = ready(mk([strongFar]));
+    assert.equal(r6(p.targets[0]!.price!), tpStrong);
+    assert.equal(p.skippedZones.length, 0);
+  });
+  test(`B3b ${S} mô hình: mọi vùng đều yếu -> TP1 = T_ngắn (không vùng nào chặn), cả hai vùng bị bỏ`, () => {
+    const p = ready(mk([weakFar, side === 'long' ? zoneS(114, 114.5, 1) : zoneS(105.5, 106.5, 1)]));
+    assert.equal(p.targets[0]!.price, p.targetShort);
+    assert.equal(p.skippedZones.length, 2);
+  });
+  test(`B3b ${S} mô hình: vùng yếu sát giá vào không bị từ chối; vùng mạnh sát giá vào thì bị từ chối`, () => {
+    const nearWeak = side === 'long' ? zoneS(110.6, 111, 1) : zoneS(108.9, 109.3, 1);
+    ready(mk([nearWeak, strongFar]));
+    const r = buildPatternPlan(mk([{ ...nearWeak, strength: 2 }, strongFar]));
+    assert.equal(r.status, 'rejected');
+    assert.match(r.reason!, /ngay sát giá vào/);
+  });
+  test(`B3b ${S} mô hình: TradePlan mang capital đã dùng`, () => {
+    assert.equal(ready(mk([strongFar])).capital, 10_000);
+  });
+}

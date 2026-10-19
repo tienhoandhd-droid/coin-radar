@@ -17,7 +17,7 @@ import {
 
 // Phần chung của TradePlan và PatternPlan mà planner dùng. PatternPlan có thêm 'split', limitPrice, cancelIfTp1First.
 type PlanCore = Pick<TradePlan, 'side' | 'marketPrice' | 'entry' | 'maxEntry' | 'stop' | 'targets' | 'exit' | 'valid' | 'invalidReason'
-  | 'qty' | 'costPct' | 'suggestedLeverage' | 'limitExpiryHours' | 'riskPct'>;
+  | 'qty' | 'costPct' | 'suggestedLeverage' | 'limitExpiryHours' | 'riskPct' | 'capital'>;
 export type PlannerPlan = PlanCore & {
   entryType: 'market' | 'limit' | 'split'; // split = chân market + chân limit (kế hoạch mô hình)
   limitPrice?: number | null; // PatternPlan; TradePlan limit dùng plan.entry
@@ -105,6 +105,8 @@ export function planOrders(i: PlannerInput): PlannerResult {
   if (!p.valid) problems.push(`Kế hoạch không hợp lệ: ${p.invalidReason ?? '(không rõ lý do)'}`);
   const policy = i.exitPolicy ?? COMMON.exit.defaultPolicy;
   if (policy !== 'C2' || p.exit.policy !== 'C2') problems.push(`Bot chỉ chạy chính sách thoát C2 (yêu cầu ${policy}, kế hoạch ${p.exit.policy})`);
+  // Kế hoạch lập với vốn nào thì khối lượng/rủi ro của nó đúng với vốn đó: lệch vốn bot → bot phải lập lại kế hoạch bằng vốn của chính nó
+  if (p.capital !== i.capital) problems.push(`Kế hoạch được lập với vốn ${p.capital} USDT nhưng vốn bot là ${i.capital} USDT — bot phải lập lại kế hoạch với vốn của mình rồi mới vào lệnh`);
   if (p.riskPct > COMMON.risk.perTradePct) problems.push(`Rủi ro kế hoạch ${p.riskPct}% vượt ${COMMON.risk.perTradePct}%/lệnh`);
   const tp1Raw = p.targets[0]?.price ?? null;
   const tr = p.exit.trailing;
@@ -166,7 +168,15 @@ export function planOrders(i: PlannerInput): PlannerResult {
   const floorQ = (x: number) => (x > 0 && Number.isFinite(x) ? Number((Math.floor(x / qStep + 1e-9) * qStep).toFixed(dec)) : 0);
   const perUnit = Math.abs(worstEntry - stop) + (worstEntry * p.costPct) / 100;
   const budget = (i.capital * COMMON.risk.perTradePct) / 100;
+  const riskCapQty = floorQ(budget / perUnit); // khối lượng tối đa theo trần 2% vốn
   const requestedQty = floorQ(Math.min(p.qty, budget / perUnit));
+  const pctVn = (qty: number) => ((qty * perUnit) / i.capital * 100).toFixed(2).replace('.', ',');
+  // Ghi rõ giới hạn nào đang áp dụng và rủi ro thực sau đó (không giảm âm thầm)
+  if (requestedQty < floorQ(p.qty)) {
+    adjust.push(`Khối lượng bị cắt về trần ${COMMON.risk.perTradePct}% vốn: kế hoạch ${p.qty} → ${requestedQty} coin (${i.capital} USDT × ${COMMON.risk.perTradePct}% ÷ ${perUnit} USDT/coin ở giá xấu nhất ${worstEntry}); rủi ro thực ${pctVn(requestedQty)}%`);
+  } else if (requestedQty < riskCapQty) {
+    adjust.push(`Khối lượng kế hoạch ${p.qty} coin nhỏ hơn trần ${COMMON.risk.perTradePct}% vốn ${riskCapQty} coin — giữ khối lượng kế hoạch; rủi ro thực ${pctVn(requestedQty)}%`);
+  }
   if (!(requestedQty > 0)) return reject(`Khối lượng 2% vốn (${budget.toFixed(2)} USDT ÷ ${perUnit} USDT/coin ở giá xấu nhất ${worstEntry}) nhỏ hơn bước ${qStep}`);
 
   // ---- 4. Danh mục (canOpen) ở giá xấu nhất: trần 10 lệnh còn rủi ro, tổng rủi ro ≤ 10%, ký quỹ, thanh khoản, bộ lọc sàn ----
@@ -187,6 +197,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   const qty = floorQ(Math.min(po.adjustedQty, requestedQty));
   if (!(qty > 0)) return reject(`Khối lượng ${po.adjustedQty} nhỏ hơn bước ${qStep}`);
   const adjusted = qty < requestedQty;
+  if (adjusted) adjust.push(`Khối lượng giảm tiếp ${requestedQty} → ${qty} coin do giới hạn danh mục/ký quỹ/thanh khoản (lý do ở trên); rủi ro thực ${pctVn(qty)}%`);
   const riskAmount = qty * perUnit;
   const realRiskPct = (riskAmount / i.capital) * 100;
   if (realRiskPct > COMMON.risk.perTradePct + 1e-9) problems.push(`Rủi ro thực ${realRiskPct.toFixed(4)}% ở giá xấu nhất vượt ${COMMON.risk.perTradePct}%/lệnh`);

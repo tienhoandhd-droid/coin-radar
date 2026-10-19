@@ -1,6 +1,6 @@
 import { atr, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
-import { stopSideZones, targetSideZones, zoneContaining, describeZone, type Zone } from './zones.ts';
+import { stopSideZones, targetZonesSplit, zoneContaining, describeZone, type Zone } from './zones.ts';
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from './exit.ts';
 import { marginTier, defaultBrackets, type MarginBracket, type MarginSource } from './margin.ts';
@@ -73,6 +73,7 @@ export type TradePlan = {
   stop: number;
   stopReason: string;
   targets: Target[]; // luôn 3 phần tử, pct theo COMMON.zones.exitPcts
+  skippedZones: Zone[]; // vùng cản YẾU (độ mạnh < minSlStrength) nằm trước TP1 bị bỏ qua (B3b); in thành dòng lý do
   afterTp1Stop: number; // sau TP1 dời SL về giá vào; sau TP2 giữ nguyên (chỉ áp dụng cho A0)
   exit: ExitPlan; // chính sách thoát (mặc định C2: TP1 50% + trailing trên sàn); TP2/TP3 ở targets là mức thông tin/đối chứng
   valid: boolean;
@@ -84,6 +85,7 @@ export type TradePlan = {
   riskAmount: number; // NGÂN SÁCH rủi ro (vốn × %), không phải số tiền mất thật
   estLoss: number; // số tiền mất ước tính nếu chạm SL = qty × |vào − SL| + phí ước tính
   fillTable: FillRow[]; // market: 3 dòng (giá hiện tại / giữa / giá tối đa); limit: 1 dòng (giá limit)
+  capital: number; // vốn đã dùng để tính khối lượng (planner của bot từ chối nếu khác vốn bot)
   riskPct: number; // % vốn rủi ro thực sự đã dùng để tính khối lượng (P-01)
   costPct: number; // phí + trượt giá khứ hồi đã dùng (%): theo nhóm thanh khoản + trượt thêm theo cỡ lệnh (I7)
   marginSource: MarginSource; // nguồn bậc ký quỹ cho đòn bẩy/thanh lý: 'leverageBracket' (thật) hoặc 'giả định'
@@ -220,7 +222,8 @@ export function buildPlan(a: PlanArgs): TradePlan {
   // Mục tiêu: trước mép vùng cản, tính từ giá dùng để vào lệnh
   const found: Target[] = [];
   let blockedBy: Zone | null = null; // vùng cản đầu tiên nằm sát giá vào, không còn chỗ đặt TP1
-  const candidates = targetSideZones(a.zones, entry, a.side);
+  // B3b: chỉ vùng đủ mạnh (độ mạnh ≥ minSlStrength) là vật cản; vùng yếu trước TP1 bị bỏ qua và ghi lại
+  const { blocking: candidates, skipped: skippedZones } = targetZonesSplit(a.zones, entry, a.side);
   for (const z of candidates) {
     if (found.length >= zc.exitPcts.length) break;
     const tp = snapToTick((a.side === 'long' ? z.low : z.high) - dir * zc.tpBufferAtr * atrEntry, tick, towardDir);
@@ -367,6 +370,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     stop,
     stopReason,
     targets,
+    skippedZones,
     afterTp1Stop: entry,
     exit: buildExit({ policy: exitPolicy, side: a.side, worstEntry: entryType === 'limit' ? entry : maxEntry, valid, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * atrEntry, costPct, qty: size.qty, tp1Qty: targets[0]!.qty }),
     valid,
@@ -378,6 +382,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     riskAmount: size.riskAmount,
     estLoss,
     fillTable,
+    capital: a.capital,
     riskPct: a.riskPct,
     costPct,
     marginSource: mmr.source,

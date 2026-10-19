@@ -90,7 +90,8 @@ export const COMMON = {
     volumeBonus: 1, // vùng thuộc nhóm 25% khối lượng giao dịch cao nhất
     minZonesForVolume: 4, // cần ≥ 4 vùng mới tính tứ phân vị khối lượng — đề xuất, chưa backtest
     volumePercentile: 0.75, // vùng có khối lượng ≥ phân vị 75% thì được cộng volumeBonus — đề xuất, chưa backtest
-    minSlStrength: 2, // vùng dùng để đặt SL phải có độ mạnh ≥ 2
+    minSlStrength: 2, // vùng dùng để đặt SL phải có độ mạnh ≥ 2; cũng là ngưỡng vùng cản đủ mạnh để chặn TP1 (B3b)
+    tp1SkipWeak: true, // người dùng chốt 19/10/2026: TP1 bỏ qua vùng cản yếu (độ mạnh < minSlStrength), lấy vùng mạnh kế tiếp; false = TP1 tại vùng đầu tiên bất kể độ mạnh (biến thể so sánh Kế hoạch 2, Task 4)
     slBufferAtr: 0.3, // SL nằm ngoài mép vùng 0,3×ATR
     tpBufferAtr: 0.2, // TP đặt trước mép vùng cản 0,2×ATR
     minTp1R: 1, // TP1 phải lời ≥ 1R, nếu không bỏ lệnh

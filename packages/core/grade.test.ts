@@ -101,7 +101,10 @@ for (const side of ['long', 'short'] as const) {
     assert.equal(gradeSignal(perfect(side, { entry: mirror(side, 95.4), entryType: 'limit' })).grade, 'A');
   });
   test(`${S}: tiêu chí 3 — có vùng cản giữa giá vào và TP1 → trượt`, () => {
-    only(perfect(side, { zones: [zone(side, 90, 95, 3), zone(side, 110, 112, 1), zone(side, 130, 135, 2)] }), 3);
+    only(perfect(side, { zones: [zone(side, 90, 95, 3), zone(side, 110, 112, 2), zone(side, 130, 135, 2)] }), 3);
+  });
+  test(`${S}: B3b tiêu chí 3 — vùng cản YẾU (độ mạnh 1) giữa giá vào và TP1 bị bỏ qua -> vẫn đạt`, () => {
+    assert.equal(gradeSignal(perfect(side, { zones: [zone(side, 90, 95, 3), zone(side, 110, 112, 1), zone(side, 130, 135, 2)] })).grade, 'A');
   });
   test(`${S}: tiêu chí 4 — TP1 sau phí + funding 1,49R trượt, 1,5R đạt, không có TP1 trượt`, () => {
     only(perfect(side, { tp1NetR: 1.49 }), 4);
@@ -193,7 +196,8 @@ for (const side of ['long', 'short'] as const) {
     assert.equal(gradeSignal(withPattern({ distanceAtr: 1.8, entryType: 'limit' })).grade, 'A');
   });
   test(`${S}: mô hình — tiêu chí 3: vùng cản nằm trước TP1 (kể cả khi kế hoạch bỏ sót) → trượt`, () => {
-    only(withPattern({ zones: [zone(side, 94, 99, 3), zone(side, 112, 113, 1)] }), 3);
+    only(withPattern({ zones: [zone(side, 94, 99, 3), zone(side, 112, 113, 2)] }), 3);
+    assert.equal(gradeSignal(withPattern({ zones: [zone(side, 94, 99, 3), zone(side, 112, 113, 1)] })).grade, 'A'); // B3b: vùng yếu không tính
   });
   test(`${S}: mô hình — tiêu chí 4 dùng TP1 sau phí của kế hoạch mô hình`, () => {
     only(withPattern({ tp1NetR: 1.4 }), 4);

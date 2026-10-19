@@ -34,7 +34,7 @@ function k(i: number, close: number, high = close * 1.01, low = close * 0.99): C
   return { openTime: i, closeTime: i, open: close, high, low, close, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 };
 }
 
-const zone = (low: number, high: number, strength = 1): Zone => ({ low, high, strength, touches: 1, sources: ['test'] });
+const zone = (low: number, high: number, strength = 2): Zone => ({ low, high, strength, touches: 1, sources: ['test'] });
 // nến đóng cố định, biên độ 1 → ATR(14) = 1
 function flat(price: number, n = 60): Candle[] {
   return Array.from({ length: n }, (_, i) => k(i, price, price + 0.5, price - 0.5));
@@ -71,7 +71,7 @@ test('TP1 chỉ 0,31R (< 1R) → bỏ lệnh, nhãn lý do "quá gần"', () => 
 
 test('không có vùng hỗ trợ đủ mạnh → không hợp lệ, mọi số hữu hạn', () => {
   for (const side of ['long', 'short'] as const) {
-    const p = buildPlan({ ...baseArgs, side, entry: flat(96.3), zones: [zone(95, 96, 1), zone(99, 100)] });
+    const p = buildPlan({ ...baseArgs, side, entry: flat(96.3), zones: [zone(95, 96, 1), zone(99, 100, 1)] });
     assert.equal(p.valid, false);
     assert.match(p.invalidReason!, side === 'long' ? /hỗ trợ/ : /kháng cự/);
     for (const key of ['entry', 'maxEntry', 'stop', 'riskPerUnit', 'qty', 'notional', 'riskAmount', 'safeLeverage', 'suggestedLeverage',
@@ -212,11 +212,16 @@ test('kháng cự/hỗ trợ ngay sát giá vào (TP ≤ entry) → không hợp
   assert.match(S.invalidReason!, /Hỗ trợ ngay sát dưới/);
 });
 
-test('lệnh limit: vùng cản ngay trên giá limit → không hợp lệ', () => {
-  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(100), zones: [...supports, zone(96.2, 97), zone(103, 104)] });
+test('lệnh limit: vùng cản YẾU ngay trên giá limit bị bỏ qua (G-12 chỉ áp cho vùng mạnh); vùng mạnh ở đó sẽ thành vùng SL nên không còn là vật cản', () => {
+  // limit = 96 + 0,1 = 96,1; vùng [96,2; 97] độ mạnh 1: TP trước nó = 96,0 ≤ limit (trước B3b là "sát giá vào" → bỏ lệnh)
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(100), zones: [...supports, zone(96.2, 97, 1), zone(103, 104)] });
   assert.equal(p.entryType, 'limit');
-  assert.equal(p.valid, false);
-  assert.match(p.invalidReason!, /sát/);
+  assert.equal(p.valid, true, p.invalidReason ?? '');
+  assert.equal(p.skippedZones.length, 1);
+  assert.equal(r6(p.targets[0]!.price!), 102.8);
+  // vùng mạnh cùng chỗ -> trở thành vùng hỗ trợ gần nhất: limit dời lên 97,1
+  const strong = buildPlan({ ...baseArgs, side: 'long', entry: flat(100), zones: [...supports, zone(96.2, 97, 2), zone(103, 104)] });
+  assert.equal(r6(strong.entry), 97.1);
 });
 
 test('giá rất nhỏ: lý do vào lệnh hiển thị đủ chữ số có nghĩa', () => {
@@ -306,7 +311,7 @@ test('limit có TP1: lý do vẫn ghi "hoặc giá chạm TP1 trước"', () => 
 
 // ---- Sửa trước khi merge 1.1: TP1 đã nằm sai phía giá thị trường ----
 test('1.1 Long limit: TP1 ≤ giá thị trường → không ghi "giá chạm TP1", chỉ hết hạn', () => {
-  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'long', entry: flat(100), zones: [zone(95, 96, 3), zone(99, 99.5)] });
+  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'long', entry: flat(100), zones: [zone(95, 96, 3), zone(100.1, 101)] }); // B3b: vùng mạnh nằm giữa limit và giá thị trường sẽ thành vùng SL, nên TP1 ≤ giá thị trường dùng vùng ngay TRÊN giá (TP = mép − 0,2 = 99,9)
   assert.equal(p.entryType, 'limit');
   assert.ok(p.targets[0]!.price! <= 100);
   assert.match(p.entryReason, /hủy nếu sau 2 giờ chưa khớp/);
@@ -314,7 +319,7 @@ test('1.1 Long limit: TP1 ≤ giá thị trường → không ghi "giá chạm T
 });
 
 test('1.1 Short limit: TP1 ≥ giá thị trường → không ghi "giá chạm TP1", chỉ hết hạn', () => {
-  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'short', entry: flat(100), zones: [zone(104, 105, 3), zone(100.5, 101)] });
+  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'short', entry: flat(100), zones: [zone(104, 105, 3), zone(99.5, 99.9)] }); // gương: TP = mép trên 99,9 + 0,2 = 100,1
   assert.equal(p.entryType, 'limit');
   assert.ok(p.targets[0]!.price! >= 100);
   assert.match(p.entryReason, /hủy nếu sau 2 giờ chưa khớp/);
@@ -617,4 +622,67 @@ test('I3: giá hiện tại = giá MARK truyền vào (không phải giá đóng
   assert.equal(inZone.valid, false);
   assert.match(inZone.invalidReason!, /nằm trong vùng/);
   for (const bad of [0, -1, NaN]) assert.throws(() => buildPlanRaw({ ...a, markPrice: bad }), /giá mark/);
+});
+
+// ---- B3b: TP1 bỏ qua vùng cản yếu (độ mạnh < minSlStrength = 2), lấy vùng mạnh kế tiếp ----
+// Long: vào 96,3 (ATR 1), SL 94,7 → R = 1,6. Vùng yếu [97; 97,5] độ mạnh 1 → TP trước nó sẽ là 96,8 (0,31R); vùng mạnh [99; 100] → TP1 98,8.
+// Short (gương): vào 103,7, SL 105,3 (vùng 104–105 + 0,3). Vùng yếu [102,5; 103] → TP 103,2 (hạ 0,2 từ mép trên 103 → 103,2? Short: TP = high + 0,2); vùng mạnh [99; 100] → TP1 = 100 + 0,2 = 100,2.
+const weakLong = zone(97, 97.5, 1);
+const weakShort = zone(102.5, 103, 1);
+test('B3b Long: vùng cản đầu yếu bị bỏ qua, TP1 lấy vùng mạnh kế tiếp, ghi vào skippedZones', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, weakLong, zone(99, 100), zone(102, 103)] });
+  assert.equal(r6(p.targets[0]!.price!), 98.8);
+  assert.equal(r6(p.targets[1]!.price!), 101.8);
+  assert.equal(p.valid, true);
+  assert.deepEqual(p.skippedZones.map((z) => [z.low, z.high, z.strength]), [[97, 97.5, 1]]);
+});
+test('B3b Short: vùng đỡ đầu yếu bị bỏ qua, TP1 lấy vùng mạnh kế tiếp', () => {
+  const p = buildPlan({ ...baseArgs, side: 'short', entry: flat(103.7), zones: [zone(104, 105, 3), weakShort, zone(99, 100), zone(96, 97)] });
+  assert.equal(r6(p.targets[0]!.price!), 100.2);
+  assert.equal(p.valid, true);
+  assert.deepEqual(p.skippedZones.map((z) => [z.low, z.high, z.strength]), [[102.5, 103, 1]]);
+});
+for (const side of ['long', 'short'] as const) {
+  const S = side === 'long' ? 'Long' : 'Short';
+  const entry = side === 'long' ? 96.3 : 103.7;
+  const sup = side === 'long' ? supports : [zone(104, 105, 3)];
+  const near = side === 'long' ? [99, 100] as const : [99, 100] as const;
+  test(`B3b ${S}: vùng cản đầu MẠNH (độ mạnh 2) giữ nguyên làm TP1, không bỏ qua gì`, () => {
+    const p = buildPlan({ ...baseArgs, side, entry: flat(entry), zones: [...sup, zone(near[0], near[1], 2)] });
+    assert.equal(p.targets[0]!.price !== null, true);
+    assert.equal(p.skippedZones.length, 0);
+    assert.match(p.targets[0]!.reason, /99,000–100,000/);
+  });
+  test(`B3b ${S}: mọi vùng cản đều yếu -> không có TP cố định (trailing), kế hoạch vẫn hợp lệ, ghi cả hai vùng bỏ qua`, () => {
+    const zs = side === 'long' ? [weakLong, zone(99, 100, 1)] : [weakShort, zone(99, 100, 1)];
+    const p = buildPlan({ ...baseArgs, side, entry: flat(entry), zones: [...sup, ...zs] });
+    assert.ok(p.targets.every((t) => t.price === null && /trailing/.test(t.reason)));
+    assert.equal(p.valid, true);
+    assert.equal(p.skippedZones.length, 2);
+  });
+  test(`B3b ${S}: vùng yếu sát giá vào KHÔNG kích hoạt G-12 (không hợp lệ chỉ khi vùng mạnh)`, () => {
+    const weakNear = side === 'long' ? zone(96.4, 97, 1) : zone(102.9, 103.6, 1);
+    const far = side === 'long' ? zone(102, 103) : zone(98, 99);
+    const ok = buildPlan({ ...baseArgs, side, entry: flat(entry), zones: [...sup, weakNear, far] });
+    assert.equal(ok.valid, true, ok.invalidReason ?? '');
+    assert.equal(ok.skippedZones.length, 1);
+    const strongNear = side === 'long' ? zone(96.4, 97, 2) : zone(102.9, 103.6, 2);
+    const bad = buildPlan({ ...baseArgs, side, entry: flat(entry), zones: [...sup, strongNear, far] });
+    assert.equal(bad.valid, false);
+    assert.match(bad.invalidReason!, /sát/);
+  });
+}
+test('B3b tp1SkipWeak = false: TP1 ở vùng đầu tiên bất kể độ mạnh (biến thể so sánh Kế hoạch 2)', () => {
+  const z = COMMON.zones as { tp1SkipWeak: boolean };
+  assert.equal(z.tp1SkipWeak, true, 'mặc định phải bật');
+  z.tp1SkipWeak = false;
+  try {
+    const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, weakLong, zone(99, 100)] });
+    assert.equal(r6(p.targets[0]!.price!), 96.8);
+    assert.equal(p.skippedZones.length, 0);
+  } finally { z.tp1SkipWeak = true; }
+});
+test('B3b TradePlan mang capital đã dùng để tính khối lượng', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: supports });
+  assert.equal(p.capital, 1000);
 });

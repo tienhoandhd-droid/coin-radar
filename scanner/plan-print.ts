@@ -1,5 +1,6 @@
 import { COMMON } from '../packages/core/config.ts';
 import { formatTick } from '../packages/core/price.ts';
+import { skippedZoneLine } from '../packages/core/zones.ts';
 import type { TrailingPlan } from '../packages/core/exit.ts';
 import type { TradePlan } from '../packages/core/plan.ts';
 import type { PatternPlan } from '../packages/core/patterns/pattern-plan.ts';
@@ -46,6 +47,7 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
     : `  Kiểu vào lệnh: ĐẶT LIMIT CHỜ HỒI về ${px(p.entry)}, hết hạn sau ${p.limitExpiryHours} giờ — ${p.entryReason}`);
   lines.push(`  Giá hiện tại (giá mark): ${px(p.marketPrice)} | Vùng giá vào: ${px(p.entryZone.low)}–${px(p.entryZone.high)} | Giá vào dùng để tính: ${px(p.entry)}`);
   lines.push(`  SL: ${px(p.stop)} — ${p.stopReason}`);
+  for (const z of p.skippedZones) lines.push(`  ${skippedZoneLine(z, tickSize)}`);
 
   const trailPct = (p.trailAtr / p.entry) * 100;
   const trail = `trailing stop: cách giá ${long ? 'cao' : 'thấp'} nhất 3×ATR = ${px(p.trailAtr)} (${num(trailPct, 1)}%)`;
@@ -157,6 +159,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   }
   lines.push(`  Giá hiện tại: ${px(p.marketPrice)} (${p.priceTf === 'mark' ? 'giá mark' : `đóng nến ${p.priceTf.toUpperCase()}`} lúc ${utc(p.priceTime)}) | Giá vào dùng để tính: ${px(p.entry)}${p.entryType === 'split' ? ' (giá trung bình khi khớp cả hai chân)' : ''}`);
   lines.push(`  SL: ${px(p.stop)} — ${p.stopReason}`);
+  for (const z of p.skippedZones) lines.push(`  ${skippedZoneLine(z, tickSize)}`);
 
   const trailPct = (p.trailAtr / p.entry) * 100;
   const trail = `trailing stop: cách giá ${long ? 'cao' : 'thấp'} nhất 3×ATR = ${px(p.trailAtr)} (${num(trailPct, 1)}%)`;

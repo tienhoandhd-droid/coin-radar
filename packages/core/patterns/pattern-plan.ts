@@ -2,7 +2,7 @@ import type { Candle, Mode, Side } from '../types.ts';
 import { CONFIG, COMMON } from '../config.ts';
 import { roundStep } from '../indicators.ts';
 import { snapToTick, formatTick, tickDecimals } from '../price.ts';
-import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
+import { targetZonesSplit, zoneContaining, describeZone, type Zone } from '../zones.ts';
 import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, mmrFor, type CostTier, type Target, type FillRow } from '../plan.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from '../exit.ts';
 import type { MarginBracket, MarginSource } from '../margin.ts';
@@ -52,6 +52,7 @@ export type PatternPlan = {
   targetShort: number; // T_ngắn (theo tick)
   targetFull: number; // T_đủ (theo tick)
   targets: Target[]; // 3 phần tử; qty = khi mọi chân khớp
+  skippedZones: Zone[]; // vùng cản YẾU (độ mạnh < minSlStrength) nằm trước TP1 bị bỏ qua (B3b); in thành dòng lý do
   targetsIfMarketOnly: [number, number, number] | null; // split: khối lượng TP nếu chỉ khớp chân market
   tp1NetR: number; // TP1 tính bằng R sau phí khứ hồi + funding phải trả, ở giá khớp XẤU NHẤT cho phép: market = giá tối đa; limit = giá limit; split = tệ hơn của "chỉ khớp market ở giá tối đa" và "khớp cả hai" (giá TB dòng giá tối đa)
   exit: ExitPlan; // chính sách thoát (mặc định C2: TP1 50% + trailing trên sàn); TP2/TP3 ở targets là mức thông tin/đối chứng
@@ -69,6 +70,7 @@ export type PatternPlan = {
   riskAmount: number; // ngân sách rủi ro (vốn × %)
   estLoss: number; // tiền mất ước tính nếu chạm SL khi mọi chân khớp
   fillTable: PatternFillRow[];
+  capital: number; // vốn đã dùng để tính khối lượng (planner của bot từ chối nếu khác vốn bot)
   riskPct: number;
   costPct: number; // phí + trượt giá khứ hồi đã dùng (%), gồm trượt thêm theo cỡ lệnh (I7)
   marginSource: MarginSource; // nguồn bậc ký quỹ: 'leverageBracket' hoặc 'giả định'
@@ -270,7 +272,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   if (dir * (targetShort - ref) <= 0) {
     return reject(`Giá vào ${fp(ref)} đã vượt mục tiêu rút gọn T_ngắn ${fp(targetShort)} — không còn chỗ cho TP1`);
   }
-  const first = targetSideZones(a.zones, ref, side)[0] ?? null;
+  // B3b: chỉ vùng đủ mạnh là vật cản TP1/TP2/TP3; vùng yếu bị bỏ qua
+  const first = targetZonesSplit(a.zones, ref, side).blocking[0] ?? null;
   let tp1: number;
   let tp1Reason: string;
   if (first !== null && dir * (zoneTp(first) - ref) <= 0) {
@@ -285,7 +288,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   }
 
   // TP2 / TP3 và biên vùng nhiều tháng
-  const ahead = targetSideZones(a.zones, tp1, side).filter((z) => dir * (zoneTp(z) - tp1) > 0);
+  const ahead = targetZonesSplit(a.zones, tp1, side).blocking.filter((z) => dir * (zoneTp(z) - tp1) > 0);
+  const skippedZones = targetZonesSplit(a.zones, ref, side, tp1).skipped; // vùng yếu nằm trước TP1
   let tp2: number | null;
   let tp2Reason: string;
   let tp2Zone: Zone | null = null;
@@ -312,7 +316,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   let tp3: number | null = null;
   let tp3Reason = `Không còn vùng cản — phần này để trailing stop (${cfg.trailAtrMult}×ATR)`;
   if (tp2 !== null) {
-    const next = targetSideZones(a.zones, tp2, side).find((z) => z !== tp2Zone && dir * (zoneTp(z) - tp2!) > 0);
+    const next = targetZonesSplit(a.zones, tp2, side).blocking.find((z) => z !== tp2Zone && dir * (zoneTp(z) - tp2!) > 0);
     if (next) {
       tp3 = zoneTp(next);
       tp3Reason = `Trước vùng cản ${dz(next)}`;
@@ -567,6 +571,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     targetShort,
     targetFull,
     targets,
+    skippedZones,
     targetsIfMarketOnly: entryType === 'split' ? row0.legs[0]!.q : null,
     tp1NetR,
     exit: buildExit({ policy: exitPolicy, side, worstEntry: limitPrice === null ? maxEntry : side === 'long' ? Math.max(maxEntry, limitPrice) : Math.min(maxEntry, limitPrice), valid, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * A, costPct, qty: row0.qty, tp1Qty: targets[0]!.qty }),
@@ -584,6 +589,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     riskAmount: (a.capital * a.riskPct) / 100,
     estLoss: row0.estLoss,
     fillTable,
+    capital: a.capital,
     riskPct: a.riskPct,
     costPct,
     marginSource: mmr.source,

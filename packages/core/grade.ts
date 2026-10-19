@@ -1,5 +1,5 @@
 import { COMMON, CONFIG } from './config.ts';
-import { stopSideZones, targetSideZones, type Zone } from './zones.ts';
+import { stopSideZones, targetZonesSplit, type Zone } from './zones.ts';
 import type { DailyTrend } from './gates.ts';
 import type { Regime } from './regime.ts';
 import { coilAt } from './patterns/context.ts';
@@ -57,7 +57,7 @@ export function gradeSignal(a: Analysis): GradeResult {
   // 2. Điểm cao
   if (!(a.best.score >= G.minScore)) fail(2, 'điểm cao', `điểm ${vn(a.best.score, 1)} < ${G.minScore}`);
 
-  // 3. Điểm vào đẹp: (a) SL sau vùng đủ mạnh, (b) giá vào sát mép vùng, (c) không có vùng cản trước TP1
+  // 3. Điểm vào đẹp: (a) SL sau vùng đủ mạnh, (b) giá vào sát mép vùng, (c) không có vùng cản MẠNH trước TP1
   const atr = g.atr;
   const why3: string[] = [];
   if (!Number.isFinite(atr) || atr <= 0) {
@@ -90,10 +90,12 @@ export function gradeSignal(a: Analysis): GradeResult {
     // giá vào xa TP1 nhất: lệnh mô hình chia chân thì lấy giá thấp nhất (Long) / cao nhất (Short) trong các chân
     const refs = [plan.marketPrice, plan.entry, ...(pp?.limitPrice != null ? [pp.limitPrice] : [])];
     const ref = side === 'long' ? Math.min(...refs) : Math.max(...refs);
-    const blocking = targetSideZones(g.zones, ref, side).filter((z) => dir * ((side === 'long' ? z.low : z.high) - tp1) <= 0);
+    // B3b: chỉ vùng cản MẠNH (độ mạnh ≥ minSlStrength) tính là chặn; vùng yếu bị bỏ qua như khi chọn TP1
+    // B3b: chỉ vùng cản MẠNH (độ mạnh ≥ minSlStrength) tính là chặn; vùng yếu bị bỏ qua như khi chọn TP1
+    const blocking = targetZonesSplit(g.zones, ref, side).blocking.filter((z) => dir * ((side === 'long' ? z.low : z.high) - tp1) <= 0);
     if (blocking.length > 0) {
       const z = blocking[0]!;
-      why3.push(`có vùng cản ${vn(z.low, 4)}–${vn(z.high, 4)} nằm giữa giá vào và TP1`);
+      why3.push(`có vùng cản mạnh ${vn(z.low, 4)}–${vn(z.high, 4)} nằm giữa giá vào và TP1`);
     }
   }
   if (why3.length > 0) fail(3, 'điểm vào đẹp', why3.join('; '));
