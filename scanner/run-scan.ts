@@ -30,7 +30,7 @@ export type ScanInput = {
   capital: number;
   limit: number | null; // --limit: chỉ quét N hợp đồng thanh khoản cao nhất
   openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3) — máy quét: [] (chỉ thông tin); bot/mô phỏng: danh mục thật tại `now`
-  prevSignals: ReadonlyMap<string, SignalState>; // I5: tín hiệu đang mở theo mã ở lần quét trước (hysteresis, độ mới) — máy quét: Map rỗng
+  prevSignals: ReadonlyMap<string, SignalState>; // I5: tín hiệu gần nhất theo mã (đang mở hoặc đã kết thúc lúc nào) — cập nhật bằng advanceSignalState sau mỗi lần quét; máy quét: Map rỗng
 };
 
 export type ScanResult = {

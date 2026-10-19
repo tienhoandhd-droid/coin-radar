@@ -78,7 +78,7 @@ test('applyTopRank: hạ nhãn thì bỏ cả kế hoạch mô hình', () => {
 
 test('I5 applyTopRank: tín hiệu đang giữ theo hysteresis (held) không bị hạ nhãn vì ngoài top 10%', () => {
   const list = Array.from({ length: 12 }, (_, j) => mk(`S${j}USDT`, 90 - j));
-  const heldOne = { ...mk('HUSDT', 72), signal: { id: 'H', fresh: false, held: true, kind: 'zone' as const } };
+  const heldOne = { ...mk('HUSDT', 72), signal: { id: 'H', fresh: false, held: true, kind: 'zone' as const, side: 'long' as const } };
   const ranks = new Map([...list, heldOne].map((a) => [a.symbol, 0.05]));
   const out = applyTopRank([...list, heldOne], ranks);
   assert.equal(out.find((a) => a.symbol === 'HUSDT')!.label, 'Đạt tiêu chí Long');

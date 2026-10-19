@@ -449,9 +449,29 @@ test('I5: tín hiệu vùng có id tất định + MỚI; cùng dữ liệu qué
   assert.equal(a.signal.fresh, true);
   assert.match(a.signal.id, /^TESTUSDT\|swing\|long\|zone\|\d+\|/);
   assert.equal(analyze(base).signal!.id, a.signal.id, 'tất định');
-  const again = analyze({ ...base, prevSignal: { id: a.signal.id, side: a.plan.side, kind: 'zone' } });
+  const again = analyze({ ...base, prevSignal: { id: a.signal.id, side: a.plan.side, kind: 'zone', endedAt: null } });
   assert.equal(again.signal!.id, a.signal.id);
   assert.equal(again.signal!.fresh, false);
   assert.equal(again.signal!.held, true);
   assert.equal(analyze({ ...base, breakerTripped: true }).signal, null);
+});
+
+// Rà soát B0b: luật đảo chiều qua analyze (base cho Long mạnh; khung xu hướng Swing = 1D)
+test('I5 đảo chiều Short→Long: tín hiệu Short còn mở hoặc vừa kết thúc chưa trọn 1 nến 1D → KHÔNG phát Long; đủ 1 nến → Long MỚI', () => {
+  const now = base.now.getTime();
+  const shortOpen = analyze({ ...base, prevSignal: { id: 'S', side: 'short', kind: 'zone', endedAt: null } });
+  assert.ok(!shortOpen.label.startsWith('Đạt'), shortOpen.label);
+  assert.equal(shortOpen.signal, null);
+  assert.ok(shortOpen.flags.some((f) => /đảo chiều/.test(f)), shortOpen.flags.join(' | '));
+  const justEnded = analyze({ ...base, prevSignal: { id: 'S', side: 'short', kind: 'zone', endedAt: now - 3_600_000 } });
+  assert.equal(justEnded.signal, null);
+  const longAgo = analyze({ ...base, prevSignal: { id: 'S', side: 'short', kind: 'zone', endedAt: now - 3 * 86_400_000 } });
+  assert.equal(longAgo.label, 'Đạt tiêu chí Long');
+  assert.equal(longAgo.signal!.fresh, true);
+});
+
+test('I5 giữ Long qua analyze: chiều giữ được xét trước — tín hiệu Long giữ id cũ, không MỚI', () => {
+  const a = analyze({ ...base, prevSignal: { id: 'OLD', side: 'long', kind: 'zone', endedAt: null } });
+  assert.equal(a.label, 'Đạt tiêu chí Long');
+  assert.deepEqual([a.signal!.id, a.signal!.fresh, a.signal!.held], ['OLD', false, true]);
 });

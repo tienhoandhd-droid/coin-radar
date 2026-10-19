@@ -338,10 +338,10 @@ test('I4 headerWarningLines: luôn nêu G-06 chưa đánh giá đầy đủ; l�
 });
 
 test('I5 planLines: dòng đầu ghi TÍN HIỆU MỚI + id khi có; tín hiệu đang giữ ghi rõ không phải mới', () => {
-  const fresh = planLines({ symbol: 'XUSDT', score: 80, riskTier: 'Vừa', signal: { id: 'XUSDT|swing|long|zone|1|2', fresh: true, held: false, kind: 'zone' } }, base, 0.0001)[0]!;
+  const fresh = planLines({ symbol: 'XUSDT', score: 80, riskTier: 'Vừa', signal: { id: 'XUSDT|swing|long|zone|1|2', fresh: true, held: false, kind: 'zone', side: 'long' } }, base, 0.0001)[0]!;
   assert.match(fresh, /TÍN HIỆU MỚI/);
   assert.match(fresh, /XUSDT\|swing\|long\|zone\|1\|2/);
-  const held = planLines({ symbol: 'XUSDT', score: 65, riskTier: 'Vừa', signal: { id: 'I', fresh: false, held: true, kind: 'zone' } }, base, 0.0001)[0]!;
+  const held = planLines({ symbol: 'XUSDT', score: 65, riskTier: 'Vừa', signal: { id: 'I', fresh: false, held: true, kind: 'zone', side: 'long' } }, base, 0.0001)[0]!;
   assert.match(held, /đang giữ/);
   assert.doesNotMatch(held, /MỚI/);
 });

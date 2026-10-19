@@ -19,7 +19,7 @@ import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from '
 import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
 import { sizeSlippagePct } from './margin.ts';
 import { canOpen, type CanOpenResult, type OpenTrade } from './portfolio.ts';
-import { zoneQualifies, zoneSignalId, signalIdentity, type SignalState, type SignalIdentity } from './signal.ts';
+import { chooseZoneSide, flipAllowed, zoneSignalId, signalIdentity, type SignalState, type SignalIdentity } from './signal.ts';
 
 // Nến cho phần mô hình biểu đồ (kế hoạch 1c), chỉ bắt buộc với hợp đồng trong phạm vi P-G1.
 // c4h / c1d: bối cảnh (vai-đầu-vai, vùng nhiều tháng, coil) và nhận diện Swing; c1h: ATR(1H) tại nến phá.
@@ -189,8 +189,6 @@ export function analyze(i: AnalyzeInput): Analysis {
   };
   const L = applyFunding(long);
   const S = applyFunding(short);
-  const best = L.score >= S.score ? L : S;
-  const plan = best.side === 'long' ? planLong : planShort;
 
   const ev = eventWindow(i.now, i.events, i.mode);
   if (ev.flag) flags.push(`G-07 ${ev.flag}`);
@@ -316,15 +314,32 @@ export function analyze(i: AnalyzeInput): Analysis {
   }
 
   // ---- Tín hiệu theo vùng (như 1b) + bối cảnh P-C1 ----
-  const zoneGates = [
-    ...gatesFor(best, { riskPerUnit: plan.riskPerUnit, entry: plan.entry, notional: plan.notional, valid: plan.valid, note: plan.invalidReason ?? plan.stopReason }),
-    contextGate(context, best.side),
+  const zoneGatesFor = (sc: SideScore, p: TradePlan) => [
+    ...gatesFor(sc, { riskPerUnit: p.riskPerUnit, entry: p.entry, notional: p.notional, valid: p.valid, note: p.invalidReason ?? p.stopReason }),
+    contextGate(context, sc.side),
   ];
-  // I5 hysteresis: vào ≥ 70; tín hiệu vùng cùng chiều đang mở (prevSignal) thì giữ tới khi điểm < 60
-  const zq = zoneQualifies({ score: best.score, gatesPass: zoneGates.every((g) => g.pass), side: best.side, prev: i.prevSignal?.kind === 'zone' ? i.prevSignal : null });
-  if (zq.note) flags.push(zq.note);
-  const zoneOk = zq.ok;
-  const chosen = finalizeSignal({ best, zoneGates, zoneOk, plan, pattern, flags });
+  const gatesLong = zoneGatesFor(L, planLong);
+  const gatesShort = zoneGatesFor(S, planShort);
+  // I5 hysteresis (rà soát B0b #1): xét chiều ĐANG GIỮ trước (giữ khi ≥ 60 và qua cổng); hết giữ thì chiều điểm cao nhất cần ≥ 70
+  const zc = chooseZoneSide({
+    long: { score: L.score, gatesPass: gatesLong.every((g) => g.pass) },
+    short: { score: S.score, gatesPass: gatesShort.every((g) => g.pass) },
+    held: i.prevSignal,
+  });
+  if (zc.note) flags.push(zc.note);
+  const best = zc.side === 'long' ? L : S;
+  const plan = zc.side === 'long' ? planLong : planShort;
+  const zoneGates = zc.side === 'long' ? gatesLong : gatesShort;
+  const picked = finalizeSignal({ best, zoneGates, zoneOk: zc.ok, plan, pattern, flags });
+  // Spec 3.6 (rà soát B0b): không đảo chiều ngay — chiều ngược tín hiệu trước chỉ phát sau trọn 1 nến khung xu hướng kể từ lúc kết thúc
+  const pickedSide = picked.patternSignal?.side ?? picked.plan?.side ?? null;
+  const flipBlocked = pickedSide !== null && !flipAllowed(i.prevSignal, pickedSide, i.now.getTime(), CONFIG[i.mode].trendInterval);
+  if (flipBlocked) {
+    flags.push(`Chặn đảo chiều sang ${pickedSide === 'long' ? 'Long' : 'Short'}: tín hiệu ${i.prevSignal!.side === 'long' ? 'Long' : 'Short'} trước ${i.prevSignal!.endedAt === null ? 'vẫn đang mở' : `kết thúc lúc ${new Date(i.prevSignal!.endedAt).toISOString()}`} — chờ trọn 1 nến ${CONFIG[i.mode].trendInterval.toUpperCase()} (spec 3.6)`);
+  }
+  const chosen = flipBlocked
+    ? { ...picked, label: (picked.best.score >= COMMON.watchScore ? 'Theo dõi' : 'Không đạt') as Label, plan: null, patternSignal: null }
+    : picked;
   // Hạng A/B (Task 8): dữ kiện gom ở đây vì Analysis không giữ nến. TP1 sau phí ở giá khớp XẤU NHẤT cho phép (M2, rà soát cuối 1c):
   // lệnh vùng = worstTp1NetR (market: giá tối đa; limit: giá limit), cùng công thức tp1NetRAt với lệnh mô hình.
   const zoneDir = plan.side === 'long' ? 1 : -1;
