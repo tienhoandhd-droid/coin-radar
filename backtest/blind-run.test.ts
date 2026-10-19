@@ -257,3 +257,19 @@ test('chạy đúng (dữ liệu giả, cửa sổ giả không phải B): truy�
   assert.ok(Math.abs(st.worstLossPct - -2.1) < 1e-9);
   assert.equal(st.worstLossId, 't2');
 });
+
+test('--rerun-after-crash tiếp tục lượt đã đổ: chạy lại ứng viên đổ + ứng viên chưa bắt đầu, KHÔNG chạy lại ứng viên đã xong', async () => {
+  const c3 = { id: 'swing-a0', mode: 'swing' as const, filter: 'all' as const, policy: 'A0' as const, variant: 'exit-A0' };
+  const w = world(md(lockObj({ candidates: [...lockObj().candidates, c3] })));
+  const ok = w.deps.simulate;
+  w.deps.simulate = async (req) => { await ok(req); if (req.candidate.id === 'swing-tp1') throw new Error('đổ giữa chừng'); return fakeResult(req.capital); };
+  await assert.rejects(runBlind(args, w.deps), /đổ giữa chừng/);
+  assert.deepEqual(w.calls.map((c) => c.candidate.id), ['swing-base', 'swing-tp1']);
+  w.deps.simulate = ok;
+  await runBlind({ ...args, rerunAfterCrash: 'swing-tp1' }, w.deps);
+  assert.deepEqual(w.calls.map((c) => c.candidate.id), ['swing-base', 'swing-tp1', 'swing-tp1', 'swing-a0']);
+  const base = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-base/started.json'), 'utf8'));
+  assert.equal(base.attempts.length, 1);
+  const a0 = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-a0/summary.json'), 'utf8'));
+  assert.equal(a0.blind.rerunAfterCrash, false);
+});

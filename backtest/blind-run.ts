@@ -12,7 +12,7 @@
 // lệch chế độ, policy hoặc filter của chính biến thể; output/blind/<id>/ đã có lần chạy.
 // MỘT LẦN MỖI ỨNG VIÊN: output/blind/<id>/started.json được ghi TRƯỚC khi mô phỏng bắt đầu → tiến trình đổ giữa chừng không cho chạy lại âm
 // thầm; muốn chạy lại phải có --rerun-after-crash <id> (chỉ khi chưa có summary.json; cờ được ghi vào started.json và summary.json, và
-// lượt đó chỉ chạy ứng viên ấy). summary.json ghi SAU CÙNG = lần chạy đã xong.
+// lượt đó chạy lại ứng viên ấy rồi các ứng viên CHƯA bắt đầu; ứng viên đã xong không chạy lại). summary.json ghi SAU CÙNG = đã xong.
 //
 // configHash = sha256(canonicalJson({ CONFIG, COMMON })) — canonicalJson: JSON với khóa đối tượng sắp xếp bằng Array.sort() mặc định (thứ tự
 // mã UTF-16), không khoảng trắng; số không hữu hạn → lỗi. Tính lúc chưa áp ghi đè nào (mặc định trong packages/core/config.ts).
@@ -166,7 +166,13 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
     if (c === undefined) throw new Error(`--rerun-after-crash: không có ứng viên "${rerun}" trong tệp khóa`);
     if (!existsSync(join(dirOf(rerun), 'started.json'))) throw new Error(`--rerun-after-crash ${rerun}: chưa có lần chạy nào để chạy lại`);
     if (existsSync(join(dirOf(rerun), 'summary.json'))) throw new Error(`Từ chối: ứng viên "${rerun}" đã chạy XONG trên kỳ mù — không chạy lại`);
-    todo = [c];
+    // tiếp tục lượt đã đổ: chạy lại <id>, rồi các ứng viên CHƯA bắt đầu; ứng viên đã xong giữ nguyên (không chạy lại)
+    for (const x of lock.candidates) {
+      if (x.id !== rerun && existsSync(dirOf(x.id)) && !existsSync(join(dirOf(x.id), 'summary.json'))) {
+        throw new Error(`Từ chối: ứng viên "${x.id}" cũng có marker mà chưa xong — chỉ chạy lại một ứng viên mỗi lượt`);
+      }
+    }
+    todo = [c, ...lock.candidates.filter((x) => x.id !== rerun && !existsSync(dirOf(x.id)))];
   } else {
     for (const c of todo) {
       const dir = dirOf(c.id);
