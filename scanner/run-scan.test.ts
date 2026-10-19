@@ -149,3 +149,15 @@ test('đệm funding máy quét: không tải được → mức thận trọng 
   const b = await runScan(input({ fundingMaxAbsLoader: async () => { throw new Error('HTTP 429 quá tải'); } }));
   assert.equal(b.banned, true);
 });
+
+test('Task 8: luật vào lệnh mới áp sau khi chấm (ScanResult.entryBlocks); #7 Swing chỉ quét N mã thanh khoản cao nhất', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  const plain = await runScan(input());
+  assert.equal(plain.entryBlocks.size, 0, 'mặc định không chặn');
+  await withConfigOverride({ 'COMMON.entryRules.swingTrendOnly': true, 'COMMON.entryRules.swingUniverseSize': 2 }, async () => {
+    const r = await runScan(input());
+    assert.equal(r.universeSize, 2);
+    const dat = r.results.filter((a) => a.label.startsWith('Đạt'));
+    assert.equal(r.entryBlocks.size, r.regime.regime === 'sideways' ? dat.length : 0);
+  });
+});

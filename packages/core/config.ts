@@ -233,6 +233,18 @@ export const COMMON = {
     minFlowShare: 0.7, // tiêu chí 6: điểm S-02 (dòng tiền taker) ≥ mức này × điểm tối đa của S-02 — đề xuất, chưa backtest
     coilLookbackBars: 6, // tiêu chí 6: coil bật ở một nến 4H trong số nến này (không kể nến cuối) và nến cuối đóng ra ngoài biên của chúng theo chiều lệnh = "vừa bung" — xấp xỉ, đề xuất, chưa backtest
   },
+  // Luật vào lệnh MỚI thử ở Task 8 (kế hoạch 2) — reports/Nghiên cứu cải thiện lợi nhuận.md. Mặc định = hành vi hiện tại (tắt). Áp sau khi quét
+  // (packages/core/entry-filters.ts → ScanResult.entryBlocks): máy quét in lý do, bot/mô phỏng không vào lệnh mới bị chặn. Đề xuất, chưa backtest.
+  entryRules: {
+    swingTrendOnly: false as boolean, // #4: Swing không mở lệnh mới khi chế độ Đi ngang
+    shortAsym: false as boolean, // #5: Short chỉ khi chế độ Xuống + RS so BTC thuộc nhóm yếu nhất + funding TB ≥ 0
+    shortRsBottomPct: 20, // #5: % yếu nhất theo z sức mạnh tương đối (mặt cắt ngang các mã đã chấm, tại thời điểm quét)
+    shortFundingDays: 3, // #5: số ngày tính funding TB (kỳ đã chốt)
+    swingUniverseSize: null as number | null, // #7: Swing chỉ quét N hợp đồng thanh khoản cao nhất (như fastUniverseSize); null = mọi hợp đồng
+    swingLongRsTopHalf: false as boolean, // #7: Long Swing cần z sức mạnh tương đối ≥ trung vị các mã đã chấm
+    fundingXsPct: null as number | null, // #8: Long khi phân vị funding TB ≤ mức này (%), Short khi ≥ mức này; null = tắt
+    fundingXsDays: 7, // #8: số ngày tính funding TB
+  },
   // Phí sàn USDⓈ-M (ví dụ Regular User: maker 0,02%, taker 0,05% — bài hỗ trợ Binance 360033544231, sàn ghi là ví dụ). makerTakerSplit = false
   // (mặc định): mọi lần khớp trả nửa phí nhóm costRoundTripPct (gồm trượt). true: lệnh LIMIT vào lệnh (GTD, maker) chỉ trả makerPct, không
   // trượt; lệnh khớp kiểu market (IOC, STOP/TP/TRAILING_STOP_MARKET) giữ nửa phí nhóm (= taker + trượt nền). Dùng ở sàn chi phí (#1) và mô phỏng.

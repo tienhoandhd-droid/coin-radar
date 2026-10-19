@@ -50,7 +50,9 @@ export const cooldownMs = (mode: Mode) => 2 * ENTRY_BAR_MS[mode];
 const inc = (m: Map<string, number>, k: string, n = 1) => m.set(k, (m.get(k) ?? 0) + n);
 
 // Tín hiệu được thử vào lệnh tại t (theo thứ tự kết quả). skip đếm lý do bỏ.
-export function pickCandidates(results: readonly Analysis[], filter: Filter, st: PickState, t: number, skip: Map<string, number>): Pick[] {
+// blocks: luật vào lệnh mới của Task 8 (ScanResult.entryBlocks) — bị chặn thì bỏ, đếm theo từng luật (#4, #5, …).
+export function pickCandidates(results: readonly Analysis[], filter: Filter, st: PickState, t: number, skip: Map<string, number>,
+  blocks: ReadonlyMap<string, string> = new Map()): Pick[] {
   const out: Pick[] = [];
   for (const a of results) {
     if (!a.label.startsWith('Đạt')) continue;
@@ -59,6 +61,11 @@ export function pickCandidates(results: readonly Analysis[], filter: Filter, st:
     if (p === null || a.signal === null) continue;
     if (!a.signal.fresh) { inc(skip, 'không MỚI (đang giữ)'); continue; }
     if (filter === 'A' && a.grade?.grade !== 'A') { inc(skip, 'không phải Hạng A'); continue; }
+    const blocked = blocks.get(a.symbol);
+    if (blocked !== undefined) {
+      for (const rule of new Set(blocked.match(/#\d+/g) ?? ['?'])) inc(skip, `luật vào lệnh ${rule}`);
+      continue;
+    }
     const key = signalDedupeKey({ symbol: a.symbol, signalId: a.signal.id, pattern: ps === null ? null : { patternId: ps.patternId, breakoutTime: ps.breakoutTime } });
     if (st.used.has(key)) { inc(skip, 'trùng khóa tín hiệu'); continue; }
     if (st.active.has(a.symbol)) { inc(skip, 'hợp đồng đang có lệnh'); continue; }
@@ -234,7 +241,7 @@ async function simulate(o: RunOptions) {
     stats.signalsDat += dat.length;
     stats.signalsA += dat.filter((a) => a.grade?.grade === 'A').length;
     if (isPaused(book, t)) { stats.pausedSignals += dat.length; continue; }
-    for (const pick of pickCandidates(r.results, o.filter, st, t, skip)) {
+    for (const pick of pickCandidates(r.results, o.filter, st, t, skip, r.entryBlocks)) {
       const a = pick.a;
       const contract = input.contracts.find((c) => c.symbol === a.symbol);
       const premium = input.premiums.get(a.symbol);

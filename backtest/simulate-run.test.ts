@@ -95,3 +95,13 @@ test('H0: runSimulation áp configOverride trong lúc chạy và trả lại c�
   assert.equal(CONFIG.swing.timeStopHours, ts);
   await assert.rejects(runSimulation({ ...base, configOverride: { 'CONFIG.swing.khongCo': 3 } }), /khóa không có trong config.ts/);
 });
+
+test('Task 8: tín hiệu bị luật vào lệnh chặn (ScanResult.entryBlocks) → không vào, đếm theo luật, KHÔNG đánh dấu đã dùng', () => {
+  const st = fresh();
+  const skip = new Map<string, number>();
+  const blocks = new Map([['BUSDT', '#4 Swing không vào lệnh mới khi chế độ Đi ngang; #5 thiếu funding 3 ngày']]);
+  assert.deepEqual(pickCandidates([an('AUSDT'), an('BUSDT')], 'all', st, T, skip, blocks).map((p) => p.a.symbol), ['AUSDT']);
+  assert.equal(skip.get('luật vào lệnh #4'), 1);
+  assert.equal(skip.get('luật vào lệnh #5'), 1);
+  assert.equal(st.used.size, 0);
+});

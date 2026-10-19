@@ -4,6 +4,7 @@ import { inPatternScope } from '../packages/core/gates.ts';
 import { candleProblems } from '../packages/core/candles.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
 import { fundingFallbackRate } from '../packages/core/sizing.ts';
+import { entryBlocks } from '../packages/core/entry-filters.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } from '../packages/core/types.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
@@ -38,6 +39,9 @@ export type ScanInput = {
   // Máy quét chạy thật (scanner/funding-history.ts): tải |funding| lớn nhất 30 ngày CHỈ cho mã Đạt tiêu chí (hạn mức 500 lệnh/5 phút),
   // rồi chấm lại mã đó với đệm đúng như planner. Lỗi (trừ 418/429) → mức thận trọng fundingFallbackRate + ghi chú trên kết quả.
   fundingMaxAbsLoader?: (symbol: string) => Promise<number>;
+  // Funding TB có dấu mỗi kỳ trong N ngày tới `now` (kỳ đã chốt) theo mã — cho luật vào lệnh #5/#8 (COMMON.entryRules). Không có → các luật
+  // đó chặn vì thiếu funding (fail closed). Phát lại: từ bộ đệm; máy quét: chưa tải (luật mặc định tắt).
+  fundingMean?: (symbol: string, days: number) => number | null;
   prevSignals: ReadonlyMap<string, SignalState>; // I5: tín hiệu gần nhất theo mã (đang mở hoặc đã kết thúc lúc nào) — cập nhật bằng advanceSignalState sau mỗi lần quét; máy quét: Map rỗng
 };
 
@@ -49,6 +53,7 @@ export type ScanResult = {
   universeSize: number;
   inScope: number; // số hợp đồng thuộc phạm vi mô hình P-G1
   results: Analysis[]; // đã áp applyTopRank
+  entryBlocks: Map<string, string>; // Task 8: mã → lý do KHÔNG vào lệnh mới theo COMMON.entryRules (core/entry-filters.ts); bot/mô phỏng bỏ qua tín hiệu này
   errors: Array<{ symbol: string; error: string }>;
   banned: boolean; // Binance chặn (418/429) → đã dừng giữa chừng
 };
@@ -80,6 +85,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
 
   let universe = [...contracts].sort((a, b) => (ranks.get(a.symbol) ?? 1) - (ranks.get(b.symbol) ?? 1));
   if (mode === 'fast') universe = universe.slice(0, COMMON.fastUniverseSize);
+  if (mode === 'swing' && COMMON.entryRules.swingUniverseSize !== null) universe = universe.slice(0, COMMON.entryRules.swingUniverseSize); // #7 (hạng tại now)
   if (input.limit !== null) universe = universe.slice(0, input.limit);
 
   const results: Analysis[] = [];
@@ -154,5 +160,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
     }
   }
 
-  return { regime, breaker, btcReclaim, ranks, universeSize: universe.length, inScope, results: applyTopRank(results, ranks), errors, banned };
+  const ranked = applyTopRank(results, ranks);
+  const entryBlocksMap = entryBlocks(ranked, { mode, regime: regime.regime, ...(input.fundingMean ? { fundingMean: input.fundingMean } : {}) });
+  return { regime, breaker, btcReclaim, ranks, universeSize: universe.length, inScope, results: ranked, entryBlocks: entryBlocksMap, errors, banned };
 }
