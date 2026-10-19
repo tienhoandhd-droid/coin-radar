@@ -30,3 +30,8 @@ test('kế hoạch 1c: có mã cổng mô hình P-G1, P-G2, bối cảnh P-C1, c
   assert.equal(ruleByCode('P-C2').status, 'display');
   assert.match(ruleByCode('P-G2').source, /Mô hình biểu đồ cho BTC/);
 });
+
+test('cấu hình mô hình: điểm tối thiểu phía tín hiệu mô hình = 70 (người dùng chọn giữ 19/10/2026)', async () => {
+  const { COMMON } = await import('./config.ts');
+  assert.equal(COMMON.patterns.minSideScore, 70);
+});

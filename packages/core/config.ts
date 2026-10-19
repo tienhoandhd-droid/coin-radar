@@ -95,7 +95,6 @@ export const COMMON = {
       tripleTouches: 3, // từ mức này ở một biên thì ghi chú ba đỉnh/ba đáy — đề xuất, chưa backtest
       minHeightAtr: 3, // chiều cao tối thiểu (×A) — đề xuất, chưa backtest
       minBars: 20, // thời lượng tối thiểu (nến) — đề xuất, chưa backtest
-      stopMaxAtr: 3, // cắt lỗ xa hơn mức này (×A) thì dùng giữa vùng — đề xuất, chưa backtest
     },
     double: {
       tolAtr: 0.5, // hai đỉnh/đáy lệch ≤ min(mức này ×A, tolPct% giá) — đề xuất, chưa backtest
@@ -112,6 +111,7 @@ export const COMMON = {
       apexMaxRatio: 3, // apex cách pivot cuối ≤ mức này × chiều dài mô hình — đề xuất, chưa backtest
       maxCloseBreachAtr: 0.25, // close vượt đường tối đa (×A) — đề xuất, chưa backtest
       minBars: 15, // thời lượng tối thiểu (nến) — đề xuất, chưa backtest
+      classifyBandAtr: 0.01, // dải đệm quanh ngưỡng phẳng (×A mỗi nến): |dốc| trong flatSlopeAtr ± mức này là 'không rõ' → hai cạnh cùng hướng vào trong thì xếp tam giác cân, còn lại bỏ — đề xuất, chưa backtest
       maxPivots: 10, // số pivot tối đa trong một cửa sổ xét (giới hạn chi phí tính) — đề xuất, chưa backtest
     },
     flag: {
@@ -144,7 +144,6 @@ export const COMMON = {
       tripleTouches: 3, // như chữ nhật — đề xuất, chưa backtest
       minHeightAtr: 3, // như chữ nhật — đề xuất, chưa backtest
       minBars: 60, // thời lượng tối thiểu (nến 1D) — đề xuất, chưa backtest
-      stopMaxAtr: 3, // như chữ nhật (chỉ để dùng chung hàm dựng vùng) — đề xuất, chưa backtest
       confirmAtr: 0.5, // phá được xác nhận khi đóng ngoài biên ≥ mức này (×A 1D) — đề xuất, chưa backtest
       confirmCloses: 2, // hoặc số nến 1D liên tiếp đóng ngoài biên — đề xuất, chưa backtest
       nearAtr: 1, // 'ngay dưới/trên biên' = trong khoảng này (×A 1D) — đề xuất, chưa backtest
@@ -152,7 +151,8 @@ export const COMMON = {
     // Kế hoạch lệnh theo mô hình (báo cáo mục (2) đệm cắt lỗ, (3), (4); quyết định người dùng 19/10/2026) — ĐỀ XUẤT, CHƯA BACKTEST
     plan: {
       stopBufferAtr: 0.5, // SL = mức cắt lỗ của mô hình ± đệm (×A); báo cáo cho khoảng 0,25–0,5, chọn mức rộng — đề xuất, chưa backtest
-      maxRiskAtr: 3, // R = |giá vào − SL| > mức này (×A khung vào lệnh) → bỏ lệnh — đề xuất, chưa backtest
+      maxRiskAtr: 3, // R = |giá vào − SL| > mức này (×A khung vào lệnh) → bỏ lệnh (mặc định mọi loại) — đề xuất, chưa backtest
+      maxRiskAtrByKind: { double_top: 4, double_bottom: 4 }, // trần R riêng cho hai đỉnh/hai đáy — người dùng chọn 19/10/2026, chưa backtest
       targetRatio: { asc_triangle: 0.7, double_bottom: 0.73, head_shoulders: 0.51 }, // p của Bulkowski: T_ngắn = đường phá ± h×p — đề xuất, chưa backtest
       defaultTargetRatio: 0.5, // p khi không có số liệu — đề xuất, chưa backtest
       flagPoleRatio: 0.46, // cờ: T_đủ = đáy cờ (Short: đỉnh cờ) ± cán × mức này — đề xuất, chưa backtest
@@ -180,6 +180,7 @@ export const COMMON = {
     // Số nến tải thêm cho hợp đồng trong phạm vi mô hình (P-G1): 1H để đo ATR(1H) tại nến phá (Swing), 4H/1D cho bối cảnh (Lướt nhanh).
     // 1D 300 nến để EMA200 của vai-đầu-vai 1D có giá trị — đề xuất, chưa backtest
     fetchBars: { h1: 300, h4: 500, d1: 300 },
+    minSideScore: 70, // tín hiệu mô hình cần điểm phía đó ≥ mức này — người dùng chọn giữ 70, 19/10/2026 (đề xuất, chưa backtest)
     maxSignalAgeBars: 10, // breakout/retested cũ hơn mức này (nến khung nhận diện) → signalStale, không lập kế hoạch lệnh — đề xuất, chưa backtest
     state: {
       confirmAtr: { '15m': 0.5, '1h': 0.5, '4h': 0.25, '1d': 0.25 }, // đóng cửa vượt đường phá ≥ mức này (×A) mới là phá vỡ; 0 đến mức này → breakout_pending — đề xuất, chưa backtest

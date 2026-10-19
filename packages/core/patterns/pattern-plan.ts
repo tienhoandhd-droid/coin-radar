@@ -109,6 +109,7 @@ function stopLabel(kind: PatternKind, side: Side): string {
   if (kind === 'double_top' || kind === 'double_bottom') return side === 'long' ? 'Đáy thấp hơn' : 'Đỉnh cao hơn';
   if (kind === 'head_shoulders' || kind === 'inv_head_shoulders') return 'Vai phải';
   if (isTriangle(kind)) return 'Pivot gần nhất phía đối diện';
+  if (kind === 'rectangle') return 'Pivot nhỏ phía trong (không có thì giữa vùng)';
   return 'Mức cắt lỗ của mô hình';
 }
 
@@ -323,6 +324,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const netR = (f: number) => (dir * (tp1 - f) - costFrac * f) / Math.abs(f - stop);
   const minR = isFlag(g.kind) ? P.flagMinTp1R : P.minTp1R;
   const tp1NetR = netR(worstEntry);
+  const maxRisk = (P.maxRiskAtrByKind as Partial<Record<PatternKind, number>>)[g.kind] ?? P.maxRiskAtr; // hai đỉnh/hai đáy: 4×A (người dùng chọn)
   const riskAtr = Math.abs(worstEntry - stop) / A;
 
   // Giá tối đa cho chân market: ≤ maxEntryAtr×A, R ≤ maxRiskAtr×A, và TP1 sau phí ≥ minR
@@ -331,8 +333,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   if (entryType !== 'limit') {
     const capFill = (tp1 + minR * stop) / (1 + minR + dir * costFrac);
     const raw = side === 'long'
-      ? Math.min(marketPrice + cfg.maxEntryAtr * A, stop + P.maxRiskAtr * A, capFill)
-      : Math.max(marketPrice - cfg.maxEntryAtr * A, stop - P.maxRiskAtr * A, capFill);
+      ? Math.min(marketPrice + cfg.maxEntryAtr * A, stop + maxRisk * A, capFill)
+      : Math.max(marketPrice - cfg.maxEntryAtr * A, stop - maxRisk * A, capFill);
     const snapped = snapToTick(raw, tick, toward);
     maxEntry = side === 'long' ? Math.max(snapped, marketPrice) : Math.min(snapped, marketPrice);
   }
@@ -385,7 +387,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     const z = zoneContaining(a.zones, limitPrice);
     if (z) problems.push(`Giá limit ${fp(limitPrice)} nằm trong vùng ${dz(z)} — không đặt limit trong vùng`);
   }
-  if (riskAtr > P.maxRiskAtr) problems.push(`R = ${vn(riskAtr, 2)}×A > ${P.maxRiskAtr}×A — cắt lỗ quá xa, bỏ lệnh`);
+  if (riskAtr > maxRisk) problems.push(`R = ${vn(riskAtr, 2)}×A > ${maxRisk}×A — cắt lỗ quá xa, bỏ lệnh`);
   if (tp1NetR < minR) {
     problems.push(`TP1 chỉ ${vn(tp1NetR, 2)}R sau phí + funding < ${num(minR)}R${isFlag(g.kind) ? ' (cờ cần ≥ 1,5R)' : ''} — bỏ lệnh`);
   }

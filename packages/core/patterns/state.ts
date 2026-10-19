@@ -160,7 +160,17 @@ const RANK: Record<PatternState, number> = {
 
 // Bước 1: cùng id (patternId) → chỉ giữ bản hình học phát ĐẦU TIÊN (endIndex nhỏ nhất); các bản phát lại sau (vd. cờ vẽ lại
 // ở nến sau) không được ghi đè hay làm sống lại trạng thái đã kết thúc. Người gọi phải tính `result` từ chính hình học đó.
-// Bước 2: mỗi (loại, khung) chỉ giữ một mô hình trong các cửa sổ chồng nhau: ưu tiên hạng cao, rồi kết thúc muộn nhất, rồi bắt đầu muộn nhất.
+// Bước 2: mỗi (HỌ mô hình, khung) chỉ giữ một mô hình trong các cửa sổ chồng nhau — họ: tam giác {tăng, giảm, cân},
+// cờ {tăng, giảm}, hai đỉnh/hai đáy, vai-đầu-vai {đỉnh, ngược}; còn lại mỗi loại một họ.
+// Ưu tiên: hạng trạng thái cao, rồi nhiều chạm (pivot) hơn, rồi kết thúc muộn nhất, rồi bắt đầu muộn nhất.
+// (trackPatterns đã chọn sẵn một bản phát cho mỗi id; bước 1 ở đây chỉ còn là chốt an toàn khi gọi trực tiếp.)
+export function patternFamily(kind: PatternGeometry['kind']): string {
+  if (kind === 'asc_triangle' || kind === 'desc_triangle' || kind === 'sym_triangle') return 'triangle';
+  if (kind === 'bull_flag' || kind === 'bear_flag') return 'flag';
+  if (kind === 'double_top' || kind === 'double_bottom') return 'double';
+  if (kind === 'head_shoulders' || kind === 'inv_head_shoulders') return 'hs';
+  return kind;
+}
 export function dedupePatterns<T extends { id: string; geometry: PatternGeometry; result: StateResult }>(items: T[]): T[] {
   const firstById = new Map<string, T>();
   for (const t of items) {
@@ -169,13 +179,13 @@ export function dedupePatterns<T extends { id: string; geometry: PatternGeometry
   }
   const rank = (t: T) => RANK[t.result.state] - (t.result.signalStale ? 3 : 0);
   const sorted = [...firstById.values()].sort(
-    (x, y) => rank(y) - rank(x) || y.geometry.endIndex - x.geometry.endIndex || y.geometry.startIndex - x.geometry.startIndex,
+    (x, y) => rank(y) - rank(x) || y.geometry.pivots.length - x.geometry.pivots.length || y.geometry.endIndex - x.geometry.endIndex || y.geometry.startIndex - x.geometry.startIndex,
   );
   const kept: T[] = [];
   for (const t of sorted) {
     const g = t.geometry;
     const clash = kept.some(
-      (u) => u.geometry.kind === g.kind && u.geometry.timeframe === g.timeframe && u.geometry.startIndex <= g.endIndex && g.startIndex <= u.geometry.endIndex,
+      (u) => patternFamily(u.geometry.kind) === patternFamily(g.kind) && u.geometry.timeframe === g.timeframe && u.geometry.startIndex <= g.endIndex && g.startIndex <= u.geometry.endIndex,
     );
     if (!clash) kept.push(t);
   }

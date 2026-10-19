@@ -136,3 +136,23 @@ test('chống look-ahead: chạy từng tiền tố khớp chạy cả chuỗi (
   }
   assert.ok(compared > 0);
 });
+
+test('P3: độ dốc sát ngưỡng phẳng (trong dải đệm) → không gọi là tam giác tăng; cả hai cạnh hướng vào trong → tam giác cân', () => {
+  // A = 2 → ngưỡng phẳng 0,06/nến, dải đệm ±0,02/nến. Cạnh trên −0,052/nến (−0,026A), cạnh dưới +0,068/nến (+0,034A):
+  // trước đây: trên "phẳng", dưới "dốc lên" → tam giác tăng. Nay: cả hai trong dải đệm và hướng vào trong → tam giác cân.
+  const up = (i: number) => 120 - 0.052 * i;
+  const low = (i: number) => 100 + 0.068 * i;
+  const p = [hi(0, up(0)), lo(10, low(10)), hi(20, up(20)), lo(30, low(30)), hi(40, up(40)), lo(50, low(50)), hi(60, up(60)), lo(70, low(70)), hi(80, up(80))];
+  const r = detectTriangles(between(100, up, low), p, A(100, 2));
+  assert.ok(r.length > 0);
+  assert.ok(r.every((g) => g.kind !== 'asc_triangle'), r.map((g) => g.kind).join(','));
+  assert.equal(r[r.length - 1]!.kind, 'sym_triangle');
+  assert.ok(COMMON.patterns.triangle.classifyBandAtr > 0);
+});
+
+test('P3: một cạnh trong dải đệm, cạnh kia hướng ra ngoài → bỏ (không phân loại)', () => {
+  const up = (i: number) => 120 + 0.05 * i; // +0,025A: sát ngưỡng nhưng hướng ra ngoài
+  const low = (i: number) => 100 + 0.3 * i;
+  const p = [hi(0, up(0)), lo(10, low(10)), hi(20, up(20)), lo(30, low(30)), hi(40, up(40)), lo(50, low(50))];
+  assert.equal(detectTriangles(between(80, up, low), p, A(80, 2)).length, 0);
+});

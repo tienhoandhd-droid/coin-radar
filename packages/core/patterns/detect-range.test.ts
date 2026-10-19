@@ -29,17 +29,17 @@ test('chữ nhật hợp lệ: 2 chạm mỗi biên, h ≥ 3A, ≥ 20 nến', ()
   assert.ok(Math.abs(last.lower(0) - 100.2) < 1e-9);
   assert.ok(Math.abs(last.height - 20.05) < 1e-9);
   assert.deepEqual(last.notes, []);
-  // cắt lỗ: R = 20 > 3A = 6 → dùng giữa vùng
+  // mức cắt lỗ dự phòng của bộ nhận diện = giữa vùng; pivot nhỏ phía trong được chọn lúc phá (rectangleStopRef)
   assert.ok(Math.abs(last.stopRef.up - 110.225) < 1e-9);
   assert.ok(Math.abs(last.stopRef.down - 110.225) < 1e-9);
 });
 
-test('cắt lỗ dùng pivot trong gần nhất khi R ≤ 3A, ngược lại dùng giữa vùng', () => {
-  // A=6: dung sai 3; đáy 100 và 102 cùng vùng. h = 120 - 101 = 19 ≥ 18.
+test('P1: bộ nhận diện không lấy lần chạm biên đối diện làm "pivot phía trong" — dự phòng luôn là giữa vùng', () => {
+  // A=6: dung sai 3; đáy 100 và 102 cùng vùng. Trước đây stopRef.up = 102 (chính lần chạm biên dưới).
   const p = [hi(5, 120), lo(15, 100), hi(25, 120), lo(35, 102)];
   const g = detectRectangles(flat(60), p, A(60, 6)).pop()!;
-  assert.equal(g.stopRef.up, 102); // R = 120 - 102 = 18 ≤ 18 → đáy gần nhất
-  assert.equal(g.stopRef.down, 110.5); // R = 120 - 101 = 19 > 18 → giữa vùng
+  assert.equal(g.stopRef.up, 110.5);
+  assert.equal(g.stopRef.down, 110.5);
 });
 
 test('biên lệch quá dung sai 0,5×A thì không gom vào cùng vùng', () => {
@@ -115,4 +115,71 @@ test('chống look-ahead: chạy từng tiền tố khớp chạy cả chuỗi (
     compared += pre.length;
   }
   assert.ok(compared > 0);
+});
+
+// ---------- P1: pivot nhỏ phía trong lúc phá ----------
+import { rectangleStopRef } from './detect-range.ts';
+import { buildPatternPlan } from './pattern-plan.ts';
+import type { PatternGeometry } from './types.ts';
+
+// Chữ nhật 105..110 (h = 5A, A = 1). Chạm trên 10/30/50, chạm dưới 20/40. Sau lần chạm trên cuối (50), giá đi ngang sát biên trên
+// với một đáy nhỏ 109,5 ở nến 55 (đủ 3 nến mỗi bên). Nến 60 phá lên đóng 110,3.
+const H4 = 4 * 3600_000;
+const kc = (i: number, high: number, low: number, close: number): Candle =>
+  ({ openTime: i * H4, closeTime: (i + 1) * H4 - 1, open: close, high, low, close, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 });
+function innerSeries(withInner = true): Candle[] {
+  const c: Candle[] = [];
+  for (let i = 0; i <= 50; i++) {
+    const high = i === 10 || i === 30 || i === 50 ? 110 : 108;
+    const low = i === 20 || i === 40 ? 105 : 107.5;
+    c.push(kc(i, high, low, 107.75));
+  }
+  for (let i = 51; i <= 59; i++) {
+    const low = withInner ? (i === 55 ? 109.5 : 109.6) : 107.5;
+    c.push(kc(i, withInner ? 109.9 : 108, low, withInner ? 109.75 : 107.75));
+  }
+  c.push(kc(60, 110.4, 109.8, 110.3));
+  return c;
+}
+const rectG: PatternGeometry = {
+  kind: 'rectangle', timeframe: '4h', pivots: [hi(10, 110), lo(20, 105), hi(30, 110), lo(40, 105), hi(50, 110)],
+  startIndex: 10, endIndex: 50, upper: () => 110, lower: () => 105, breakoutSide: 'both', height: 5,
+  stopRef: { up: 107.5, down: 107.5 }, quality: 1, notes: [],
+};
+
+test('P1: rectangleStopRef lấy đáy nhỏ gần nhất sau lần chạm biên trên cuối, trước nến phá, nằm hẳn trong vùng', () => {
+  const r = rectangleStopRef(innerSeries(), rectG, 'up', 60);
+  assert.equal(r.price, 109.5);
+  assert.match(r.note, /pivot nhỏ phía trong/);
+  const none = rectangleStopRef(innerSeries(false), rectG, 'up', 60);
+  assert.equal(none.price, 107.5); // không có → giữa vùng
+  assert.match(none.note, /giữa vùng/);
+  // pivot chỉ tính khi đã xác nhận trước/đúng nến phá: phá ở nến 57 thì đáy 55 chưa xác nhận (cần nến 58)
+  assert.equal(rectangleStopRef(innerSeries(), rectG, 'up', 57).price, 107.5);
+});
+
+test('P1: chữ nhật h = 5A với pivot phía trong sát biên → kế hoạch hợp lệ, TP1 ≥ 1R (tính tay); giữa vùng → R > 3A bị bỏ', () => {
+  const c = innerSeries();
+  const st = { state: 'breakout' as const, breakoutIndex: 60, side: 'up' as const, breakoutLine: 110, distanceAtr: 0.3, retest: null, notes: [], signalStale: false, inBreakoutWindow: null };
+  const args = (g: PatternGeometry) => ({
+    mode: 'swing' as const, geometry: g, state: st, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1, zones: [], multiMonth: null,
+    btcSma200ReclaimedAt: null, capital: 10_000, riskPct: 0.5, costTier: 'high' as const, tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8,
+  });
+  const inner = rectangleStopRef(c, rectG, 'up', 60).price;
+  const r = buildPatternPlan(args({ ...rectG, stopRef: { ...rectG.stopRef, up: inner } }));
+  assert.equal(r.status, 'ready', r.reason ?? '');
+  const p = r.plan!;
+  // SL = 109,5 − 0,5×A = 109,00; d = 0,3A → market; R = 110,3 − 109 = 1,3 = 1,3A
+  assert.equal(p.stop, 109);
+  assert.equal(p.entryType, 'market');
+  assert.ok(Math.abs(p.riskAtr - 1.3) < 1e-9);
+  // TP1 = T_ngắn = 110 + 5×0,5 = 112,5; chi phí = 0,25% + funding 0,01%×21 kỳ = 0,46% giá
+  assert.equal(p.targets[0]!.price, 112.5);
+  const hand = (112.5 - 110.3 - 0.0046 * 110.3) / 1.3; // = 1,302
+  assert.ok(Math.abs(p.tp1NetR - hand) < 1e-9, `${p.tp1NetR} vs ${hand}`);
+  assert.ok(p.tp1NetR >= 1);
+  // Cùng mô hình, dùng giữa vùng 107,5 → SL 107, R = 3,3A > 3A → bỏ (lỗi cũ)
+  const mid = buildPatternPlan(args(rectG));
+  assert.equal(mid.status, 'rejected');
+  assert.match(mid.reason!, /R = 3,30×A > 3×A/);
 });

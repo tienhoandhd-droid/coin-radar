@@ -431,3 +431,23 @@ test('tích hợp: trạng thái từ evaluateState trên chữ nhật thật �
   assert.equal(p.breakoutLine, 110);
   assert.equal(COMMON.patterns.plan.limitExpiryBars, 10);
 });
+
+// ---------- Người dùng chọn 19/10/2026: trần R riêng cho hai đỉnh/hai đáy = 4×A ----------
+test('hai đáy: R trong (3; 4]×A không còn bị trần R loại; R > 4×A vẫn bị loại; loại khác vẫn trần 3×A', () => {
+  assert.equal(COMMON.patterns.plan.maxRiskAtrByKind.double_bottom, 4);
+  assert.equal(COMMON.patterns.plan.maxRiskAtrByKind.double_top, 4);
+  // cổ 110, đáy thấp hơn 107 → SL 106,5; giá 110,3 → R = 3,8A
+  const db = (bottom: number) => geom({ kind: 'double_bottom', breakoutSide: 'up', upper: () => 110, lower: () => bottom, height: 110 - bottom, stopRef: { up: bottom, down: 110 } });
+  const r38 = buildPatternPlan(args({ close: 110.3, geometry: db(107), zones: [] }));
+  assert.ok(r38.plan && Math.abs(r38.plan.riskAtr - 3.8) < 1e-9);
+  assert.doesNotMatch(r38.reason ?? '', /R = .*×A >/, 'không còn bị trần R loại');
+  // Toán: TP1 ≤ T_ngắn = cổ + 0,73h, R ≥ h + 0,5A + d → TP1 luôn < 0,73R: vẫn bỏ vì TP1 < 1R
+  assert.equal(r38.status, 'rejected');
+  assert.match(r38.reason!, /TP1 chỉ .*R sau phí/);
+  // R = 4,3A > 4A → trần R
+  const r43 = buildPatternPlan(args({ close: 110.3, geometry: db(106.5), zones: [] }));
+  assert.match(r43.reason!, /R = 4,30×A > 4×A/);
+  // chữ nhật cùng R 3,8A → trần 3×A
+  const rr = buildPatternPlan(args({ close: 110.3, geometry: geom({ stopRef: { up: 107, down: 101 } }), zones: [] }));
+  assert.match(rr.reason!, /R = 3,80×A > 3×A/);
+});

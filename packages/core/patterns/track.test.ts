@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trackPatterns, isTracked } from './track.ts';
+import { trackPatterns, isTracked, knownAt } from './track.ts';
 import { detectFlags } from './detect-flag.ts';
-import { patternId } from './state.ts';
+import { patternId, evaluateState } from './state.ts';
 import { atr } from '../indicators.ts';
 import { COMMON } from '../config.ts';
 import type { Candle } from '../types.ts';
@@ -44,7 +44,7 @@ test('trackPatterns: chỉ chạy loại được yêu cầu', () => {
   assert.ok(t.every((x) => x.geometry.kind === 'bull_flag' || x.geometry.kind === 'bear_flag'));
 });
 
-test('trackPatterns: mỗi id một bản — bản phát SỚM NHẤT (cờ phát lại ở nhiều nến)', () => {
+test('trackPatterns: mỗi id một bản — bản trước chỉ bị thay khi còn armed/expired lúc bản sau được biết (cờ phát lại ở nhiều nến)', () => {
   // cán tăng 30 đơn vị trong 14 nến rồi cờ dốc xuống nhẹ 12 nến
   const pts: [number, number][] = [[0, 100], [30, 100], [44, 130], [56, 126]];
   const c = wave(pts);
@@ -56,8 +56,19 @@ test('trackPatterns: mỗi id một bản — bản phát SỚM NHẤT (cờ ph�
   const ids = t.map((x) => x.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const x of t) {
-    const minEnd = Math.min(...all.filter((g) => patternId('X', g) === x.id).map((g) => g.endIndex));
-    assert.equal(x.geometry.endIndex, minEnd);
+    const same = all.filter((g) => patternId('X', g) === x.id).sort((p, q) => p.endIndex - q.endIndex);
+    const pos = same.findIndex((g) => g.endIndex === x.geometry.endIndex);
+    assert.ok(pos >= 0);
+    // mọi bản trước bản được chọn đều còn armed/expired/forming tại nến bản kế tiếp được biết
+    for (let q = 0; q < pos; q++) {
+      const st = evaluateState(same[q]!, c, a, '4h', knownAt(same[q + 1]!)).state;
+      assert.ok(st === 'armed' || st === 'expired' || st === 'forming', `bản ${same[q]!.endIndex}: ${st}`);
+    }
+    // bản được chọn: hoặc là bản cuối, hoặc đã sang trạng thái đóng băng khi bản sau được biết
+    if (pos < same.length - 1) {
+      const st = evaluateState(same[pos]!, c, a, '4h', knownAt(same[pos + 1]!)).state;
+      assert.ok(!['armed', 'expired', 'forming'].includes(st), st);
+    }
   }
 });
 
@@ -69,4 +80,52 @@ test('isTracked: chỉ armed/chờ xác nhận/breakout/retested còn mới; cũ
   assert.equal(isTracked({ ...r, state: 'expired' }), false);
   assert.equal(isTracked({ ...r, state: 'armed' }), true);
   assert.equal(isTracked({ ...r, state: 'breakout_pending' }), true);
+});
+
+// ---------- P2: bản phát cùng id còn armed thì bị bản xác nhận sau THAY; chỉ đóng băng khi đã pending/phá/failed/invalidated ----------
+// Repro review: chạm 30/40/…/100 (biên 100..110), phá ở nến 107. Bản 60/70 sẽ expired nếu giữ bản sớm nhất; bản 80/90/100 breakout.
+const LONG_RECT: [number, number][] = [[0, 90], [30, 110], [40, 100], [50, 110], [60, 100], [70, 110], [80, 100], [90, 110], [100, 100], [106, 108]];
+const longRect = () => [...wave(LONG_RECT), k(107, 112)];
+const sig = (t: ReturnType<typeof trackPatterns>) =>
+  JSON.stringify(t.map((x) => [x.id, x.geometry.kind, x.geometry.startIndex, x.geometry.endIndex, x.result.state, x.result.breakoutIndex, x.result.side]));
+
+test('P2: chữ nhật 4 chạm mỗi biên rồi phá → breakout (bản phát mới nhất còn armed thay bản cũ), không expired', () => {
+  const t = trackPatterns('X', longRect(), '4h', ['rectangle']);
+  const rect = t.filter((x) => x.geometry.kind === 'rectangle' && isTracked(x.result));
+  assert.equal(rect.length, 1, sig(t));
+  assert.equal(rect[0]!.result.state, 'breakout');
+  assert.equal(rect[0]!.geometry.endIndex, 100);
+  assert.equal(rect[0]!.geometry.pivots.length, 8);
+  assert.equal(rect[0]!.result.breakoutIndex, 107);
+});
+
+test('P2 chống look-ahead: trackPatterns trên tiền tố == trackPatterns cả chuỗi tại asOf (mọi nến)', () => {
+  const c = longRect();
+  for (let n = 20; n <= c.length; n++) {
+    assert.equal(sig(trackPatterns('X', c.slice(0, n), '4h', ['rectangle', 'double', 'triangle', 'flag'])),
+      sig(trackPatterns('X', c, '4h', ['rectangle', 'double', 'triangle', 'flag'], n - 1)), `nến ${n - 1}`);
+  }
+});
+
+test('P2: bản đã phá (breakout) bị đóng băng — bản phát lại sau không ghi đè (cờ)', () => {
+  // cờ: cán 100→130 trong 14 nến, cờ dốc xuống; nến 51 phá lên mạnh rồi quay vào → các bản phát sau không làm sống lại
+  const pts: [number, number][] = [[0, 100], [30, 100], [44, 130], [50, 127]];
+  const c = [...wave(pts), k(51, 133), k(52, 126), k(53, 126)];
+  const t = trackPatterns('X', c, '4h', ['flag']);
+  for (const x of t) assert.notEqual(x.result.state, 'armed', sig(t));
+});
+
+test('P2 chống look-ahead: chuỗi ngẫu nhiên có seed (đủ 4 loại) — tiền tố == cả chuỗi tại asOf ở mọi nến', () => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const c: Candle[] = [];
+  let p = 100;
+  for (let i = 0; i < 300; i++) {
+    p += (rnd() - 0.5) * 3 + Math.sin(i / 15) * 0.8;
+    c.push(k(i, p, 0.5 + rnd()));
+  }
+  const all = ['rectangle', 'double', 'triangle', 'flag'] as const;
+  for (let n = 30; n <= c.length; n++) {
+    assert.equal(sig(trackPatterns('X', c.slice(0, n), '4h', all)), sig(trackPatterns('X', c, '4h', all, n - 1)), `nến ${n - 1}`);
+  }
 });

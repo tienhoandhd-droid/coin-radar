@@ -12,6 +12,7 @@ import type { Candle, Contract, Mode, PremiumIndex, Side } from './types.ts';
 import { contextFlags, type ContextFlags } from './patterns/context.ts';
 import { trackPatterns, isTracked, type PatternTf, type TrackedPattern } from './patterns/track.ts';
 import { buildPatternPlan, type PatternPlan } from './patterns/pattern-plan.ts';
+import { rectangleStopRef } from './patterns/detect-range.ts';
 import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
 
@@ -105,7 +106,7 @@ export function contractRisk(a: { daily: Candle[]; price: number; contract: Cont
 }
 
 const FRAME_HOURS: Record<PatternTf, number> = { '15m': 0.25, '1h': 1, '4h': 4, '1d': 24 };
-const KIND_ORDER: Record<string, number> = { '1d': 0, '4h': 1, '1h': 2, '15m': 3 };
+const TF_ORDER: Record<string, number> = { '1d': 0, '4h': 1, '1h': 2, '15m': 3 };
 
 const label4 = (iv: string) => iv.toUpperCase(); // '15m' → '15M', '4h' → '4H'
 
@@ -192,13 +193,13 @@ export function analyze(i: AnalyzeInput): Analysis {
   const patternScope = inPatternScope(risk.tier, i.liquidityRankPct);
   let context: ContextFlags | null = null;
   const patterns: PatternInfo[] = [];
-  const candidates: Array<{ plan: PatternPlan; gates: GateResult[]; score: SideScore }> = [];
+  const candidates: PatternCandidate[] = [];
   if (patternScope.ok) {
     const pd = i.patternData;
     if (pd === null) throw new Error(`${i.contract.symbol} thuộc phạm vi mô hình (P-G1) nhưng không có dữ liệu mô hình (nến 4H/1D/1H)`);
     context = contextFlags(pd.c4h, pd.c1d);
     if (context.coil) flags.push(`P-C2 coil (nén biến động 4H) — chỉ báo, không phải tín hiệu`);
-    const daily = dailyTrend(i.mode === 'swing' ? i.trend : pd.c1d);
+    const daily = i.mode === 'swing' ? dailyTrend(i.trend) : null; // P-G2 chỉ dùng ở Swing (Lướt nhanh ẩn)
     const candlesFor = (tf: PatternTf): Candle[] =>
       tf === '4h' ? pd.c4h : tf === '1d' ? pd.c1d : tf === '1h' ? (i.mode === 'fast' ? i.trend : pd.c1h) : i.entry;
     const hidden = i.mode === 'fast';
@@ -207,7 +208,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       const c = candlesFor(f.tf);
       for (const t of trackPatterns(i.contract.symbol, c, f.tf, f.kinds)) if (isTracked(t.result)) tracked.push({ t, c, tf: f.tf });
     }
-    tracked.sort((x, y) => KIND_ORDER[x.tf]! - KIND_ORDER[y.tf]! || x.t.geometry.endIndex - y.t.geometry.endIndex);
+    tracked.sort((x, y) => TF_ORDER[x.tf]! - TF_ORDER[y.tf]! || x.t.geometry.endIndex - y.t.geometry.endIndex);
     const atr1hAll = atr(pd.c1h, 14);
     for (const { t, c, tf } of tracked) {
       const g = t.geometry;
@@ -220,7 +221,7 @@ export function analyze(i: AnalyzeInput): Analysis {
         notes: [...g.notes, ...r.notes], hidden,
       };
       patterns.push(info);
-      if (hidden || (r.state !== 'breakout' && r.state !== 'retested') || r.side === null || r.breakoutIndex === null) continue;
+      if (hidden || daily === null || (r.state !== 'breakout' && r.state !== 'retested') || r.side === null || r.breakoutIndex === null) continue;
       const side: Side = r.side === 'up' ? 'long' : 'short';
       const pg2 = patternTrendGate({ kind: g.kind, side, daily, regime: i.regime, btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, now: i.now.getTime() });
       info.notes.push(pg2.note);
@@ -234,8 +235,15 @@ export function analyze(i: AnalyzeInput): Analysis {
         info.notes.push('Kế hoạch mô hình: bỏ — thiếu ATR(1H) tại nến phá (dữ liệu 1H không phủ tới nến phá)');
         continue;
       }
+      // Chữ nhật: mức cắt lỗ = pivot nhỏ phía trong sau lần chạm biên cuối (chỉ biết lúc phá), không có → giữa vùng
+      let geometry = g;
+      if (g.kind === 'rectangle') {
+        const sr = rectangleStopRef(c, g, r.side, r.breakoutIndex);
+        geometry = { ...g, stopRef: r.side === 'up' ? { ...g.stopRef, up: sr.price } : { ...g.stopRef, down: sr.price } };
+        info.notes.push(sr.note);
+      }
       const res = buildPatternPlan({
-        mode: i.mode, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
+        mode: i.mode, geometry, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
         btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct),
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });
@@ -254,15 +262,15 @@ export function analyze(i: AnalyzeInput): Analysis {
         info.notes.push(`Kế hoạch mô hình: lập được nhưng cổng trượt — ${failed.map((x) => `${x.code} (${x.note})`).join('; ')}`);
         continue;
       }
-      if (sideScore.score < COMMON.qualifyScore) {
-        info.notes.push(`Kế hoạch mô hình: lập được, qua cổng nhưng điểm ${side === 'long' ? 'Long' : 'Short'} ${sideScore.score} < ${COMMON.qualifyScore}`);
+      if (sideScore.score < COMMON.patterns.minSideScore) {
+        info.notes.push(`Kế hoạch mô hình: lập được, qua cổng nhưng điểm ${side === 'long' ? 'Long' : 'Short'} ${sideScore.score} < ${COMMON.patterns.minSideScore}`);
         continue;
       }
       info.notes.push(`Kế hoạch mô hình: đủ điều kiện (TP1 ${pp.tp1NetR.toFixed(2).replace('.', ',')}R sau phí)`);
       candidates.push({ plan: pp, gates: gs, score: sideScore });
     }
   }
-  let pattern: (typeof candidates)[number] | null = null;
+  let pattern: PatternCandidate | null = null;
   if (candidates.length > 0) {
     if (new Set(candidates.map((x) => x.plan.side)).size > 1) {
       flags.push('xung đột: các mô hình đủ điều kiện ngược chiều nhau → không phát tín hiệu mô hình');
@@ -277,16 +285,22 @@ export function analyze(i: AnalyzeInput): Analysis {
     contextGate(context, best.side),
   ];
   const zoneOk = zoneGates.every((g) => g.pass) && best.score >= COMMON.qualifyScore;
-  const pick = arbitrate(zoneOk ? best.side : null, pattern ? pattern.plan.side : null);
-  if (pick.note) flags.push(pick.note);
+  const chosen = finalizeSignal({ best, zoneGates, zoneOk, plan, pattern, flags });
+  return { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen };
+}
+
+export type PatternCandidate = { plan: PatternPlan; gates: GateResult[]; score: SideScore };
+
+// Chọn tín hiệu cuối cho một hợp đồng × chế độ (đã qua arbitrate). flags được ghi thêm ghi chú cùng chiều / xung đột.
+export function finalizeSignal(a: { best: SideScore; zoneGates: GateResult[]; zoneOk: boolean; plan: TradePlan; pattern: PatternCandidate | null; flags: string[] }):
+  { label: Label; best: SideScore; gates: GateResult[]; plan: TradePlan | null; patternSignal: PatternPlan | null } {
+  const pick = arbitrate(a.zoneOk ? a.best.side : null, a.pattern ? a.pattern.plan.side : null);
+  if (pick.note) a.flags.push(pick.note);
   const qualified = (side: Side): Label => (side === 'long' ? 'Đạt tiêu chí Long' : 'Đạt tiêu chí Short');
-  const fallback: Label = best.score >= COMMON.watchScore ? 'Theo dõi' : 'Không đạt';
-  const base = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns };
-  if (pick.use === 'pattern' && pattern) {
-    return { ...base, label: qualified(pattern.plan.side), best: pattern.score, gates: pattern.gates, plan: null, patternSignal: pattern.plan };
+  if (pick.use === 'pattern' && a.pattern) {
+    return { label: qualified(a.pattern.plan.side), best: a.pattern.score, gates: a.pattern.gates, plan: null, patternSignal: a.pattern.plan };
   }
-  if (pick.use === 'zone') {
-    return { ...base, label: qualified(best.side), best, gates: zoneGates, plan, patternSignal: null };
-  }
-  return { ...base, label: fallback, best, gates: zoneGates, plan: null, patternSignal: null };
+  if (pick.use === 'zone') return { label: qualified(a.best.side), best: a.best, gates: a.zoneGates, plan: a.plan, patternSignal: null };
+  const fallback: Label = a.best.score >= COMMON.watchScore ? 'Theo dõi' : 'Không đạt';
+  return { label: fallback, best: a.best, gates: a.zoneGates, plan: null, patternSignal: null };
 }

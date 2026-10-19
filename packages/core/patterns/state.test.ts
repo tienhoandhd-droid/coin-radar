@@ -385,3 +385,20 @@ test('series2 có failed muộn (> 10 nến sau phá) và retested', () => {
   assert.ok(rs.some(({ r }) => r.state === 'failed' && r.breakoutIndex !== null && full.length - 1 - r.breakoutIndex > COMMON.patterns.state.retestBars));
   assert.ok(rs.some(({ g }) => { for (let t = 30; t < full.length; t++) if (evaluateState(g, full, a, TF, t).state === 'retested') return true; return false; }));
 });
+
+// ---------- P3: khử trùng theo HỌ mô hình (tam giác tăng/giảm/cân; cờ tăng/giảm; hai đỉnh/hai đáy) ----------
+test('P3: tam giác tăng và tam giác giảm chồng cửa sổ cùng khung → chỉ giữ một (nhiều chạm hơn khi cùng armed)', () => {
+  const pv = (n: number) => Array.from({ length: n }, (_, i) => ({ index: i * 5, price: 1, kind: (i % 2 ? 'low' : 'high') as 'high' | 'low' }));
+  const mk = (id: string, kind: PatternKind, s: number, e: number, n: number, state: 'armed' | 'breakout') => ({
+    id, geometry: rect({ kind, startIndex: s, endIndex: e, pivots: pv(n) }),
+    result: { state, breakoutIndex: null, side: null, breakoutLine: null, distanceAtr: null, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
+  });
+  assert.deepEqual(dedupePatterns([mk('asc', 'asc_triangle', 0, 50, 10, 'armed'), mk('desc', 'desc_triangle', 15, 45, 5, 'armed')]).map((r) => r.id), ['asc']);
+  // breakout thắng armed dù ít chạm hơn
+  assert.deepEqual(dedupePatterns([mk('asc', 'asc_triangle', 0, 50, 10, 'armed'), mk('desc', 'desc_triangle', 15, 45, 5, 'breakout')]).map((r) => r.id), ['desc']);
+  // cùng họ cờ, cùng họ hai đỉnh/đáy
+  assert.equal(dedupePatterns([mk('a', 'bull_flag', 0, 20, 2, 'armed'), mk('b', 'bear_flag', 10, 25, 2, 'armed')]).length, 1);
+  assert.equal(dedupePatterns([mk('a', 'double_top', 0, 20, 3, 'armed'), mk('b', 'double_bottom', 10, 25, 3, 'armed')]).length, 1);
+  // khác họ (chữ nhật vs tam giác) → giữ cả hai
+  assert.equal(dedupePatterns([mk('a', 'rectangle', 0, 20, 4, 'armed'), mk('b', 'sym_triangle', 10, 25, 5, 'armed')]).length, 2);
+});

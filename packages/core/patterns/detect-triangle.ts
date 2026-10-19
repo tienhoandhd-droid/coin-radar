@@ -38,13 +38,17 @@ function tryWindow(c: Candle[], win: Pivot[], a: number, timeframe: string): Pat
 
   const up = fitLine(highs.map((p) => ({ x: p.index, y: p.price })));
   const low = fitLine(lows.map((p) => ({ x: p.index, y: p.price })));
+  // Phân loại có dải đệm quanh ngưỡng phẳng (tránh lật tăng/giảm khi độ dốc sát ngưỡng):
+  //  rõ phẳng: |dốc| ≤ (phẳng − đệm); rõ dốc: |dốc| ≥ (phẳng + đệm); ở giữa: không rõ.
+  //  tăng = trên rõ phẳng + dưới rõ dốc lên; giảm = dưới rõ phẳng + trên rõ dốc xuống;
+  //  cân = cả hai cạnh hướng vào trong vượt khỏi vùng rõ phẳng (gồm trường hợp không rõ); còn lại bỏ.
   const flat = cfg.flatSlopeAtr * a;
-  const upFlat = Math.abs(up.slope) <= flat;
-  const lowFlat = Math.abs(low.slope) <= flat;
+  const band = cfg.classifyBandAtr * a;
+  const clearFlat = (s: number) => Math.abs(s) <= flat - band;
   let kind: PatternKind;
-  if (upFlat && low.slope > flat) kind = 'asc_triangle';
-  else if (lowFlat && up.slope < -flat) kind = 'desc_triangle';
-  else if (up.slope < -flat && low.slope > flat) kind = 'sym_triangle';
+  if (clearFlat(up.slope) && low.slope >= flat + band) kind = 'asc_triangle';
+  else if (clearFlat(low.slope) && up.slope <= -(flat + band)) kind = 'desc_triangle';
+  else if (up.slope < -(flat - band) && low.slope > flat - band) kind = 'sym_triangle';
   else return null;
 
   const widthStart = up.at(first.index) - low.at(first.index);

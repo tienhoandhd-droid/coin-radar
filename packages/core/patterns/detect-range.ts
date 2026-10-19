@@ -1,5 +1,6 @@
 import type { Candle } from '../types.ts';
 import { COMMON } from '../config.ts';
+import { pivotHighs, pivotLows } from '../indicators.ts';
 import type { Pivot } from './pivots.ts';
 import type { PatternGeometry } from './types.ts';
 
@@ -19,7 +20,7 @@ export function atrAtConfirm(c: Candle[], atr: number[], last: Pivot): number {
 
 // Chữ nhật / vùng đi ngang (gồm ba đỉnh, ba đáy). Với mỗi pivot cuối, lấy cửa sổ pivot dài nhất lùi về trước
 // mà các đỉnh nằm cùng một vùng và các đáy nằm cùng một vùng (chênh ≤ zoneTolAtr×A, A tại nến xác nhận pivot cuối).
-export type RectCfg = { minTouches: number; tripleTouches: number; minHeightAtr: number; minBars: number; stopMaxAtr: number };
+export type RectCfg = { minTouches: number; tripleTouches: number; minHeightAtr: number; minBars: number };
 
 export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], timeframe = '', cfg: RectCfg = COMMON.patterns.rect): PatternGeometry[] {
   const tol = COMMON.patterns.zoneTolAtr;
@@ -48,12 +49,9 @@ export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], ti
     const first = win[0]!;
     if (last.index - first.index < cfg.minBars) continue;
 
-    // Cắt lỗ trước đệm: pivot nhỏ gần nhất phía trong; xa hơn stopMaxAtr×A thì dùng giữa vùng.
+    // Cắt lỗ trước đệm DỰ PHÒNG = giữa vùng. Cửa sổ chỉ chứa lần chạm biên, nên "pivot nhỏ phía trong" chỉ tìm được lúc phá
+    // (rectangleStopRef, cần biết chiều phá và nến phá). Trần R (3×A) được kiểm trên R thật ở kế hoạch lệnh, không ở đây.
     const mid = (upperLevel + lowerLevel) / 2;
-    const lastLow = [...win].reverse().find((p) => p.kind === 'low')!.price;
-    const lastHigh = [...win].reverse().find((p) => p.kind === 'high')!.price;
-    const stopUp = upperLevel - lastLow > cfg.stopMaxAtr * a ? mid : lastLow;
-    const stopDown = lastHigh - lowerLevel > cfg.stopMaxAtr * a ? mid : lastHigh;
 
     const notes: string[] = [];
     if (highs.length >= cfg.tripleTouches) notes.push(`ba đỉnh (${highs.length} chạm biên trên)`);
@@ -69,10 +67,37 @@ export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], ti
       lower: () => lowerLevel,
       breakoutSide: 'both',
       height,
-      stopRef: { up: stopUp, down: stopDown },
+      stopRef: { up: mid, down: mid },
       quality: Math.min(1, touches / (2 * cfg.minTouches)),
       notes,
     });
   }
   return out;
+}
+
+// Mức cắt lỗ chữ nhật lúc phá (báo cáo mục (2): "pivot nhỏ gần nhất phía trong mô hình"):
+// pivot NGƯỢC loại với biên bị phá (phá lên → đáy; phá xuống → đỉnh), gần nhất, nằm SAU lần chạm cuối của biên bị phá,
+// đã xác nhận (đủ pivotConfirmBars nến bên phải) chậm nhất tại nến phá, KHÔNG phải một lần chạm biên của mô hình,
+// và nằm hẳn giữa hai biên. Không có → giữa vùng. Chỉ đọc nến ≤ breakoutIndex.
+export function rectangleStopRef(c: Candle[], g: PatternGeometry, side: 'up' | 'down', breakoutIndex: number): { price: number; note: string } {
+  if (g.kind !== 'rectangle') throw new Error(`rectangleStopRef: chỉ cho chữ nhật, nhận ${g.kind}`);
+  if (!Number.isInteger(breakoutIndex) || breakoutIndex < 0 || breakoutIndex >= c.length) {
+    throw new Error(`rectangleStopRef: nến phá ${breakoutIndex} ngoài dữ liệu (${c.length} nến)`);
+  }
+  const upper = g.upper(g.endIndex);
+  const lower = g.lower(g.endIndex);
+  const mid = (upper + lower) / 2;
+  const edge = side === 'up' ? 'high' : 'low';
+  const touches = g.pivots.filter((p) => p.kind === edge);
+  const lastTouch = touches[touches.length - 1];
+  if (!lastTouch) throw new Error('rectangleStopRef: mô hình không có lần chạm biên bị phá');
+  const touchIdx = new Set(g.pivots.map((p) => p.index));
+  const seen = c.slice(0, breakoutIndex + 1);
+  const n = COMMON.pivotConfirmBars;
+  const idx = side === 'up' ? pivotLows(seen.map((k) => k.low), n) : pivotHighs(seen.map((k) => k.high), n);
+  const priceAt = (i: number) => (side === 'up' ? c[i]!.low : c[i]!.high);
+  const inner = idx.filter((i) => i > lastTouch.index && !touchIdx.has(i) && priceAt(i) > lower && priceAt(i) < upper);
+  const pick = inner[inner.length - 1];
+  if (pick === undefined) return { price: mid, note: 'SL chữ nhật: không có pivot nhỏ phía trong sau lần chạm cuối → giữa vùng' };
+  return { price: priceAt(pick), note: `SL chữ nhật: pivot nhỏ phía trong ${priceAt(pick)} (nến ${pick}) sau lần chạm biên cuối` };
 }

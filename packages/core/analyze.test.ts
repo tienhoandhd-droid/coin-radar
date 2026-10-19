@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyze, type AnalyzeInput } from './analyze.ts';
 import type { Candle } from './types.ts';
+import { COMMON } from './config.ts';
 
 function k(i: number, close: number, takerShare = 0.5): Candle {
   return { openTime: i * 1000, closeTime: i * 1000 + 999, open: close * 0.999, high: close * 1.004, low: close * 0.996,
@@ -278,4 +279,100 @@ test('mã cổng mới P-G1/P-G2/P-C1 có trong danh mục; mọi cổng của a
   for (const code of ['P-G1', 'P-G2', 'P-C1', 'P-C2', 'P-S1']) ruleByCode(code);
   const a = analyze({ ...base, patternData: { c4h: rect4h, c1d: base.daily, c1h: h1For(rect4h), btcSma200ReclaimedAt: null } });
   for (const g of a.gates) ruleByCode(g.code);
+});
+
+// ---------- I1: đường "tín hiệu mô hình thắng" chạy thật qua analyze ----------
+import { finalizeSignal, type PatternCandidate } from './analyze.ts';
+import { patternPlanLines } from '../../scanner/plan-print.ts';
+
+// Chữ nhật 4H 500..530 (h = 30, cao hơn mọi vùng S/R của base) — 20 nến nền khởi động ATR, chạm trên 30/50/70, chạm dưới 40/60,
+// đáy nhỏ phía trong 528,8 ở nến 75 (sau lần chạm trên cuối), nến 80 phá lên đóng 532.
+function rectInner(): Candle[] {
+  const out: Candle[] = [];
+  const put = (i: number, high: number, low: number, close: number) =>
+    out.push({ openTime: i * H4, closeTime: (i + 1) * H4 - 1, open: close, high, low, close, volume: 1, quoteVolume: close, takerBuyQuote: close / 2 });
+  for (let i = 0; i <= 70; i++) {
+    const high = i === 30 || i === 50 || i === 70 ? 530 : 518;
+    const low = i === 40 || i === 60 ? 500 : 515;
+    put(i, high, low, 516.5);
+  }
+  for (let i = 71; i <= 79; i++) put(i, 529.8, i === 75 ? 528.8 : 529.1, 529.5);
+  put(80, 532.6, 529, 532);
+  return out;
+}
+// 1H biên độ ±1,5 để nến phá 4H (biên độ 3,6) không bị "chờ xác nhận" (> 3×ATR 1H)
+const h1Wide = (c4: Candle[]) => h1For(c4).map((x) => ({ ...x, high: x.close + 1.5, low: x.close - 1.5 }));
+// Gương giá quanh M: Long ↔ Short (đỉnh ↔ đáy, taker mua ↔ bán)
+const M = 2000;
+const mirror = (c: Candle[]): Candle[] => c.map((x) => ({ ...x, open: M - x.open, close: M - x.close, high: M - x.low, low: M - x.high, quoteVolume: x.quoteVolume, takerBuyQuote: x.quoteVolume - x.takerBuyQuote }));
+const pdLong = () => { const c4 = rectInner(); return { c4h: c4, c1d: base.daily, c1h: h1Wide(c4), btcSma200ReclaimedAt: null }; };
+
+test('I1: Long — vùng và mô hình cùng chiều → phát tín hiệu MÔ HÌNH (label Đạt, plan null, gates của mô hình, ghi chú cùng chiều)', () => {
+  const a = analyze({ ...base, patternData: pdLong() });
+  const r = a.patterns.find((p) => p.kind === 'rectangle');
+  assert.ok(a.patternSignal, `không có tín hiệu mô hình: ${JSON.stringify(r?.notes)} | ${a.label}`);
+  assert.equal(a.label, 'Đạt tiêu chí Long');
+  assert.equal(a.plan, null);
+  assert.equal(a.patternSignal.side, 'long');
+  assert.equal(a.patternSignal.kind, 'rectangle');
+  assert.equal(a.best.side, 'long');
+  assert.ok(a.gates.some((g) => g.code === 'P-G2' && g.pass) && a.gates.some((g) => g.code === 'P-G1'));
+  assert.ok(a.flags.some((f) => /cùng chiều Long → dùng kế hoạch theo mô hình/.test(f)), a.flags.join(' | '));
+  assert.ok(r!.notes.some((n) => /pivot nhỏ phía trong 528.8/.test(n)), r!.notes.join(' | '));
+  if (process.env.PRINT_PLAN) console.log(patternPlanLines({ symbol: 'TESTUSDT', score: a.best.score, riskTier: a.risk.tier }, a.patternSignal, 0.01).join('\n'));
+});
+
+test('I1: Short (gương) — tín hiệu mô hình Short được phát', () => {
+  const pd = pdLong();
+  const a = analyze({
+    ...base, regime: 'down', trend: mirror(base.trend), entry: mirror(base.entry), daily: mirror(base.daily), hourly: mirror(base.hourly), btcTrend: mirror(base.btcTrend),
+    premium: { ...base.premium, markPrice: M - base.premium.markPrice },
+    patternData: { c4h: mirror(pd.c4h), c1d: mirror(base.daily), c1h: mirror(pd.c1h), btcSma200ReclaimedAt: null },
+  });
+  const r = a.patterns.find((p) => p.kind === 'rectangle');
+  assert.ok(a.patternSignal, `không có tín hiệu mô hình: ${JSON.stringify(r?.notes)} | ${a.label} | ${JSON.stringify(a.gates.filter((g) => !g.pass))}`);
+  assert.equal(a.label, 'Đạt tiêu chí Short');
+  assert.equal(a.patternSignal.side, 'short');
+  assert.equal(a.plan, null);
+  assert.ok(a.flags.some((f) => /cùng chiều Short/.test(f)), a.flags.join(' | '));
+});
+
+test('I1: điểm phía mô hình < minSideScore → không phát tín hiệu mô hình, ghi lý do', () => {
+  // btcTrend tăng mạnh hơn coin → điểm Long thấp; vùng cũng không Đạt
+  const a = analyze({ ...base, btcTrend: up(300, 3), patternData: pdLong() });
+  if (a.long.score >= COMMON.patterns.minSideScore) return assert.fail(`fixture cần điểm Long < ${COMMON.patterns.minSideScore}, có ${a.long.score}`);
+  assert.equal(a.patternSignal, null);
+  const r = a.patterns.find((p) => p.kind === 'rectangle')!;
+  assert.ok(r.notes.some((n) => /điểm Long .* < 70|cổng trượt/.test(n)), r.notes.join(' | '));
+});
+
+const fakeScore = (side: 'long' | 'short', score: number) => ({ side, score, coverage: 1, reasons: [], rsZ: null });
+const cand = (side: 'long' | 'short'): PatternCandidate => ({ plan: { side } as unknown as PatternCandidate['plan'], gates: [{ code: 'P-G2', pass: true, note: 'x' }], score: fakeScore(side, 75) });
+
+test('I1 finalizeSignal: chỉ mô hình / cùng chiều / ngược chiều / chỉ vùng', () => {
+  const zplan = analyze(base).plan!;
+  const zg = [{ code: 'G-01', pass: true, note: '' }];
+  let flags: string[] = [];
+  const onlyP = finalizeSignal({ best: fakeScore('short', 40), zoneGates: zg, zoneOk: false, plan: zplan, pattern: cand('short'), flags });
+  assert.equal(onlyP.label, 'Đạt tiêu chí Short');
+  assert.equal(onlyP.plan, null);
+  assert.equal(onlyP.best.score, 75);
+  assert.deepEqual(onlyP.gates.map((g) => g.code), ['P-G2']);
+  flags = [];
+  const same = finalizeSignal({ best: fakeScore('long', 80), zoneGates: zg, zoneOk: true, plan: zplan, pattern: cand('long'), flags });
+  assert.equal(same.label, 'Đạt tiêu chí Long');
+  assert.equal(same.plan, null);
+  assert.ok(same.patternSignal);
+  assert.match(flags.join(), /cùng chiều/);
+  flags = [];
+  const opp = finalizeSignal({ best: fakeScore('long', 80), zoneGates: zg, zoneOk: true, plan: zplan, pattern: cand('short'), flags });
+  assert.equal(opp.label, 'Theo dõi');
+  assert.equal(opp.plan, null);
+  assert.equal(opp.patternSignal, null);
+  assert.match(flags.join(), /xung đột/);
+  flags = [];
+  const zone = finalizeSignal({ best: fakeScore('long', 80), zoneGates: zg, zoneOk: true, plan: zplan, pattern: null, flags });
+  assert.equal(zone.label, 'Đạt tiêu chí Long');
+  assert.equal(zone.plan, zplan);
+  assert.deepEqual(flags, []);
 });
