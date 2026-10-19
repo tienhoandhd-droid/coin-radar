@@ -33,11 +33,16 @@
 // 11. Mốc thời gian sự kiện trong nến = openTime của nến (hoặc nến 1m khi phân xử) — cầu chì/lỗ ngày có thể "bắt đầu" tại mốc đặt lệnh
 //     khi lần thua thứ 5 xảy ra ngay trong nến đầu tiên của lệnh vừa đặt.
 import { COMMON, CONFIG } from '../packages/core/config.ts';
-import { snapToTick, tickDecimals } from '../packages/core/price.ts';
-import { liquidationPrice, mmrFor, splitQuantity } from '../packages/core/plan.ts';
+import { snapToTick } from '../packages/core/price.ts';
+import { splitQuantity } from '../packages/core/plan.ts';
 import { fundingGuard } from '../packages/core/funding-guard.ts';
 import { atr } from '../packages/core/indicators.ts';
 import { exitSplit, type PlannerPlan, type PlannerResult } from '../packages/bot/planner.ts';
+// Công thức khớp/phí/trượt/funding/trailing dùng chung với sàn giả lập của bot (packages/bot/paper.ts) — chỉ nằm ở fill-model.ts
+import {
+  addToPosition, avgImpact, bankruptX, entryFee, exitExecX, exitFee, exitPnl, fundingAmount, fundingMark,
+  fundingTimeFloor, liquidationX, qRound as qRoundStep, reduceQty, roundPx, takerEntryFill, toX, trailActivatedPeakX, trailStopX, type FillCost,
+} from '../packages/bot/fill-model.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
 import type { AfterTp1Rule } from '../packages/core/patterns/pattern-plan.ts';
@@ -47,11 +52,7 @@ import type { FundingRow } from './replay.ts';
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
 
-export type SimCost = {
-  tierPct: number; // COMMON.costRoundTripPct[nhóm] — khứ hồi; mỗi lần khớp trả một nửa
-  impactPct: number; // COMMON.slippage.pctPerParticipation — biên trượt (%) khi notional = KL 1 phút
-  vol1m: number; // KL giao dịch 1 phút (USDT); Infinity = bỏ trượt theo cỡ (chỉ dùng trong test)
-};
+export type SimCost = FillCost; // tierPct (khứ hồi), impactPct, vol1m (Infinity = bỏ trượt theo cỡ, chỉ dùng trong test)
 
 export type TrailState = { kind: 'callback'; actX: number; cbPct: number; peakX: number | null } | { kind: 'atr'; dist: number }
   | { kind: 'close4h'; levelX: number | null }; // C3: mức dừng chỉ đổi khi nến 4H ĐÓNG (bot đặt lại STOP_MARKET), giữa nến là dừng tĩnh
@@ -96,8 +97,6 @@ export type SimTrade = {
   };
 };
 
-const roundPx = (x: number) => Number(x.toPrecision(12));
-const toX = (d: number, p: number) => d * p;
 
 export function createTrade(a: {
   id: string; symbol: string; mode: Mode; policy: ExitPolicy; placedAt: number; equityAtEntry: number; contract: Contract;
@@ -151,10 +150,7 @@ export function createTrade(a: {
 }
 
 // ---------------------------------------------------------------- khối lượng & giá ----------------------------------------------
-const qRound = (tr: SimTrade, q: number) => Number(q.toFixed(tickDecimals(tr.k.qStep)));
-const floorQ = (tr: SimTrade, q: number) => (q > 0 && Number.isFinite(q) ? qRound(tr, Math.floor(q / tr.k.qStep + 1e-9) * tr.k.qStep) : 0);
-// trượt TB một chiều (phần giá) cho notional N khớp kiểu market: nửa biên tuyến tính
-const avgImpact = (c: SimCost, notional: number) => (Number.isFinite(c.vol1m) ? ((c.impactPct / 100) * notional) / c.vol1m / 2 : 0);
+const qRound = (tr: SimTrade, q: number) => qRoundStep(tr.k.qStep, q);
 const realPx = (tr: SimTrade, x: number) => tr.k.d * x;
 
 export const isDone = (tr: SimTrade) => tr.b.closedAt !== null;
@@ -200,7 +196,7 @@ function trailLevel(tr: SimTrade, s: State, p: Part): number {
   if (t === null) return -Infinity;
   if (t.kind === 'callback') {
     if (t.peakX === null) return -Infinity;
-    return roundPx(tr.k.d > 0 ? t.peakX * (1 - t.cbPct / 100) : t.peakX * (1 + t.cbPct / 100));
+    return trailStopX(tr.k.d, t.peakX, t.cbPct);
   }
   if (t.kind === 'close4h') return t.levelX ?? -Infinity;
   if (!Number.isFinite(t.dist) || s.peakX === null) return -Infinity;
@@ -238,9 +234,7 @@ function highEvents(s: State): Ev[] {
 // --------------------------------------------------------------- khớp / đóng ------------------------------------------------------
 function fillEntry(tr: SimTrade, s: State, leg: EntryLeg, qty: number, priceX: number, t: number, rec: boolean): void {
   if (!(qty > 0)) return;
-  const n = qRound(tr, s.posQty + qty);
-  s.avgX = (s.avgX * s.posQty + priceX * qty) / n;
-  s.posQty = n;
+  ({ posQty: s.posQty, avgX: s.avgX } = addToPosition(s.posQty, s.avgX, qty, priceX, tr.k.qStep));
   leg.filledQty = qRound(tr, leg.filledQty + qty);
   leg.fillPrice = roundPx(realPx(tr, priceX));
   leg.fillTime = t;
@@ -256,28 +250,25 @@ function fillEntry(tr: SimTrade, s: State, leg: EntryLeg, qty: number, priceX: n
   const b = tr.b;
   const px = realPx(tr, priceX);
   // #1 (tùy chọn COMMON.fees.makerTakerSplit): lệnh LIMIT chờ khớp = maker, chỉ phí maker; chân IOC giữ nửa phí nhóm (taker + trượt nền)
-  const cost = !leg.ioc && COMMON.fees.makerTakerSplit ? (qty * px * COMMON.fees.makerPct) / 100 : (qty * px * tr.k.cost.tierPct) / 200;
+  const cost = entryFee(qty, px, tr.k.cost, !leg.ioc);
   b.costs += cost;
   b.flows.push({ t, amount: -cost });
   b.firstFillAt ??= t;
   b.maxPosQty = Math.max(b.maxPosQty, s.posQty);
   b.entryNotional += qty * px;
-  const avg = realPx(tr, s.avgX);
-  const liq = liquidationPrice(avg, tr.k.leverage, tr.k.side, mmrFor(s.posQty * avg).mmr);
-  b.liqX = toX(tr.k.d, liq);
+  b.liqX = liquidationX(tr.k.d, tr.k.side, s.avgX, s.posQty, tr.k.leverage);
 }
 
 // Đóng qty ở mức giá x (chưa trượt) — lệnh kiểu market: trừ trượt theo cỡ
 function exitQty(tr: SimTrade, s: State, qty: number, levelX: number, t: number, role: string, rec: boolean, impact = true): void {
   if (!(qty > 0)) return;
-  const px0 = realPx(tr, levelX);
-  const xExec = roundPx(levelX - (impact ? Math.abs(px0) * avgImpact(tr.k.cost, qty * px0) : 0));
-  s.posQty = qRound(tr, s.posQty - qty);
+  const xExec = exitExecX(tr.k.d, levelX, qty, tr.k.cost, impact);
+  s.posQty = reduceQty(s.posQty, qty, tr.k.qStep);
   if (!rec) return;
   const b = tr.b;
   const px = realPx(tr, xExec);
-  const pnl = (xExec - s.avgX) * qty;
-  const cost = (qty * px * tr.k.cost.tierPct) / 200;
+  const pnl = exitPnl(xExec, s.avgX, qty);
+  const cost = exitFee(qty, px, tr.k.cost);
   b.gross += pnl;
   b.costs += cost;
   b.flows.push({ t, amount: pnl - cost });
@@ -337,7 +328,7 @@ function applyHigh(tr: SimTrade, s: State, e: Ev, priceX: number, t: number, rec
     closePart(tr, s, e.part, priceX, t, e.part.name, rec);
     if (e.part.name === 'TP1') onTp1(tr, s, t);
   } else if (e.kind === 'activate' && e.part.trail?.kind === 'callback') {
-    e.part.trail.peakX = Math.max(priceX, e.part.trail.actX);
+    e.part.trail.peakX = trailActivatedPeakX(priceX, e.part.trail.actX);
   } else if (e.kind === 'cancel') {
     e.leg.status = 'cancelled';
   }
@@ -399,16 +390,8 @@ function applyOpen(tr: SimTrade, o: number, t: number): void {
   const s = tr.s;
   for (const leg of s.legs) {
     if (leg.status !== 'pending' || !leg.ioc) continue;
-    const px0 = Math.abs(o);
-    const slack = (leg.limitX - o) / px0; // khoảng còn lại tới giá trần (phần giá)
-    let q = 0;
-    if (slack >= 0) {
-      const c = tr.k.cost;
-      const maxN = Number.isFinite(c.vol1m) ? (slack / (c.impactPct / 100)) * c.vol1m : Infinity;
-      q = maxN === Infinity ? leg.qty : Math.min(leg.qty, floorQ(tr, maxN / px0));
-    }
+    const { qty: q, x } = takerEntryFill(o, leg.limitX, leg.qty, tr.k.cost, tr.k.qStep);
     if (q > 0) {
-      const x = roundPx(o + px0 * avgImpact(tr.k.cost, q * px0));
       fillEntry(tr, s, leg, q, x, t, true);
       if (q < leg.qty) tr.b.flags.iocPartial = true;
     } else {
@@ -419,7 +402,7 @@ function applyOpen(tr: SimTrade, o: number, t: number): void {
   // = giá vào TB × (1 ∓ 1/đòn bẩy)), gắn cờ. Không nên xảy ra (planner giữ thanh lý cách SL ≥ 1 khoảng cắt lỗ).
   if (s.posQty > 0 && tr.b.liqX !== null && o <= tr.b.liqX) {
     tr.b.flags.liquidation = true;
-    const bankrupt = toX(tr.k.d, realPx(tr, s.avgX) * (1 - tr.k.d / tr.k.leverage));
+    const bankrupt = bankruptX(tr.k.d, s.avgX, tr.k.leverage);
     for (const p of s.parts) p.open = false;
     exitQty(tr, s, s.posQty, bankrupt, t, 'LIQ', true, false);
     finishIfFlat(tr, t);
@@ -549,11 +532,10 @@ function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[], h4: H
   for (const leg of s.legs) if (leg.status === 'pending' && !leg.ioc && leg.expireAt !== null && leg.expireAt <= T) leg.status = 'expired';
   let settled = false;
   for (const row of funding) {
-    const ft = Math.floor(row.fundingTime / 60_000) * 60_000;
+    const ft = fundingTimeFloor(row.fundingTime);
     if (ft <= b.lastFundingT || ft > T) continue;
     if (s.posQty > 0 && b.firstFillAt !== null && b.firstFillAt < ft) {
-      const mark = row.markPrice > 0 ? row.markPrice : realPx(tr, s.avgX);
-      const amt = -tr.k.d * s.posQty * mark * row.fundingRate;
+      const amt = fundingAmount(tr.k.d, s.posQty, fundingMark(row.markPrice, realPx(tr, s.avgX)), row.fundingRate);
       b.funding += amt;
       b.flows.push({ t: ft, amount: amt });
       settled = true;

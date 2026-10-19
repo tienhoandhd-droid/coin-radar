@@ -585,6 +585,22 @@ function parseAlgo(o: Obj): AlgoUpdate {
   };
 }
 
+// Một sự kiện user data (đã JSON.parse) → UserEvent. Ném lỗi khi thiếu/sai trường. Dùng chung cho luồng thật và sàn giả lập
+// (packages/bot/paper.ts phát payload thô cùng định dạng rồi đọc qua đúng hàm này → bot nhận cùng một kiểu sự kiện ở mọi chế độ).
+export function parseUserEvent(ev: Obj): UserEvent {
+  const e = ev.e;
+  if (e === 'ORDER_TRADE_UPDATE') {
+    return { type: 'order_update', eventTime: num(ev, 'E', String(e)), transactionTime: num(ev, 'T', String(e)), order: parseOrder(obj(ev.o, 'ORDER_TRADE_UPDATE.o')) };
+  }
+  if (e === 'ACCOUNT_UPDATE') {
+    return { type: 'account_update', eventTime: num(ev, 'E', String(e)), transactionTime: num(ev, 'T', String(e)), ...parseAccount(obj(ev.a, 'ACCOUNT_UPDATE.a')) };
+  }
+  if (e === 'ALGO_UPDATE') {
+    return { type: 'algo_update', eventTime: num(ev, 'E', String(e)), transactionTime: num(ev, 'T', String(e)), algo: parseAlgo(obj(ev.o, 'ALGO_UPDATE.o')) };
+  }
+  return { type: 'other', eventType: String(e) };
+}
+
 type UConn = { ws: WsLike | null; intentional: boolean; reason: ResyncReason };
 
 export function createUserStream(opts: {
@@ -750,15 +766,7 @@ export function createUserStream(opts: {
         void establish('listenkey_expired');
         return;
       }
-      if (e === 'ORDER_TRADE_UPDATE') {
-        opts.onEvent({ type: 'order_update', eventTime: num(ev, 'E', String(e)), transactionTime: num(ev, 'T', String(e)), order: parseOrder(obj(ev.o, 'ORDER_TRADE_UPDATE.o')) });
-      } else if (e === 'ACCOUNT_UPDATE') {
-        opts.onEvent({ type: 'account_update', eventTime: num(ev, 'E', String(e)), transactionTime: num(ev, 'T', String(e)), ...parseAccount(obj(ev.a, 'ACCOUNT_UPDATE.a')) });
-      } else if (e === 'ALGO_UPDATE') {
-        opts.onEvent({ type: 'algo_update', eventTime: num(ev, 'E', String(e)), transactionTime: num(ev, 'T', String(e)), algo: parseAlgo(obj(ev.o, 'ALGO_UPDATE.o')) });
-      } else {
-        opts.onEvent({ type: 'other', eventType: String(e) });
-      }
+      opts.onEvent(parseUserEvent(ev));
     } catch (err) {
       log(`User stream: không đọc được sự kiện ${String(e)} (${errText(err)}) — yêu cầu đối chiếu lại`);
       opts.onEvent({ type: 'resync_required', reason: 'parse_error' });
