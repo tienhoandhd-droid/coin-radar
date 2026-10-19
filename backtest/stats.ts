@@ -85,6 +85,29 @@ export function bootstrapMeanCI(xs: readonly number[], o: BootOpts): { mean: num
   return { mean: mean(xs), lo: quantile(means, o.alpha / 2), hi: quantile(means, 1 - o.alpha / 2) };
 }
 
+// Bootstrap theo KHỐI (vd. ngày): lấy lại cả khối có hoàn lại, trung bình = tổng giá trị / tổng số phần tử của các khối đã lấy.
+// Lệnh cùng ngày (chồng thời gian, cùng cú sốc) không độc lập → CI theo khối trung thực hơn iid. Mỗi khối một phần tử ≡ iid.
+export function blockBootstrapMeanCI(xs: readonly number[], keys: readonly string[], o: BootOpts): { mean: number } & CI {
+  if (xs.length !== keys.length) throw new Error(`blockBootstrap: ${xs.length} giá trị nhưng ${keys.length} khóa khối`);
+  if (xs.length === 0) return { mean: NaN, lo: NaN, hi: NaN };
+  const byKey = new Map<string, number[]>();
+  xs.forEach((x, i) => { const k = keys[i]!; const b = byKey.get(k); if (b === undefined) byKey.set(k, [x]); else b.push(x); });
+  const blocks = [...byKey.values()].map((b) => ({ sum: b.reduce((s, x) => s + x, 0), n: b.length }));
+  const rnd = mulberry32(o.seed);
+  const m = blocks.length;
+  const means = new Array<number>(o.resamples);
+  for (let r = 0; r < o.resamples; r++) {
+    let s = 0, n = 0;
+    for (let i = 0; i < m; i++) { const b = blocks[Math.floor(rnd() * m)]!; s += b.sum; n += b.n; }
+    means[r] = s / n;
+  }
+  means.sort((x, y) => x - y);
+  return { mean: mean(xs), lo: quantile(means, o.alpha / 2), hi: quantile(means, 1 - o.alpha / 2) };
+}
+
+const DAY_MS = 86_400_000;
+const dayKey = (iso: string) => iso.slice(0, 10);
+
 // ---------------------------------------------------------------- chỉ số chuỗi lệnh -----------------------------------------------
 export function maxDrawdownR(rs: readonly number[]): number {
   let cum = 0, peak = 0, dd = 0;
@@ -111,7 +134,7 @@ export function compoundReturnPct(pctEquity: readonly number[]): number {
 // ---------------------------------------------------------------- thống kê một nhóm ------------------------------------------------
 export type Stats = {
   trades: number; wins: number; winRate: number; winCI: CI; tp1Hits: number; tp1Rate: number; tp1CI: CI;
-  expectancyR: number; expectancyCI: CI; sumR: number; pnl: number; profitFactor: number; avgFeesR: number; avgFundingR: number;
+  expectancyR: number; expectancyCI: CI; expectancyCIBlock: CI; days: number; sumR: number; pnl: number; profitFactor: number; avgFeesR: number; avgFundingR: number;
   longestLosingStreak: number; maxDrawdownR: number; compoundReturnPct: number;
   totalReturnPct: number | null; maxDrawdownPct: number | null; smallSample: boolean;
 };
@@ -128,12 +151,15 @@ export function computeStats(all: readonly StatTrade[], o: StatsOpts): Stats {
   const tp1Hits = xs.filter((r) => r.exits.some((e) => e.role === 'TP1')).length;
   const gp = xs.reduce((s, r) => s + Math.max(0, r.pnl), 0), gl = xs.reduce((s, r) => s + Math.max(0, -r.pnl), 0);
   const boot = bootstrapMeanCI(rs, o);
+  const dayOf = xs.map((r) => dayKey(r.entryTime ?? r.exitTime ?? ''));
+  const blk = blockBootstrapMeanCI(rs, dayOf, o); // khối = ngày VÀO lệnh (UTC)
   const perR = (f: (r: StatTrade) => number) => (n > 0 ? mean(xs.map((r) => (r.riskAtFill > 0 ? f(r) / r.riskAtFill : 0))) : 0);
   const eq = o.equity;
   const lastEq = eq !== undefined && eq.curve.length > 0 ? eq.curve[eq.curve.length - 1]!.equity : eq?.capital;
   return {
     trades: n, wins, winRate: n > 0 ? wins / n : 0, winCI: wilson(wins, n, z), tp1Hits, tp1Rate: n > 0 ? tp1Hits / n : 0, tp1CI: wilson(tp1Hits, n, z),
-    expectancyR: n > 0 ? boot.mean : 0, expectancyCI: { lo: boot.lo, hi: boot.hi }, sumR: rs.reduce((s, r) => s + r, 0),
+    expectancyR: n > 0 ? boot.mean : 0, expectancyCI: { lo: boot.lo, hi: boot.hi },
+    expectancyCIBlock: { lo: blk.lo, hi: blk.hi }, days: new Set(dayOf).size, sumR: rs.reduce((s, r) => s + r, 0),
     pnl: xs.reduce((s, r) => s + r.pnl, 0), profitFactor: gl > 0 ? gp / gl : gp > 0 ? Infinity : 0,
     avgFeesR: perR((r) => r.costs), avgFundingR: perR((r) => r.funding ?? 0),
     longestLosingStreak: longestLosingStreak(xs.map((r) => r.pnl)), maxDrawdownR: maxDrawdownR(rs),
@@ -148,14 +174,14 @@ export function computeStats(all: readonly StatTrade[], o: StatsOpts): Stats {
 export type Dim = 'mode' | 'side' | 'grade' | 'kind' | 'regime' | 'variant';
 const dimValue = (r: StatTrade, d: Dim): string => String((d === 'grade' ? r.grade : r[d]) ?? '?');
 
-// Nhóm "tất cả" + từng chiều riêng + tổ hợp đủ mọi chiều đã chọn (chỉ tổ hợp có lệnh).
+// Nhóm "tất cả" + từng chiều riêng + từng CẶP chiều (chỉ ô có lệnh). Không ghép đủ mọi chiều một lúc: ô quá nhỏ.
 export function groupStatsBy(xs: readonly StatTrade[], dims: readonly Dim[], o: BootOpts): Array<{ key: string; stats: Stats }> {
   const filled = xs.filter((r) => r.filled);
   const groups = new Map<string, StatTrade[]>([['tất cả', filled]]);
   const add = (k: string, r: StatTrade) => { const g = groups.get(k); if (g === undefined) groups.set(k, [r]); else g.push(r); };
   for (const r of filled) {
     for (const d of dims) add(`${d}=${dimValue(r, d)}`, r);
-    if (dims.length > 1) add(dims.map((d) => `${d}=${dimValue(r, d)}`).join('|'), r);
+    for (let i = 0; i < dims.length; i++) for (let j = i + 1; j < dims.length; j++) add(`${dims[i]}=${dimValue(r, dims[i]!)}|${dims[j]}=${dimValue(r, dims[j]!)}`, r);
   }
   return [...groups].map(([key, g]) => ({ key, stats: computeStats(g, o) }));
 }
@@ -163,7 +189,7 @@ export function groupStatsBy(xs: readonly StatTrade[], dims: readonly Dim[], o: 
 // ---------------------------------------------------------------- so sánh theo cặp -------------------------------------------------
 export type Paired = {
   matched: number; meanDeltaR: number; ci: CI; alpha: number; trials: number; alphaAdj: number; ciAdj: CI;
-  baseOnly: string[]; variantOnly: string[]; note: string;
+  baseOnly: string[]; variantOnly: string[]; baseOnlyR: number; variantOnlyR: number; note: string;
 };
 
 export function pairedComparison(base: readonly StatTrade[], variant: readonly StatTrade[], o: BootOpts & { trials: number }): Paired {
@@ -178,8 +204,74 @@ export function pairedComparison(base: readonly StatTrade[], variant: readonly S
   const adj = bootstrapMeanCI(deltas, { ...o, alpha: alphaAdj });
   return {
     matched: deltas.length, meanDeltaR: ci.mean, ci: { lo: ci.lo, hi: ci.hi }, alpha: o.alpha, trials: o.trials, alphaAdj, ciAdj: { lo: adj.lo, hi: adj.hi },
-    baseOnly, variantOnly,
+    baseOnly, variantOnly, baseOnlyR: baseOnly.reduce((x, id) => x + b.get(id)!.R, 0), variantOnlyR: variantOnly.reduce((x, id) => x + v.get(id)!.R, 0),
     note: `${baseOnly.length} lệnh chỉ có ở gốc, ${variantOnly.length} lệnh chỉ có ở biến thể (khác do danh mục/định cỡ/luật) — không nằm trong ΔR theo cặp`,
+  };
+}
+
+// ---------------------------------------------------------------- so cấp DANH MỤC theo ngày ---------------------------------------
+// Tiêu chí nhận chính (rà soát C1): biến thể LỌC bỏ lệnh → ΔR theo cặp ≈ 0 theo cấu tạo; tác dụng nằm ở lệnh bị bỏ/thêm. Vì vậy so
+// cả danh mục trên CÙNG lịch ngày D: R/ngày (tổng R lệnh ĐÓNG trong ngày UTC, ngày không lệnh = 0) và lợi suất vốn/ngày (đường vốn).
+// Chuỗi Δ theo ngày (biến thể − gốc, ghép theo ngày) → bootstrap theo khối NGÀY (lấy lại ngày có hoàn lại).
+
+export function dailyRSeries(trades: readonly StatTrade[], start: number, end: number): number[] {
+  const n = Math.ceil((end - start) / DAY_MS);
+  const out = new Array<number>(n).fill(0);
+  for (const r of trades) {
+    if (!r.filled || r.exitTime === null) continue;
+    const t = Date.parse(r.exitTime);
+    const i = t === end ? n - 1 : Math.floor((t - start) / DAY_MS); // đóng đúng mốc cuối kỳ → ngày cuối
+    if (!(i >= 0 && i < n)) throw new Error(`dailyRSeries: lệnh đóng ${r.exitTime} ngoài lịch [${new Date(start).toISOString()}, ${new Date(end).toISOString()})`);
+    out[i]! += r.R;
+  }
+  return out;
+}
+
+// Lợi suất % vốn từng ngày: vốn cuối ngày (điểm cuối cùng có t < hết ngày; không có điểm → giữ vốn ngày trước) so vốn cuối ngày trước.
+export function dailyEquityReturns(curve: ReadonlyArray<{ t: number; equity: number }>, capital: number, start: number, end: number): number[] {
+  const n = Math.ceil((end - start) / DAY_MS);
+  const pts = [...curve].sort((a, b) => a.t - b.t);
+  let k = 0, eq = capital;
+  while (k < pts.length && pts[k]!.t < start) eq = pts[k++]!.equity;
+  const out: number[] = [];
+  for (let d = 0; d < n; d++) {
+    const dayEnd = start + (d + 1) * DAY_MS;
+    const prev = eq;
+    while (k < pts.length && (pts[k]!.t < dayEnd || (d === n - 1 && pts[k]!.t <= end))) eq = pts[k++]!.equity;
+    out.push((eq / prev - 1) * 100);
+  }
+  return out;
+}
+
+const finalEquity = (curve: ReadonlyArray<{ equity: number }>, capital: number) => (curve.length > 0 ? curve[curve.length - 1]!.equity : capital);
+
+export type DeltaCI = { mean: number; ci: CI; ciAdj: CI };
+export type PortfolioComparison = {
+  days: number; alpha: number; trials: number; alphaAdj: number; rPerDay: DeltaCI; retPerDay: DeltaCI;
+  deltaTotalReturnPct: number; deltaMaxDdPct: number; baseOnly: { count: number; sumR: number }; variantOnly: { count: number; sumR: number };
+};
+type Side2 = { trades: readonly StatTrade[]; curve: ReadonlyArray<{ t: number; equity: number }> };
+
+export function portfolioComparison(base: Side2, variant: Side2, o: BootOpts & { trials: number; capital: number; start: number; end: number }): PortfolioComparison {
+  const alphaAdj = bonferroniAlpha(o.alpha, o.trials);
+  const delta = (b: number[], v: number[]): DeltaCI => {
+    const d = v.map((x, i) => x - b[i]!);
+    const a = bootstrapMeanCI(d, o), adj = bootstrapMeanCI(d, { ...o, alpha: alphaAdj }); // mỗi phần tử = một ngày → bootstrap khối ngày
+    return { mean: a.mean, ci: { lo: a.lo, hi: a.hi }, ciAdj: { lo: adj.lo, hi: adj.hi } };
+  };
+  const rB = dailyRSeries(base.trades, o.start, o.end), rV = dailyRSeries(variant.trades, o.start, o.end);
+  const eB = dailyEquityReturns(base.curve, o.capital, o.start, o.end), eV = dailyEquityReturns(variant.curve, o.capital, o.start, o.end);
+  const ids = (xs: readonly StatTrade[]) => new Map(xs.filter((r) => r.filled).map((r) => [r.signalId, r.R]));
+  const bIds = ids(base.trades), vIds = ids(variant.trades);
+  const only = (a: Map<string, number>, b: Map<string, number>) => {
+    const xs = [...a].filter(([id]) => !b.has(id));
+    return { count: xs.length, sumR: xs.reduce((s, [, r]) => s + r, 0) };
+  };
+  return {
+    days: rB.length, alpha: o.alpha, trials: o.trials, alphaAdj, rPerDay: delta(rB, rV), retPerDay: delta(eB, eV),
+    deltaTotalReturnPct: ((finalEquity(variant.curve, o.capital) - finalEquity(base.curve, o.capital)) / o.capital) * 100,
+    deltaMaxDdPct: maxDrawdownPct(variant.curve, o.capital) - maxDrawdownPct(base.curve, o.capital),
+    baseOnly: only(bIds, vIds), variantOnly: only(vIds, bIds),
   };
 }
 

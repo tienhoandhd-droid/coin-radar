@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  VARIANTS, assertDevPeriod, requireWired, logVariants, countTrials, formatLogRow, LOG_HEADER, decide, parseFromOutput, validateSource,
+  VARIANTS, assertDevPeriod, requireWired, logRows, countTrials, formatLogRow, upsertLogRow, LOG_HEADER, decide, parseFromOutput, validateSource, resamplesFor,
 } from './experiment.ts';
 import { DEV_PERIOD } from './replay.ts';
 
@@ -30,27 +30,53 @@ test('requireWired: biến thể chưa nối → lỗi nêu hook; tên lạ → 
   assert.throws(() => requireWired('khong-co'), /không có biến thể/);
 });
 
-test('nhật ký: đọc tên biến thể từ bảng, đếm số lần thử (không tính gốc), dòng mới đúng số cột', () => {
-  const log = `${LOG_HEADER}| 2026-10-19 | baseline | swing | x | y | 96 | a | — | b | c | d | gốc |\n| 2026-10-19 | exit-A0 | swing | x | y | 105 | a | b | c | d | e | f |\n| 2026-10-19 | exit-A0 | fast | x | y | 1 | a | b | c | d | e | f |\n`;
-  assert.deepEqual(logVariants(log), ['baseline', 'exit-A0', 'exit-A0']);
-  assert.equal(countTrials(log, 'baseline'), 1);
-  assert.equal(countTrials(log, 'exit-A0'), 1);
-  assert.equal(countTrials(log, 'p1-cost-floor-k010'), 2);
-  assert.equal(countTrials(LOG_HEADER, 'baseline'), 1, 'Bonferroni cần k ≥ 1');
-  const cols = (s: string) => s.trim().split('|').length;
-  const headerRow = LOG_HEADER.trim().split('\n').find((l) => l.startsWith('| Ngày'))!;
-  const row = formatLogRow({ date: '2026-10-19', variant: 'v', mode: 'swing', change: 'a|b', rationale: 'r', trades: 3, expectancy: 'e', delta: 'd', totalPct: 't', pf: 'p', maxDd: 'm', decision: 'q' });
-  assert.equal(cols(row), cols(headerRow));
-  assert.match(row, /a\/b/, 'ký tự | trong ô bị thay để không vỡ bảng');
+const row = (variant: string, mode: string, decision = 'q') => formatLogRow({ date: '2026-10-19', variant, mode, change: 'a|b', rationale: 'r', trades: 3,
+  expectancy: 'e', dRPerDay: 'x', dRetPerDay: 'y', deltas: 'z', paired: 'p', k: '1', totalPct: 't', pf: 'p', maxDd: 'm', streak: 's', decision });
+
+test('nhật ký: đọc (biến thể, chế độ); k = số cặp (biến thể × chế độ) khác gốc, tính cả lần đang chạy; chạy lại cùng cặp không tăng k', () => {
+  const log = LOG_HEADER + row('baseline', 'swing') + row('filter-A', 'swing') + row('filter-A', 'fast') + row('exit-A0', 'swing');
+  assert.deepEqual(logRows(log).map((r) => `${r.variant}/${r.mode}`), ['baseline/swing', 'filter-A/swing', 'filter-A/fast', 'exit-A0/swing']);
+  assert.equal(countTrials(log, 'baseline', ['swing', 'fast']), 3);
+  assert.equal(countTrials(log, 'exit-A0', ['swing']), 3, 'quyết định lại cùng cặp');
+  assert.equal(countTrials(log, 'exit-A0', ['swing', 'fast']), 4, 'mỗi chế độ là một quyết định');
+  assert.equal(countTrials(LOG_HEADER, 'baseline', ['swing']), 1, 'Bonferroni cần k ≥ 1');
+  assert.match(LOG_HEADER, /Cách đếm k/);
 });
 
-test('decide: gốc; < 30 lệnh/cặp; cận dưới Bonferroni > 0 và DD không tệ hơn → đạt', () => {
-  assert.match(decide({ baseline: true, trades: 96, matched: 0, adjLo: NaN, dd: 20, baseDd: 20 }), /gốc/);
-  assert.match(decide({ baseline: false, trades: 20, matched: 20, adjLo: 0.1, dd: 10, baseDd: 20 }), /không kết luận được/);
-  assert.match(decide({ baseline: false, trades: 90, matched: 12, adjLo: 0.1, dd: 10, baseDd: 20 }), /không kết luận được/);
-  assert.match(decide({ baseline: false, trades: 90, matched: 60, adjLo: 0.01, dd: 19, baseDd: 20 }), /^đạt/);
-  assert.match(decide({ baseline: false, trades: 90, matched: 60, adjLo: 0.01, dd: 25, baseDd: 20 }), /không nhận.*DD/);
-  assert.match(decide({ baseline: false, trades: 90, matched: 60, adjLo: -0.01, dd: 10, baseDd: 20 }), /không nhận/);
+test('upsertLogRow: thay dòng cùng (biến thể, chế độ), không thì thêm cuối; ô có | không vỡ bảng', () => {
+  const log = LOG_HEADER + row('baseline', 'swing') + row('exit-A0', 'swing', 'cũ') + row('exit-A0', 'fast', 'cũ');
+  const next = upsertLogRow(log, row('exit-A0', 'swing', 'mới'));
+  assert.equal(logRows(next).length, 3);
+  assert.match(next, /mới/);
+  assert.equal((next.match(/\| cũ \|/g) ?? []).length, 1);
+  assert.equal(logRows(upsertLogRow(log, row('filter-A', 'swing'))).length, 4);
+  const cols = (x: string) => x.trim().split('|').length;
+  const headerRow = LOG_HEADER.trim().split('\n').find((l) => l.startsWith('| Ngày'))!;
+  assert.equal(cols(row('v', 'swing')), cols(headerRow));
+  assert.match(row('v', 'swing'), /a\/b/);
+});
+
+test('resamplesFor: ≥ 2000·k để đuôi phân vị Bonferroni đủ mẫu', () => {
+  assert.equal(resamplesFor(1, 5000), 5000);
+  assert.equal(resamplesFor(4, 5000), 8000);
+});
+
+const ok = { baseline: false, trades: 90, rPerDayAdjLo: 0.01, retPerDayAdjLo: 0.001, expectancy: -0.1, baseExpectancy: -0.14, dd: 19, baseDd: 20, streak: 10, baseStreak: 12 };
+test('decide: tiêu chí cấp DANH MỤC — cận dưới Bonferroni (khối ngày) của Δ R/ngày VÀ Δ lợi suất/ngày > 0, kỳ vọng tăng, DD và chuỗi thua không tệ hơn, ≥ 30 lệnh', () => {
+  assert.match(decide({ ...ok, baseline: true }), /gốc/);
+  assert.match(decide(ok), /^đạt/);
+  assert.match(decide({ ...ok, trades: 20 }), /không kết luận được/);
+  assert.match(decide({ ...ok, rPerDayAdjLo: -0.01 }), /không nhận.*R\/ngày/);
+  assert.match(decide({ ...ok, retPerDayAdjLo: 0 }), /không nhận.*lợi suất/);
+  assert.match(decide({ ...ok, expectancy: -0.2 }), /không nhận.*kỳ vọng/);
+  assert.match(decide({ ...ok, dd: 21 }), /không nhận.*DD/);
+  assert.match(decide({ ...ok, streak: 13 }), /không nhận.*chuỗi thua/);
+});
+
+test('biến thể đã xem trước khi có nhật ký: filter-A (Hạng A) và exit-A0 đã nối', () => {
+  assert.deepEqual(VARIANTS['filter-A']!.run, { policy: 'C2', filter: 'A' });
+  assert.match(VARIANTS['filter-A']!.rationale, /trước khi có nhật ký/);
+  assert.match(VARIANTS['exit-A0']!.rationale, /trước khi có nhật ký/);
 });
 
 test('parseFromOutput: swing=…,fast=…', () => {

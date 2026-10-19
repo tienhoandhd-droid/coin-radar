@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   wilson, zFor, mulberry32, bootstrapMeanCI, maxDrawdownR, maxDrawdownPct, longestLosingStreak, compoundReturnPct, computeStats,
-  groupStatsBy, pairedComparison, bonferroniAlpha, simulateRandomTrade, randomEntryBaseline, type StatTrade, type RandomTemplate,
+  groupStatsBy, pairedComparison, bonferroniAlpha, simulateRandomTrade, randomEntryBaseline, blockBootstrapMeanCI, dailyRSeries,
+  dailyEquityReturns, portfolioComparison, type StatTrade, type RandomTemplate,
 } from './stats.ts';
 import type { Candle } from '../packages/core/types.ts';
 
@@ -103,6 +104,14 @@ test('computeStats: số đếm, kỳ vọng, PF, phí R, TP1, lệnh chưa kh�
   close(withCurve.totalReturnPct!, 1);
 });
 
+test('groupStatsBy: chỉ ghép từng CẶP chiều (không ghép đủ mọi chiều — ô quá nhỏ)', () => {
+  const xs = [tr({ R: 1, side: 'long', kind: 'zone' }), tr({ R: -1, side: 'short', kind: 'pattern' })];
+  const keys = groupStatsBy(xs, ['mode', 'side', 'kind'], { resamples: 20, seed: 1, alpha: 0.05 }).map((g) => g.key);
+  assert.ok(keys.includes('mode=swing|side=long'));
+  assert.ok(keys.includes('side=short|kind=pattern'));
+  assert.ok(!keys.some((k) => k.split('|').length > 2));
+});
+
 test('groupStatsBy: tách theo chiều, có nhóm "tất cả" và khóa ghép', () => {
   const xs = [tr({ R: 1, side: 'long' }), tr({ R: -1, side: 'short' }), tr({ R: -1, side: 'short', regime: 'down' })];
   const g = groupStatsBy(xs, ['side', 'regime'], { resamples: 50, seed: 1, alpha: 0.05 });
@@ -153,4 +162,58 @@ test('randomEntryBaseline: tất định theo hạt, đúng số lệnh mỗi l�
   assert.equal(a.tradesPerRep, 2);
   assert.ok(a.lo <= a.meanExpectancyR && a.meanExpectancyR <= a.hi);
   assert.equal(a.skippedTemplates, 0);
+});
+
+const D0 = Date.UTC(2026, 6, 1);
+const day = (d: number, h = 12) => new Date(D0 + d * 86_400_000 + h * 3_600_000).toISOString();
+
+test('blockBootstrapMeanCI: mỗi khối một phần tử → trùng bootstrap iid; dữ liệu dồn cụm → CI rộng hơn iid', () => {
+  const xs = [0.5, -1, 2, 0.3, -0.7, 1.1];
+  assert.deepEqual(blockBootstrapMeanCI(xs, xs.map((_, i) => String(i)), { resamples: 500, seed: 5, alpha: 0.05 }), bootstrapMeanCI(xs, { resamples: 500, seed: 5, alpha: 0.05 }));
+  const ys: number[] = [], keys: string[] = [];
+  for (let b = 0; b < 20; b++) for (let i = 0; i < 5; i++) { ys.push(b % 2 === 0 ? 1 : -1); keys.push(`d${b}`); }
+  const iid = bootstrapMeanCI(ys, { resamples: 3000, seed: 2, alpha: 0.05 });
+  const blk = blockBootstrapMeanCI(ys, keys, { resamples: 3000, seed: 2, alpha: 0.05 });
+  assert.ok(blk.hi - blk.lo > 1.5 * (iid.hi - iid.lo), `khối ${blk.hi - blk.lo} vs iid ${iid.hi - iid.lo}`);
+  assert.throws(() => blockBootstrapMeanCI([1], ['a', 'b'], { resamples: 5, seed: 1, alpha: 0.05 }));
+});
+
+test('computeStats: CI kỳ vọng theo khối NGÀY VÀO lệnh, bên cạnh iid', () => {
+  const xs = [tr({ R: 1, entryTime: day(0) }), tr({ R: 1, entryTime: day(0, 13) }), tr({ R: -1, entryTime: day(1) })];
+  const s = computeStats(xs, { resamples: 300, seed: 4, alpha: 0.05 });
+  const b = blockBootstrapMeanCI([1, 1, -1], ['0', '0', '1'], { resamples: 300, seed: 4, alpha: 0.05 });
+  close(s.expectancyCIBlock.lo, b.lo); close(s.expectancyCIBlock.hi, b.hi);
+  assert.equal(s.days, 2);
+});
+
+test('dailyRSeries: tổng R theo NGÀY ĐÓNG lệnh trên đủ lịch (ngày không lệnh = 0); lệnh chưa khớp bỏ', () => {
+  const xs = [tr({ R: 1, exitTime: day(0) }), tr({ R: -0.5, exitTime: day(2, 1) }), tr({ R: 2, exitTime: day(2, 23) }), tr({ R: 9, filled: false, exitTime: day(1) })];
+  assert.deepEqual(dailyRSeries(xs, D0, D0 + 4 * 86_400_000), [1, 0, 1.5, 0]);
+});
+
+test('dailyEquityReturns: lợi suất vốn từng ngày từ đường vốn (giữ giá trị ngày trước khi không có điểm)', () => {
+  const curve = [{ t: D0 + 3_600_000, equity: 105 }, { t: D0 + 20 * 3_600_000, equity: 110 }, { t: D0 + 2 * 86_400_000 + 5, equity: 99 }];
+  const r = dailyEquityReturns(curve, 100, D0, D0 + 3 * 86_400_000);
+  close(r[0]!, 10); close(r[1]!, 0); close(r[2]!, -10);
+  assert.equal(r.length, 3);
+});
+
+test('portfolioComparison: Δ R/ngày và Δ lợi suất/ngày theo cùng lịch, bootstrap theo ngày, Bonferroni rộng hơn; Δ tổng lãi, Δ DD, R lệnh chỉ một bên', () => {
+  const base = [tr({ signalId: 'a', R: -1, exitTime: day(0) }), tr({ signalId: 'c', R: 1, exitTime: day(2) })];
+  const vari = [tr({ signalId: 'a', R: 0, exitTime: day(0) }), tr({ signalId: 'd', R: 2, exitTime: day(2) })];
+  const bc = [{ t: D0 + 1000, equity: 98 }, { t: D0 + 2 * 86_400_000 + 1000, equity: 100 }];
+  const vc = [{ t: D0 + 1000, equity: 100 }, { t: D0 + 2 * 86_400_000 + 1000, equity: 104 }];
+  const p = portfolioComparison({ trades: base, curve: bc }, { trades: vari, curve: vc }, { capital: 100, start: D0, end: D0 + 3 * 86_400_000, resamples: 2000, seed: 1, alpha: 0.05, trials: 4 });
+  assert.equal(p.days, 3);
+  close(p.rPerDay.mean, 2 / 3); // Δ = [1, 0, 1]
+  close(p.retPerDay.mean, (2 + 0 + (4 - 2.040816)) / 3, 1e-4); // gốc −2%, 0, +2,04% (98→100); biến thể 0, 0, +4%
+  assert.ok(p.rPerDay.ciAdj.lo <= p.rPerDay.ci.lo && p.rPerDay.ciAdj.hi >= p.rPerDay.ci.hi);
+  close(p.deltaTotalReturnPct, 4);
+  close(p.deltaMaxDdPct, -2);
+  assert.deepEqual({ b: p.baseOnly, v: p.variantOnly }, { b: { count: 1, sumR: 1 }, v: { count: 1, sumR: 2 } });
+});
+
+test('pairedComparison: ghi tổng R lệnh chỉ có ở một bên', () => {
+  const p = pairedComparison([tr({ signalId: 'a', R: -1 }), tr({ signalId: 'c', R: 1.5 })], [tr({ signalId: 'a', R: 0 }), tr({ signalId: 'd', R: 2 })], { resamples: 50, seed: 1, alpha: 0.05, trials: 1 });
+  close(p.baseOnlyR, 1.5); close(p.variantOnlyR, 2);
 });
