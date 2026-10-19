@@ -38,6 +38,8 @@ lý do chấm điểm của từng coin, và trang “Nguyên tắc” trên web
 | Lướt nhanh chạy ở đâu | **Trên trình duyệt** khi mở web (IP Việt Nam, không trễ) |
 | Swing chạy ở đâu | ~~GitHub Actions~~ — **đổi 19/10/2026**: runner GitHub (Mỹ) bị Binance trả 451 (`docs/verification/probe-2026-10-19.md`). Swing tính **trên trình duyệt** khi mở web; ghi sổ 24/7 bằng **lịch chạy trên máy Ubuntu của người dùng** khi máy bật (IP Việt Nam) |
 | Cắt lỗ quá rộng (19/10) | Không “Đạt tiêu chí” khi khoảng cắt lỗ > 2×ATR ngày **hoặc** > 20% giá vào (cổng G-11) |
+| SL/TP theo vùng (19/10, kế hoạch 1b) | SL đặt sau vùng hỗ trợ (Long) / kháng cự (Short) đủ mạnh; TP1/TP2/TP3 đặt trước các vùng cản kế tiếp; chốt **50% / 30% / 20%**; **đạt TP1 thì dời SL về giá vào, sau TP2 giữ nguyên**; vùng nào không còn thì phần đó để trailing stop 3×ATR. Cổng **G-11 giữ nguyên**, thêm cổng **G-12** (kế hoạch theo vùng phải hợp lệ: có vùng đặt SL, TP1 đặt được và ≥ 1R). **Hợp đồng chỉ số (INDEX) bị loại** khỏi danh sách quét (525 → 523 hợp đồng) |
+| Vào lệnh trực tiếp hay limit (19/10) | Giá cách mép vùng hỗ trợ ≤ 0,5×ATR → **VÀO TRỰC TIẾP**; xa hơn → **đặt limit chờ hồi** tại mép vùng + 0,1×ATR, hết hạn sau 8 nến 15m (2 giờ, Lướt nhanh) / 6 nến 4H (24 giờ, Swing) |
 | Lệnh ngược xu hướng (19/10) | Chỉ khi điểm ≥ 80 **và** sức mạnh so BTC rõ ngược chiều (z ≤ −1,5 cho Short / ≥ +1,5 cho Long) **và** rủi ro không “Rất cao”; thiếu z → không cho. Lướt nhanh: bắt buộc cùng phía SMA200 1H của BTC, không ngoại lệ |
 | Top 10% (19/10) | Chỉ xếp hạng trong các hợp đồng đã qua mọi cổng và điểm ≥ 70, tách Long/Short, theo nhóm thanh khoản (khuyến nghị của rà soát cuối) |
 | Web | Độc lập, repo public `tienhoandhd-droid/coin-radar`, GitHub Pages |
@@ -203,13 +205,25 @@ Không dùng VPN/proxy để lách chặn (có thể vi phạm điều khoản B
 
 ### 3.8 Kế hoạch lệnh (Long; Short đối xứng)
 
-| Mục | Lướt nhanh | Swing |
-|---|---|---|
-| Mức kích hoạt | **Theo mark price** (giá Binance dùng để thanh lý) | như Lướt nhanh |
-| Cắt lỗ | thấp hơn giữa (pivot đã xác nhận − 0,5×ATR15m) và (giá vào − 2,5×ATR15m); sát số tròn → đẩy qua số tròn | thấp hơn giữa (pivot − 0,5×ATR4H) và (giá vào − 2×ATR4H); không chặt hơn 1×ATR1D |
-| Giá vào tối đa | giá đóng + 0,3×ATR khung vào lệnh; vượt → “Đã chạy – bỏ qua” | như Lướt nhanh |
-| Chốt lời | 1/3 ở 1,5R → dời cắt lỗ về giá vào + phí → phần còn lại trailing chandelier 3×ATR | như Lướt nhanh |
-| Dừng theo thời gian | chưa +1R sau 8h; trần 24h | chưa +1R sau 7 ngày; trần 21 ngày |
+Kế hoạch dựa trên **vùng hỗ trợ/kháng cự** (`packages/core/zones.ts`) và chỉ lập cho hợp đồng có nhãn “Đạt tiêu chí”. Mọi ngưỡng ở `COMMON.zones` trong `packages/core/config.ts`, đề xuất, chưa backtest.
+
+**Dựng vùng.** Lấy đỉnh/đáy đã xác nhận (pivot, 3 nến mỗi bên) của khung vào lệnh (trọng số 1) và khung xu hướng (trọng số 2); gộp các mức cách nhau ≤ 0,5×ATR khung vào lệnh, một vùng rộng tối đa 1,5×ATR. Độ mạnh = tổng trọng số + 0,5 nếu vùng chứa số tròn + 1 nếu vùng thuộc nhóm 25% khối lượng giao dịch cao nhất.
+
+| Mục | Quy tắc (cả Lướt nhanh và Swing) |
+|---|---|
+| Mức kích hoạt | **Theo mark price** (giá Binance dùng để thanh lý) |
+| Vùng đặt SL | Vùng hỗ trợ (Long) / kháng cự (Short) gần nhất có độ mạnh ≥ 2. Vùng đang chứa giá vào cũng được coi là hỗ trợ cho Long / kháng cự cho Short. Không có vùng đủ mạnh → kế hoạch không hợp lệ (G-12 trượt) |
+| Kiểu vào lệnh | Giá cách mép vùng ≤ 0,5×ATR → **VÀO TRỰC TIẾP** (giá vào = giá đóng nến gần nhất; không mua cao hơn / bán thấp hơn giá đóng quá `maxEntryAtr`×ATR của chế độ). Xa hơn → **ĐẶT LIMIT** tại mép vùng ± 0,1×ATR, hết hạn sau 8 nến 15m (2 giờ) / 6 nến 4H (24 giờ), hoặc hủy nếu giá chạm TP1 trước |
+| Giá vào dùng để tính | Giá hiện tại nếu vào trực tiếp; giá limit nếu đặt limit. SL, R, khối lượng, thanh lý đều tính từ giá này |
+| Cắt lỗ | Ngoài mép xa của vùng 0,3×ATR; Swing không chặt hơn 1×ATR ngày; sát số tròn → đẩy qua số tròn. Khoảng cắt lỗ vẫn chịu cổng G-11 (≤ 2×ATR ngày và ≤ 20% giá vào) |
+| Chốt lời | TP1/TP2/TP3 = trước mép vùng cản kế tiếp 0,2×ATR, chốt **50% / 30% / 20%** vị thế. Hết vùng cản → phần còn lại để **trailing stop 3×ATR** (giá TP = null). TP1 phải ≥ 1R, nếu không bỏ lệnh (G-12). Vùng cản sát ngay giá vào, không còn chỗ đặt TP1 → bỏ lệnh |
+| Sau khi chốt | **Đạt TP1 → dời SL về giá vào; sau TP2 SL vẫn ở giá vào** |
+| Điểm S-03 (đường đi) | TP1 = 1R → 0 điểm, ≥ 2R → đủ; không có vùng cản phía trước → đủ điểm; TP1 bị chặn/kế hoạch không hợp lệ → 0 điểm, lý do ghi lý do của kế hoạch |
+| Dừng theo thời gian | Lướt nhanh: chưa +1R sau 8h, trần 24h. Swing: chưa +1R sau 7 ngày, trần 21 ngày |
+
+Cổng liên quan: **G-11 giữ nguyên** (cắt lỗ không quá rộng); **G-12 mới** (kế hoạch theo vùng hợp lệ: có vùng đặt SL, TP1 đặt được và ≥ 1R). Hợp đồng chỉ số (INDEX) không phải coin giao dịch thật nên bị loại ngay khi đọc `exchangeInfo`.
+
+Giá in ra console theo `tickSize` của từng hợp đồng, dấu phẩy thập phân.
 
 **Lệnh đang mở gặp kịch bản xấu** (cầu dao, đổi chế độ thị trường, funding đảo chiều cực đoan, hack, lệch neo,
 thông báo hủy hợp đồng…): mỗi kịch bản có hành động cho lệnh đang mở — thoát / giảm / siết cắt lỗ.

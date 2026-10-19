@@ -101,6 +101,42 @@ for (const side of ['long', 'short'] as const) {
     console.log(`  ${a.symbol.padEnd(16)} ${String(a.best.score).padStart(5)}  ${a.label.padEnd(18)} rủi ro ${a.risk.tier.padEnd(7)} cổng trượt: ${failed}`);
   }
 }
+
+// In giá theo tickSize của hợp đồng: làm tròn đúng số chữ số thập phân của tickSize (không dính nhiễu số thực), dấu phẩy thập phân
+const tickByCode = new Map(contracts.map((c) => [c.symbol, c.tickSize]));
+function tickDecimals(tick: number): number {
+  let d = 0;
+  while (d < 12 && Math.abs(Math.round(tick * 10 ** d) / 10 ** d - tick) > 1e-12) d++;
+  return d;
+}
+const priceText = (symbol: string, x: number): string => {
+  const tick = tickByCode.get(symbol);
+  if (tick === undefined) throw new Error(`Không có tickSize của ${symbol}`);
+  return (Math.round(x / tick) * tick).toFixed(tickDecimals(tick)).replace('.', ',');
+};
+const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
+
+const qualified = final.filter((a) => a.label.startsWith('Đạt') && a.plan !== null);
+console.log(`\nKế hoạch lệnh các hợp đồng Đạt tiêu chí (${qualified.length}):`);
+for (const a of qualified) {
+  const p = a.plan!;
+  const px = (x: number) => priceText(a.symbol, x);
+  console.log(`\n${a.symbol} — ${p.side === 'long' ? 'LONG' : 'SHORT'} | điểm ${a.best.score} | rủi ro ${a.risk.tier}`);
+  console.log(p.entryType === 'market'
+    ? `  Kiểu vào lệnh: VÀO TRỰC TIẾP — ${p.entryReason}`
+    : `  Kiểu vào lệnh: ĐẶT LIMIT CHỜ HỒI về ${px(p.entry)}, hết hạn sau ${p.limitExpiryHours} giờ — ${p.entryReason}`);
+  console.log(`  Giá hiện tại: ${px(p.marketPrice)} | Vùng giá vào: ${px(p.entryZone.low)}–${px(p.entryZone.high)} | Giá vào dùng để tính: ${px(p.entry)}`);
+  console.log(`  SL: ${px(p.stop)} — ${p.stopReason}`);
+  for (const t of p.targets) {
+    console.log(t.price === null
+      ? `  ${t.name}: chốt ${t.pct}% — trailing stop 3×ATR = ${px(p.trailAtr)} — ${t.reason}`
+      : `  ${t.name}: ${px(t.price)} chốt ${t.pct}% | ${num(t.r!, 2)}R — ${t.reason}`);
+  }
+  console.log(`  Đạt TP1 → dời SL về giá vào ${px(p.afterTp1Stop)} (giữ nguyên sau TP2)`);
+  console.log(`  Khối lượng: ${num(p.qty, 8).replace(/0+$/, '').replace(/,$/, '')} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)}`);
+  console.log(`  Tiền mất nếu chạm SL: ${num(p.riskAmount, 2)} USDT (${p.riskPct}% vốn)`);
+}
+
 if (errors.length) console.log(`\nLỗi (tối đa 10):\n${errors.slice(0, 10).map((e) => `  ${e.symbol}: ${e.error}`).join('\n')}`);
 
 mkdirSync(new URL('../output/', import.meta.url), { recursive: true });
