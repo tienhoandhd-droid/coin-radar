@@ -298,6 +298,12 @@ URL: [UDS] https://developers.binance.com/en/docs/products/derivatives-trading-u
 - Tài liệu chính thức chỉ nêu: dữ liệu REST có thể trễ lúc thị trường biến động mạnh, "nên ưu tiên dùng user data stream". Không có quy trình reconnect/resync chính thức: **KHÔNG THẤY TRONG TÀI LIỆU**. [UDS]
 - **[Đề xuất]** quy trình khôi phục (dựa trên các sự thật ở trên): khi mở lại kết nối hoặc nhận `listenKeyExpired`: (1) `POST /fapi/v1/listenKey` lấy key mới, (2) mở kết nối `/private`, (3) rồi gọi REST để đối chiếu: `GET /fapi/v3/positionRisk`, `GET /fapi/v1/openOrders`, `GET /fapi/v1/openAlgoOrders`, `GET /fapi/v1/userTrades`, (4) áp dụng sự kiện đến sau.
 
+### 6.5 Bổ sung cho B8a (đọc lại 2026-10-19 bằng WebFetch)
+- Phản hồi listenKey [R-UDS]: `POST` và `PUT /fapi/v1/listenKey` đều trả `{"listenKey": "<chuỗi>"}`; `DELETE` trả HTTP 200, không có dữ liệu. Cả ba chỉ cần header `X-MBX-APIKEY` (USER_STREAM), **PUT/DELETE không có tham số listenKey** trong tài liệu (sàn tự nhận diện theo API key: **KHÔNG THẤY TRONG TÀI LIỆU** cơ chế cụ thể).
+- Trang UDS chỉ nêu dạng đường dẫn `wss://fstream.binance.com/private/ws/<listenKey>` (ví dụ đầy đủ có key thật dạng chuỗi dài). Trang [WSN] nêu dạng `.../private/ws?listenKey=<key>&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE`; tham số `events` có bắt buộc hay không, bỏ trống thì nhận gì: **KHÔNG THẤY TRONG TÀI LIỆU**. Bot (B8a) dùng dạng đường dẫn của trang UDS để không phụ thuộc vào `events`.
+- Trạng thái `ALGO_UPDATE.o.X` [UDS]: `NEW`, `CANCELED`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `REJECTED`, `EXPIRED`.
+- Ví dụ JSON (schema) của `listenKeyExpired`, `ALGO_UPDATE`, `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE` không tải được trên trang UDS khi đọc bằng WebFetch; tên trường dùng theo mục 6.3 (đọc trước đó bằng trình duyệt). Kiểu dữ liệu từng trường (số hay chuỗi) **KHÔNG THẤY TRONG TÀI LIỆU** ở lần đọc này → code chấp nhận cả số và chuỗi số.
+
 ---
 
 ## 7. Market streams cho bot
@@ -315,6 +321,13 @@ URL: [WSC] https://developers.binance.com/en/docs/products/derivatives-trading-u
 - Số kết nối tối đa mỗi IP: **KHÔNG THẤY TRONG TÀI LIỆU** (chỉ thấy giới hạn "5 weight cho mỗi lần handshake" ở WebSocket API, không áp dụng cho market stream).
 - Kline REST tương ứng: `GET /fapi/v1/klines`, weight phụ thuộc `limit` (<100: 1; 100 đến <500: 2; 500 đến 1000: 5; >1000: 10); `limit` mặc định 500, max 1500; mỗi dòng 12 phần tử. [MKT#kline-candlestick-data]
 - `GET /fapi/v1/premiumIndex` (mark price) weight 1 có symbol, **10** không có symbol. [MKT#mark-price]
+
+### 7.1 Bổ sung cho B8a (đọc lại 2026-10-19 bằng WebFetch)
+- SUBSCRIBE [WSL]: `{"method": "SUBSCRIBE", "params": ["btcusdt@aggTrade", "btcusdt@depth"], "id": 1}`; phản hồi `{"result": null, "id": 1}`. `id` là **số nguyên không âm** ("an unsigned INT"); thiếu hoặc sai kiểu → lỗi `"Invalid request: request ID must be an unsigned integer"`. (Sửa ví dụ ở mục 7 phía trên dùng `"id":"..."` dạng chuỗi.) Lỗi có dạng `{"code": <số>, "msg": "..."}`. Có lỗi `"Invalid request: too many parameters"` nhưng **trần số params mỗi tin: KHÔNG THẤY TRONG TÀI LIỆU** → **[Đề xuất]** 50 stream/tin.
+- Giới hạn 10 tin đến/giây [WSC]: tài liệu không nói ping/pong/control frame có tính vào hay không: **KHÔNG THẤY TRONG TÀI LIỆU** → **[Đề xuất]** mặc định 5 tin/giây để chừa chỗ.
+- Nghĩa trường kline `k` [WSM]: `t` Kline start time, `T` Kline close time, `s`, `i` Interval, `f` First trade ID, `L` Last trade ID, `o`/`c`/`h`/`l` giá mở/đóng/cao/thấp, `v` Base asset volume, `n` Number of trades, `x` "Is this kline closed?", `q` Quote asset volume, `V` Taker buy base asset volume, `Q` Taker buy quote asset volume, `B` Ignore. Ví dụ: `t` 1638747660000, `T` 1638747719999 (nến 1m: `T = t + khoảng − 1`) → nến kế liền mạch khi `t` mới = `T` cũ + 1.
+- Mark price [WSM] ví dụ: `{"e":"markPriceUpdate","E":1562305380000,"s":"BTCUSDT","p":"11794.15000000",...}`: `p` là chuỗi số; `E` "Event time".
+- Ping/pong phía client: API WebSocket chuẩn trong Node 24 không cho mã ứng dụng gửi/nhận ping-pong frame; đã kiểm trên máy (Node v24.21.0, server cục bộ gửi PING payload `abc123`) → Node tự trả **PONG kèm đúng payload**. Đây là kiểm thực nghiệm, không phải tài liệu Binance.
 
 ---
 
@@ -426,6 +439,7 @@ URL: [FAQ-KEY] https://www.binance.com/en/support/faq/detail/360002502072 ; [QS]
 | WSC | https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect |
 | WSN | https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Important-WebSocket-Change-Notice |
 | WSM | https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market |
+| WSL | https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Live-Subscribing-Unsubscribing-to-streams |
 | TRADE | https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade (neo: `#new-order`, `#new-algo-order`, `#cancel-algo-order`, `#cancel-all-algo-open-orders`, `#query-algo-order`, `#current-all-algo-open-orders`, `#query-all-algo-orders`, `#cancel-order`, `#query-order`, `#current-all-open-orders`, `#cancel-all-open-orders`, `#place-multiple-orders`, `#cancel-multiple-orders`, `#modify-multiple-orders`, `#modify-order`, `#auto-cancel-all-open-orders`, `#change-position-mode`, `#change-margin-type`, `#change-initial-leverage`, `#change-multi-assets-mode`, `#position-information-v3`, `#position-information-v2`, `#account-trade-list`, `#all-orders`, `#test-order`) |
 | ACC | https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/account (neo: `#get-current-position-mode`, `#get-current-multi-assets-mode`, `#notional-and-leverage-brackets`, `#symbol-configuration`, `#futures-account-configuration`, `#futures-account-balance-v3`, `#get-income-history`, `#user-commission-rate`, `#query-user-rate-limit`, `#account-information-v3`) |
 | MKT | https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data (neo: `#check-server-time`, `#exchange-information`, `#kline-candlestick-data`, `#mark-price`) |
