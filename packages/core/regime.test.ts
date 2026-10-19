@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { marketRegime, circuitBreaker, regimeCheck } from './regime.ts';
+import { marketRegime, circuitBreaker, regimeCheck, btcHourlySide } from './regime.ts';
 import type { Candle } from './types.ts';
 
 function series(closes: number[], rangePct = 0.01): Candle[] {
@@ -105,4 +105,18 @@ test('cầu dao: cùng tình huống nhưng dừng chỉ 3h (fast) → đã hế
 test('cầu dao: sập cách đây 13 giờ, dừng 12h → đã tắt', () => {
   const closes = [...Array.from({ length: 30 }, () => 100), 99, 97, 96, 95, ...Array.from({ length: 13 }, () => 95)];
   assert.equal(circuitBreaker(series(closes, 0.002), 12).tripped, false);
+});
+
+test('btcHourlySide: close 1H trên SMA200 1H → long, dưới → short', () => {
+  const upH = btcHourlySide(series(Array.from({ length: 300 }, (_, i) => 100 + i)));
+  assert.equal(upH.side, 'long');
+  assert.match(upH.note, /SMA200 1H/);
+  assert.equal(btcHourlySide(series(Array.from({ length: 300 }, (_, i) => 400 - i))).side, 'short');
+});
+
+test('btcHourlySide: đúng 200 nến vẫn đọc được SMA200; 199 nến → null kèm lý do (fail closed)', () => {
+  assert.equal(btcHourlySide(series(Array.from({ length: 200 }, (_, i) => 100 + i))).side, 'long');
+  const r = btcHourlySide(series(Array.from({ length: 199 }, (_, i) => 100 + i)));
+  assert.equal(r.side, null);
+  assert.match(r.note, /Thiếu dữ liệu BTC 1H \(199\/200/);
 });

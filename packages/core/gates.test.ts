@@ -20,7 +20,7 @@ const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
   move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
-  rsZ: 0, riskTier: 'Vừa', liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
+  btcHourly: null, rsZ: 0, riskTier: 'Vừa', liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
 };
 
 test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
@@ -119,4 +119,29 @@ test('G-01: ngược xu hướng, rsZ = null → trượt', () => {
   const g = evaluateGates({ ...ok, side: 'short', regime: 'up', score: 95, rsZ: null }).find((x) => x.code === 'G-01')!;
   assert.equal(g.pass, false);
   assert.match(g.note, /thiếu RS/);
+});
+
+const fastOk = { ...ok, mode: 'fast' as const, ageDays: 400, fundingRate: 0 };
+
+test('G-01 fast: BTC 1H cùng chiều lệnh → qua', () => {
+  const g = evaluateGates({ ...fastOk, btcHourly: { side: 'long', note: 'BTC 1H trên SMA200' } }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, true, g.note);
+});
+
+test('G-01 fast: BTC 1H ngược chiều lệnh → trượt dù điểm 95 (không ngoại lệ)', () => {
+  const g = evaluateGates({ ...fastOk, score: 95, btcHourly: { side: 'short', note: 'BTC 1H dưới SMA200' } }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /BTC 1H dưới SMA200/);
+});
+
+test('G-01 fast: thiếu nến BTC 1H (side null) hoặc không có dữ liệu → trượt, note nói rõ', () => {
+  const g = evaluateGates({ ...fastOk, btcHourly: { side: null, note: 'Thiếu dữ liệu BTC 1H (150/200 nến)' } }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /Thiếu dữ liệu BTC 1H/);
+  assert.equal(evaluateGates({ ...fastOk, btcHourly: null }).find((x) => x.code === 'G-01')!.pass, false);
+});
+
+test('G-01 swing: không xét BTC 1H', () => {
+  const g = evaluateGates({ ...ok, btcHourly: { side: 'short', note: 'x' } }).find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, true);
 });

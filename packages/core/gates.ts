@@ -9,6 +9,7 @@ export type GateContext = {
   side: Side;
   score: number;
   regime: Regime;
+  btcHourly: { side: Side | null; note: string } | null; // chỉ Lướt nhanh: phía của BTC so SMA200 1H; null = không có dữ liệu
   rsZ: number | null; // z sức mạnh tương đối so BTC (từ scoreSide); null = không đo được
   riskTier: RiskTier;
   breakerTripped: boolean;
@@ -48,12 +49,15 @@ export function fundingNote(rate: number, intervalHours: number, isDefault: bool
 export function evaluateGates(c: GateContext): GateResult[] {
   const dir = c.side === 'long' ? 1 : -1;
   const regimeVerdict = regimeCheck(c.regime, c.side, c.score, c.rsZ, c.riskTier);
+  // D3: Lướt nhanh cần BTC 1H cùng phía lệnh, KHÔNG có ngoại lệ điểm cao; thiếu dữ liệu → chặn
+  const btcOk = c.mode !== 'fast' || (c.btcHourly !== null && c.btcHourly.side === c.side);
+  const btcNote = c.mode !== 'fast' ? '' : `; ${c.btcHourly === null ? 'thiếu dữ liệu BTC 1H' : c.btcHourly.note}${btcOk ? '' : ` — ngược chiều lệnh ${c.side === 'long' ? 'Long' : 'Short'}`}`;
   const adverseFunding = dir * ratePer8h(c.fundingRate, c.fundingIntervalHours); // %/8h; > 0 nghĩa là lệnh phải trả funding
   return [
     {
       code: 'G-01',
-      pass: !c.breakerTripped && regimeVerdict.ok,
-      note: c.breakerTripped ? `Cầu dao biến động đang bật${c.breakerNote ? ' — ' + c.breakerNote : ''}` : regimeVerdict.note,
+      pass: !c.breakerTripped && regimeVerdict.ok && btcOk,
+      note: c.breakerTripped ? `Cầu dao biến động đang bật${c.breakerNote ? ' — ' + c.breakerNote : ''}` : regimeVerdict.note + btcNote,
     },
     {
       code: 'G-02',

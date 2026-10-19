@@ -78,3 +78,16 @@ export function regimeCheck(regime: Regime, side: Side, score: number, rsZ: numb
   if (failed.length > 0) return { ok: false, note: `Chế độ ${regime}, lệnh ngược xu hướng bị chặn: ${failed.join('; ')}` };
   return { ok: true, note: `Chế độ ${regime}, ngược xu hướng nhưng đủ điều kiện (điểm ${score}, RS z = ${z2(rsZ!)}, rủi ro ${tier})` };
 }
+
+// G-01 (D3/M5, chỉ Lướt nhanh): close nến 1H cuối của BTC so SMA200 1H. Cần ≥ 200 nến 1H đã đóng; thiếu → side = null (chặn, fail closed).
+export function btcHourlySide(btcHourly: Candle[]): { side: Side | null; note: string } {
+  if (btcHourly.length < 200) {
+    return { side: null, note: `Thiếu dữ liệu BTC 1H (${btcHourly.length}/200 nến) — không đọc được SMA200 1H` };
+  }
+  const closes = btcHourly.map((k) => k.close);
+  const now = last(closes);
+  const s200 = last(sma(closes, 200));
+  const side: Side | null = now > s200 ? 'long' : now < s200 ? 'short' : null;
+  const where = side === 'long' ? 'trên' : side === 'short' ? 'dưới' : 'đúng bằng';
+  return { side, note: `BTC 1H ${now.toFixed(0)} ${where} SMA200 1H ${s200.toFixed(0)}` };
+}

@@ -136,3 +136,20 @@ test('D2: coin kém thanh khoản (không có RS) ngược xu hướng → G-01 
   assert.equal(g.pass, false);
   assert.match(g.note, /thiếu RS/);
 });
+
+test('D3: fast, BTC 1H dưới SMA200 → Long bị G-01 chặn, nêu BTC 1H', () => {
+  const fast = { ...base, mode: 'fast' as const, trend: up(500, 0.2, 0.6), btcTrend: up(500, -0.1) };
+  const a = analyze({ ...fast, btcTrend: Array.from({ length: 500 }, (_, i) => k(i, 300 - i * 0.2)) });
+  assert.equal(a.best.side, 'long');
+  const g = a.gates.find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /BTC 1H/);
+  assert.ok(!a.label.startsWith('Đạt'));
+});
+
+test('D3: fast, thiếu nến BTC 1H (< 200) → G-01 trượt (fail closed)', () => {
+  const a = analyze({ ...base, mode: 'fast', trend: up(500, 0.2, 0.6), btcTrend: up(150, 0.1) });
+  const g = a.gates.find((x) => x.code === 'G-01')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /Thiếu dữ liệu BTC 1H/);
+});
