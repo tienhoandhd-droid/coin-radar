@@ -37,7 +37,7 @@
 
 ### Task 4: Ma trận 12 cách đặt/thoát lệnh
 
-Chạy cùng một bộ tín hiệu với: A0 (luật hiện tại = phương án A của người dùng), B1 Cornix (sau TP2 SL lên TP1), B2 không dời SL sau TP1, B3/B3x trailing cho 20% cuối (bot / trên sàn), C2 (= phương án B người dùng: TP1 50% + trailing phần còn lại), C3 (= phương án C: trailing toàn bộ từ TP1), T1/T2 dừng theo thời gian, P1 cầu chì (cooldown + dừng sau 3 SL/24h + lỗ ngày + sụt 10%), O1 “máy nhà tắt” (không quản lý lệnh trong các khoảng tắt máy giả lập), E1/E2 cách vào lệnh. Định nghĩa chính xác lấy từ `reports/Bot giao dịch mã nguồn mở.md`.
+Chạy cùng một bộ tín hiệu với: A0 (luật hiện tại = phương án A của người dùng), B1 Cornix (sau TP2 SL lên TP1), B2 không dời SL sau TP1, B3/B3x trailing cho 20% cuối (bot / trên sàn), C2 (= phương án B người dùng: TP1 50% + trailing phần còn lại), C3 (= phương án C: trailing toàn bộ từ TP1), T1/T2 dừng theo thời gian, P1 cầu chì (cooldown + dừng sau 3 SL/24h + lỗ ngày + sụt 10%), O1 “máy nhà tắt” (không quản lý lệnh trong các khoảng tắt máy giả lập), E1/E2 cách vào lệnh. Định nghĩa chính xác lấy từ `reports/Bot giao dịch mã nguồn mở.md`. **Hằng số dùng chung với lõi (Task B0):** id biến thể = `ExitPolicy` trong `packages/core/exit.ts` (`A0`, `C2`); mô phỏng C2 dùng `trailingFor` (activation = TP1, callback = min(ATR%, mức bảo đảm không lỗ) kẹp [0,1; 10]%), rủi ro `COMMON.risk.perTradePct` = 2%, trần `COMMON.portfolio.maxOpenTrades` = 10 — không tự định nghĩa lại.
 
 ### Task 5: Thống kê
 

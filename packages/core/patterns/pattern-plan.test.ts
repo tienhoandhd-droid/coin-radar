@@ -551,3 +551,16 @@ test('M3: dải giá vào có CẬN DƯỚI (Long) / CẬN TRÊN (Short) = mức
   assert.equal(s.minEntry, 110);
   assert.match(s.entryReason, /chỉ vào khi giá trong \[109,20; 110,00\]; ngoài khoảng này bỏ lệnh/);
 });
+
+test('B0: kế hoạch mô hình mặc định C2 — trailing kích hoạt tại TP1, TP1 vẫn là T_ngắn, khối lượng chia 50/50', () => {
+  const p = ready(args());
+  assert.equal(p.exit.policy, 'C2');
+  const t = p.exit.trailing!;
+  const tp1 = p.targets[0]!.price!;
+  assert.equal(t.activationPrice, tp1);
+  // phí 0,25% (nhóm high): hòa vốn = giá vào × 1,0025; mức dừng lúc kích hoạt không thấp hơn hòa vốn nếu không cờ lưới hòa vốn
+  if (!t.needsBreakevenFloor) assert.ok(t.stopAtActivation >= p.entry * 1.0025 - 1e-9, `${t.stopAtActivation} < ${p.entry * 1.0025}`);
+  assert.ok(t.callbackPct >= 0.1 && t.callbackPct <= 10);
+  assert.equal(p.exit.tp1Qty, p.targets[0]!.qty);
+  assert.ok(Math.abs(p.exit.trailQty - (p.qty - p.targets[0]!.qty)) < 1e-9);
+});

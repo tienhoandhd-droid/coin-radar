@@ -4,6 +4,7 @@ import { roundStep } from '../indicators.ts';
 import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
 import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, type CostTier, type Target, type FillRow } from '../plan.ts';
+import { buildExit, type ExitPlan, type ExitPolicy } from '../exit.ts';
 import type { MultiMonthContext } from './context.ts';
 import { patternStopLevel, breakoutLevel, patternTargets, type StateResult } from './state.ts';
 import type { PatternGeometry, PatternKind } from './types.ts';
@@ -52,7 +53,8 @@ export type PatternPlan = {
   targets: Target[]; // 3 phần tử; qty = khi mọi chân khớp
   targetsIfMarketOnly: [number, number, number] | null; // split: khối lượng TP nếu chỉ khớp chân market
   tp1NetR: number; // TP1 tính bằng R sau phí khứ hồi + funding phải trả, ở giá khớp XẤU NHẤT cho phép: market = giá tối đa; limit = giá limit; split = tệ hơn của "chỉ khớp market ở giá tối đa" và "khớp cả hai" (giá TB dòng giá tối đa)
-  afterTp1Stop: number; // ước tính tại giá vào dùng để tính
+  exit: ExitPlan; // chính sách thoát (mặc định C2: TP1 50% + trailing trên sàn); TP2/TP3 ở targets là mức thông tin/đối chứng
+  afterTp1Stop: number; // ước tính tại giá vào dùng để tính (chỉ áp dụng cho A0)
   afterTp1StopIfMarketOnly: number | null;
   afterTp1Rule: AfterTp1Rule; // market: dải [giá hiện tại, giá tối đa]; split: khi khớp cả hai; limit: giá limit
   afterTp1RuleIfMarketOnly: AfterTp1Rule | null; // split: khi chỉ khớp chân market
@@ -109,6 +111,7 @@ export type PatternPlanArgs = {
   stepSize: number;
   fundingRate: number; // mức MỖI KỲ funding
   fundingIntervalHours: number;
+  exitPolicy?: ExitPolicy; // mặc định COMMON.exit.defaultPolicy
 };
 
 const TF_HOURS: Record<string, number> = { '15m': 0.25, '1h': 1, '4h': 4, '1d': 24 };
@@ -555,6 +558,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     targets,
     targetsIfMarketOnly: entryType === 'split' ? row0.legs[0]!.q : null,
     tp1NetR,
+    exit: buildExit({ policy: a.exitPolicy ?? COMMON.exit.defaultPolicy, side, entry, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * A, costPct, qty: row0.qty, tp1Qty: targets[0]!.qty }),
     afterTp1Stop,
     afterTp1StopIfMarketOnly,
     afterTp1Rule,

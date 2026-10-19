@@ -516,3 +516,45 @@ test('M2 worstTp1NetR (lệnh vùng): market tính ở giá tối đa, limit ở
   assert.ok(w <= tp1NetRAt('long', p.targets[0]!.price!, p.entry, p.stop, costFrac));
   assert.equal(worstTp1NetR({ ...p, targets: p.targets.map((t) => ({ ...t, price: null, r: null })) }, costFrac), null);
 });
+
+// ---- B0: chính sách thoát mặc định C2 ----
+const closeTo = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≠ ${b}`);
+
+test('B0: mặc định C2 — Long vào 96,3, TP1 98,8, ATR 1 (trailing 3), phí 0,25%: callback bị chặn bởi mức bảo đảm không lỗ', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.exit.policy, 'C2');
+  // TP2/TP3 vẫn được tính làm thông tin
+  assert.deepEqual(p.targets.map((t) => r6(t.price!)), [98.8, 101.8, 105.8]);
+  const t = p.exit.trailing!;
+  // hòa vốn = 96,3 × 1,0025 = 96,54075; bảo đảm = (98,8 − 96,54075)/98,8 = 2,28659%; ATR% = 3/98,8 = 3,0364% → lấy 2,28659%
+  closeTo(t.activationPrice, 98.8);
+  closeTo(t.noLossCallbackPct, ((98.8 - 96.54075) / 98.8) * 100);
+  closeTo(t.callbackPct, ((98.8 - 96.54075) / 98.8) * 100);
+  closeTo(t.stopAtActivation, 96.54075);
+  assert.equal(t.needsBreakevenFloor, false);
+  assert.equal(p.exit.tp1Qty, p.targets[0]!.qty);
+  closeTo(p.exit.trailQty, p.qty - p.targets[0]!.qty, 1e-9);
+});
+
+test('B0: C2 Short đối xứng — vào 103,7, TP1 101,2, hòa vốn 103,44075', () => {
+  const zones = [zone(104, 105, 3), zone(100, 101), zone(97, 98), zone(93, 94)];
+  const p = buildPlan({ ...baseArgs, side: 'short', entry: flat(103.7), zones });
+  const t = p.exit.trailing!;
+  closeTo(t.noLossCallbackPct, ((103.44075 - 101.2) / 101.2) * 100);
+  closeTo(t.callbackPct, ((103.44075 - 101.2) / 101.2) * 100);
+  closeTo(t.stopAtActivation, 103.44075);
+  assert.ok(t.stopAtActivation <= p.entry);
+});
+
+test('B0: exitPolicy A0 giữ luật cũ (không trailing trên sàn), 50/30/20', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances], exitPolicy: 'A0' });
+  assert.equal(p.exit.policy, 'A0');
+  assert.equal(p.exit.trailing, null);
+  assert.deepEqual(p.targets.map((t) => t.pct), [50, 30, 20]);
+});
+
+test('B0: rủi ro 2% vốn → ngân sách rủi ro 20 USDT trên 1000 USDT', () => {
+  const p = buildPlan({ ...baseArgs, riskPct: COMMON.risk.perTradePct, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.riskAmount, 20);
+  assert.equal(p.riskPct, 2);
+});

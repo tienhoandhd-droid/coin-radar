@@ -52,7 +52,7 @@ lý do chấm điểm của từng coin, và trang “Nguyên tắc” trên web
 
 **Thay đổi so với đề xuất trước về Lướt nhanh:** vì Lướt nhanh chỉ ghi sổ khi web đang mở, chờ đủ 100 lệnh
 thực tế mới hiện tín hiệu sẽ rất lâu. Thiết kế chọn: **hiện tín hiệu ngay với nhãn “thử nghiệm”**, rủi ro
-mặc định thấp hơn (0,25%), và mọi tín hiệu đều ghi sổ. Người dùng có thể đổi sang “chỉ ghi sổ” trong
+rủi ro mỗi lệnh dùng chung mức 2% (người dùng chốt 19/10/2026 — thay mức 0,25% cũ của Lướt nhanh), và mọi tín hiệu đều ghi sổ. Người dùng có thể đổi sang “chỉ ghi sổ” trong
 phần cài đặt.
 
 ## 1. Kiến trúc
@@ -197,12 +197,12 @@ Không dùng VPN/proxy để lách chặn (có thể vi phạm điều khoản B
 
 | Mã | Nguyên tắc |
 |---|---|
-| P-01 | Người dùng nhập **vốn futures** và **% rủi ro/lệnh** (lưu trong trình duyệt). Mặc định 0,5% (Swing, rủi ro Thấp/Vừa); 0,25% (Lướt nhanh, hoặc rủi ro Cao/Rất cao) |
+| P-01 | Người dùng nhập **vốn futures**; **rủi ro mỗi lệnh = 2% vốn bot** (`COMMON.risk.perTradePct`, người dùng chốt 19/10/2026, cho cả Swing và Lướt nhanh). **Bỏ phân tầng 0,5%/0,25%** (trước đây Swing 0,5%; Lướt nhanh hoặc coin rủi ro Cao/Rất cao 0,25%). Mức rủi ro coin (Thấp…Rất cao) chỉ còn để hiển thị và lọc Hạng A. Kế hoạch in rõ số tiền rủi ro (vốn × 2%) |
 | P-02 | **Khối lượng = (vốn × % rủi ro) ÷ khoảng cách cắt lỗ** (đã cộng phí + trượt giá). Làm tròn theo step size của hợp đồng |
 | P-03 | **Đòn bẩy chỉ là hệ quả**: đòn bẩy cần = giá trị vị thế ÷ ký quỹ dự định. App hiện đòn bẩy tối thiểu cần dùng; **trần đòn bẩy gợi ý: Swing 5×, Lướt nhanh 10×** (đề xuất). Khuyên chế độ **isolated** |
 | P-04 | **Giá thanh lý ước tính phải xa hơn cắt lỗ ≥ 1 khoảng cắt lỗ**; không đạt → không đưa kế hoạch (G-08). Ghi rõ công thức gần đúng, người dùng đối chiếu trên Binance |
-| P-05 | **Trần danh mục**: tổng rủi ro đang mở ≤ 3%; tối đa 5 lệnh altcoin cùng lúc (Đi ngang: 3); tối đa 2 lệnh cùng ngành; **tối đa 3 lệnh cùng chiều** khi tương quan với BTC > 0,7 (vì 5 Long altcoin ≈ 1 Long BTC lớn) |
-| P-06 | Vượt trần → chỉ các tín hiệu xếp hạng cao nhất có nhãn “ưu tiên” |
+| P-05 | **Trần danh mục: tối đa 10 lệnh mở cùng lúc** (`COMMON.portfolio.maxOpenTrades`, người dùng chốt 19/10/2026; thay các đề xuất cũ: tổng rủi ro mở ≤ 3%, 5 lệnh altcoin, 2 lệnh cùng ngành, 3 lệnh cùng chiều). Tổng rủi ro mở có thể tới 10 × 2% = 20%. Bot áp dụng trong `protections`; máy quét chỉ in nên chưa kiểm |
+| P-06 | Đủ 10 lệnh mở thì **không vào lệnh mới** (không còn xếp hạng “ưu tiên” khi vượt trần) |
 | P-07 | **Chi phí funding dự kiến** cho thời gian giữ lệnh được trừ vào R kỳ vọng |
 
 ### 3.8 Kế hoạch lệnh (Long; Short đối xứng)
@@ -219,9 +219,10 @@ Kế hoạch dựa trên **vùng hỗ trợ/kháng cự** (`packages/core/zones.
 | Kiểu vào lệnh | Giá cách mép vùng ≤ 0,5×ATR → **VÀO TRỰC TIẾP** (giá vào = giá đóng nến gần nhất; không mua cao hơn / bán thấp hơn giá đóng quá `maxEntryAtr`×ATR của chế độ). Xa hơn → **ĐẶT LIMIT** tại mép vùng ± 0,1×ATR, hết hạn sau 8 nến 15m (2 giờ) / 6 nến 4H (24 giờ), hoặc hủy nếu giá chạm TP1 trước |
 | Giá vào dùng để tính | Giá hiện tại nếu vào trực tiếp; giá limit nếu đặt limit. SL, R, khối lượng, thanh lý đều tính từ giá này |
 | Cắt lỗ | Ngoài mép xa của vùng 0,3×ATR; Swing không chặt hơn 1×ATR ngày; sát số tròn → đẩy qua số tròn. Khoảng cắt lỗ vẫn chịu cổng G-11 (≤ 2×ATR ngày và ≤ 20% giá vào) |
-| Chốt lời | TP1/TP2/TP3 = trước mép vùng cản kế tiếp 0,2×ATR, chốt **50% / 30% / 20%** vị thế. Hết vùng cản → phần còn lại để **trailing stop 3×ATR** (giá TP = null). TP1 phải ≥ 1R, nếu không bỏ lệnh (G-12). Vùng cản sát ngay giá vào, không còn chỗ đặt TP1 → bỏ lệnh |
+| Chính sách thoát (B0, người dùng chốt 19/10/2026) | `ExitPolicy` (`packages/core/exit.ts`), id khớp ma trận kế hoạch 2: **`A0`** = TP1/TP2/TP3 cố định 50/30/20 + dời SL (luật cũ); **`C2`** (mặc định, `COMMON.exit.defaultPolicy`) = TP1 chốt 50%, 50% còn lại là **trailing stop trên sàn** kích hoạt tại TP1. Kế hoạch vẫn tính TP1/TP2/TP3 (TP2/TP3 chỉ để tham khảo và đối chứng). Thông số trailing của C2: `activatePrice` = TP1; `callbackRate` = min(khoảng lùi ATR = trailAtrMult×ATR tính bằng % của TP1; mức bảo đảm không lỗ = (TP1 − (giá vào + phí khứ hồi/đơn vị))/TP1 × 100 cho Long, đối xứng cho Short), kẹp trong [0,1; 10]% theo `docs/reference/binance-usdm-api.md`. Mức dừng lúc kích hoạt = TP1 × (1 ∓ callback). Mức bảo đảm < 0,1% → cờ `needsBreakevenFloor` (bot phải giữ thêm lệnh dừng hòa vốn). Bot tính lại bằng giá khớp thật. Hạng A tiêu chí 4 (TP1 ≥ 1,5R) không đổi |
+| Chốt lời (A0 và mức tham khảo) | TP1/TP2/TP3 = trước mép vùng cản kế tiếp 0,2×ATR, chốt **50% / 30% / 20%** vị thế (A0). Hết vùng cản → phần còn lại để **trailing stop 3×ATR** (giá TP = null). TP1 phải ≥ 1R, nếu không bỏ lệnh (G-12). Vùng cản sát ngay giá vào, không còn chỗ đặt TP1 → bỏ lệnh |
 | Bảng khối lượng theo giá khớp (đợt 2) | Lệnh vào trực tiếp: 3 dòng — giá hiện tại, giữa (làm tròn tick), giá tối đa. Mỗi dòng: khối lượng = ngân sách rủi ro ÷ (\|giá khớp − SL\| + phí), làm tròn xuống theo stepSize, chia 50/30/20 theo từng TP, kèm tiền mất ước tính (`TradePlan.fillTable`). Giá tối đa bị hạ (Long) / nâng (Short) nếu ở đó TP1 < 1R: f ≤ (TP1 + 1×SL)/2 (Long), f ≥ (TP1 + 1×SL)/2 (Short), làm tròn về phía an toàn; `entryReason` ghi rõ. Lệnh limit: một dòng ở giá limit |
-| Sau khi chốt | **Đạt TP1 → dời SL về đúng giá KHỚP THẬT của người dùng; sau TP2 SL vẫn ở giá đó** |
+| Sau khi chốt (A0; với C2 trailing trên sàn thay SL cho phần còn lại) | **Đạt TP1 → dời SL về đúng giá KHỚP THẬT của người dùng; sau TP2 SL vẫn ở giá đó** |
 | Điểm S-03 (đường đi) | TP1 = 1R → 0 điểm, ≥ 2R → đủ; không có vùng cản phía trước → đủ điểm; TP1 bị chặn/kế hoạch không hợp lệ → 0 điểm, lý do ghi lý do của kế hoạch |
 | Dừng theo thời gian | Lướt nhanh: chưa +1R sau 8h, trần 24h. Swing: chưa +1R sau 7 ngày, trần 21 ngày |
 

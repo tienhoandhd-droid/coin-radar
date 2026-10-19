@@ -2,6 +2,7 @@ import { atr, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
 import { stopSideZones, targetSideZones, zoneContaining, describeZone, type Zone } from './zones.ts';
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
+import { buildExit, type ExitPlan, type ExitPolicy } from './exit.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
@@ -61,7 +62,8 @@ export type TradePlan = {
   stop: number;
   stopReason: string;
   targets: Target[]; // luôn 3 phần tử, pct theo COMMON.zones.exitPcts
-  afterTp1Stop: number; // sau TP1 dời SL về giá vào; sau TP2 giữ nguyên
+  afterTp1Stop: number; // sau TP1 dời SL về giá vào; sau TP2 giữ nguyên (chỉ áp dụng cho A0)
+  exit: ExitPlan; // chính sách thoát (mặc định C2: TP1 50% + trailing trên sàn); TP2/TP3 ở targets là mức thông tin/đối chứng
   valid: boolean;
   invalidReason: string | null;
   trailAtr: number;
@@ -94,6 +96,7 @@ export type PlanArgs = {
   fundingRate: number; // mức MỖI KỲ funding của hợp đồng (không phải %/8h)
   fundingIntervalHours: number; // chu kỳ funding của hợp đồng (giờ)
   zones: Zone[];
+  exitPolicy?: ExitPolicy; // mặc định COMMON.exit.defaultPolicy
 };
 
 // R của TP1; null nếu không có vùng cản để đặt TP1
@@ -337,6 +340,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     stopReason,
     targets,
     afterTp1Stop: entry,
+    exit: buildExit({ policy: a.exitPolicy ?? COMMON.exit.defaultPolicy, side: a.side, entry, tp1: targets[0]!.price, trailAtr: cfg.trailAtrMult * atrEntry, costPct, qty: size.qty, tp1Qty: targets[0]!.qty }),
     valid,
     invalidReason,
     trailAtr: cfg.trailAtrMult * atrEntry,

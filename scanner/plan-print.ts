@@ -1,5 +1,6 @@
 import { COMMON } from '../packages/core/config.ts';
 import { formatTick } from '../packages/core/price.ts';
+import type { TrailingPlan } from '../packages/core/exit.ts';
 import type { TradePlan } from '../packages/core/plan.ts';
 import type { PatternPlan } from '../packages/core/patterns/pattern-plan.ts';
 import type { PatternKind } from '../packages/core/patterns/types.ts';
@@ -11,6 +12,15 @@ const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, ''
 const dec = (x: number): string => String(x).replace('.', ',');
 // Thời điểm (ms) → "YYYY-MM-DD HH:MM UTC" (giờ UTC như biểu đồ Binance mặc định)
 export const utc = (t: number): string => `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+
+// Trailing của C2: kích hoạt tại TP1; khoảng lùi đã tính để mức dừng lúc kích hoạt ≥ giá vào + phí (hoặc nói rõ khi không đạt được).
+function trailingText(t: TrailingPlan, tickSize: number, trailQty: number): string {
+  const px = (x: number) => formatTick(x, tickSize);
+  const base = `${100 - COMMON.exit.tp1Pct}% còn lại (${qty(trailQty)} coin): trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi ${num(t.callbackPct, 2)}%`;
+  return t.needsBreakevenFloor
+    ? `${base} (mức dừng lúc kích hoạt ≈ ${px(t.stopAtActivation)} < giá vào + phí vì mức bảo đảm không lỗ chỉ ${num(t.noLossCallbackPct, 3)}% < ${num(COMMON.binanceTrailCallbackMinPct, 1)}% tối thiểu của sàn → bot phải giữ thêm lệnh dừng hòa vốn)`
+    : `${base} (mức dừng lúc kích hoạt ≈ ${px(t.stopAtActivation)} ≥ giá vào + phí${t.clampedTo === 'max' ? `; khoảng lùi theo ATR ${num(t.atrCallbackPct, 1)}% vượt trần ${COMMON.binanceTrailMaxCallbackPct}% của sàn nên dùng ${COMMON.binanceTrailMaxCallbackPct}%` : ''})`;
+}
 
 // Các dòng in ra cho một kế hoạch lệnh. Mọi giá in theo tickSize; khoảng cách trailing in kèm %.
 export function planLines(head: { symbol: string; score: number; riskTier: string }, p: TradePlan, tickSize: number): string[] {
@@ -27,8 +37,16 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   const trailPct = (p.trailAtr / p.entry) * 100;
   const trail = `trailing stop: cách giá ${long ? 'cao' : 'thấp'} nhất 3×ATR = ${px(p.trailAtr)} (${num(trailPct, 1)}%)`;
   const hasTp1 = p.targets[0]?.price !== null;
+  const c2 = p.exit.policy === 'C2';
   if (!hasTp1) {
     lines.push(`  Không có vùng ${long ? 'cản phía trên' : 'đỡ phía dưới'} → không có TP cố định; toàn bộ vị thế theo ${trail}`);
+  } else if (c2) {
+    const t1 = p.targets[0]!;
+    lines.push(`  TP1: ${px(t1.price!)} chốt ${COMMON.exit.tp1Pct}% = ${qty(p.exit.tp1Qty)} coin | ${num(t1.r!, 2)}R — ${t1.reason}; ${trailingText(p.exit.trailing!, tickSize, p.exit.trailQty)}`);
+    for (const t of p.targets.slice(1)) {
+      if (t.price !== null) lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${num(t.r!, 2)}R — ${t.reason}`);
+    }
+    lines.push('  Đạt TP1 → trailing stop trên sàn nhận phần còn lại (không có SL cố định mới)');
   } else {
     for (const t of p.targets) {
       lines.push(t.price === null
@@ -39,15 +57,16 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
     }
     lines.push('  Đạt TP1 → dời SL về đúng giá KHỚP THẬT của anh (giữ nguyên sau TP2)');
   }
-  if (trailPct > COMMON.binanceTrailMaxCallbackPct) {
+  if (!p.exit.trailing && trailPct > COMMON.binanceTrailMaxCallbackPct) {
     lines.push(`  LƯU Ý: lệnh trailing stop của Binance chỉ nhận callbackRate tối đa ${COMMON.binanceTrailMaxCallbackPct}% (khoảng cách này là ${num(trailPct, 1)}%) → không đặt được nguyên văn, hãy tự dời SL thủ công theo ${px(p.trailAtr)} ${long ? 'dưới giá cao' : 'trên giá thấp'} nhất.`);
   }
   lines.push(`  Khối lượng: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)}`);
-  lines.push(`  Bảng khối lượng theo giá khớp (ngân sách rủi ro giữ nguyên ${num(p.riskAmount, 2)} USDT, chia ${COMMON.zones.exitPcts.join('/')}):`);
+  lines.push(`  Bảng khối lượng theo giá khớp (ngân sách rủi ro giữ nguyên ${num(p.riskAmount, 2)} USDT, chia ${c2 ? `TP1 ${COMMON.exit.tp1Pct}% / trailing ${100 - COMMON.exit.tp1Pct}%` : COMMON.zones.exitPcts.join('/')}):`);
   for (const f of p.fillTable) {
     // Phần bằng 0 (chỉ xảy ra với phần trailing) không in số 0 mà nói rõ đã gộp vào TP3
     const part = (i: number) => `TP${i + 1} ${f.q[i]! > 0 ? qty(f.q[i]!) : `gộp vào TP${f.q.length}`}`;
-    lines.push(`    Khớp ${px(f.fill)} (${f.label}): ${qty(f.qty)} coin = ${f.q.map((_, i) => part(i)).join(' / ')} | mất ước tính ${num(f.estLoss, 2)} USDT`);
+    const split = c2 && hasTp1 ? `TP1 ${qty(f.q[0])} / trailing ${qty(Math.round((f.qty - f.q[0]) * 1e8) / 1e8)}` : f.q.map((_, i) => part(i)).join(' / ');
+    lines.push(`    Khớp ${px(f.fill)} (${f.label}): ${qty(f.qty)} coin = ${split} | mất ước tính ${num(f.estLoss, 2)} USDT`);
   }
   lines.push(`  Tiền mất ước tính nếu chạm SL: ${num(p.estLoss, 2)} USDT (đã gồm phí ước tính; ngân sách rủi ro ${dec(p.riskPct)}% vốn = ${num(p.riskAmount, 2)} USDT)`);
   return lines;
@@ -91,15 +110,17 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   lines.push(`  Mức phá (cố định tại nến phá ${utc(p.breakoutTime)}): ${px(p.breakoutLine)} | A = ATR(14) ${tf} = ${px(p.atr)} | d = ${num(p.distanceAtr, 2)}×A | T_ngắn ${px(p.targetShort)} / T_đủ ${px(p.targetFull)}`);
 
   const row0 = p.fillTable[0]!;
-  const legQ = (q: [number, number, number]) => q.map((x, i) => `TP${i + 1} ${x > 0 ? qty(x) : (p.targets[i]!.pct > 0 ? `gộp vào TP${q.length}` : '—')}`).join(' / ');
+  const c2 = p.exit.policy === 'C2' && p.targets[0]!.price !== null;
+  const r8 = (x: number) => Math.round(x * 1e8) / 1e8;
+  const legQ = (q: [number, number, number], total: number) => c2 ? `TP1 ${qty(q[0])} / trailing ${qty(r8(total - q[0]))}` : q.map((x, i) => `TP${i + 1} ${x > 0 ? qty(x) : (p.targets[i]!.pct > 0 ? `gộp vào TP${q.length}` : '—')}`).join(' / ');
   if (p.entryType === 'market') {
     lines.push(`  Kiểu vào lệnh: VÀO TRỰC TIẾP 100% — ${p.entryReason}`);
   } else if (p.entryType === 'split') {
     lines.push(`  Kiểu vào lệnh: CHIA 2 CHÂN — ${p.entryReason}`);
     const m = row0.legs.find((l) => l.kind === 'market')!;
     const l = row0.legs.find((x) => x.kind === 'limit')!;
-    lines.push(`    Chân 1 — MARKET ${P.splitMarketPct}%: giá hiện tại ${px(p.marketPrice)} (không ${chase} hơn ${px(p.maxEntry)}): ${qty(m.qty)} coin = ${legQ(m.q)}`);
-    lines.push(`    Chân 2 — LIMIT ${100 - P.splitMarketPct}%: ${px(l.price)}, ${cancel}: ${qty(l.qty)} coin = ${legQ(l.q)}`);
+    lines.push(`    Chân 1 — MARKET ${P.splitMarketPct}%: giá hiện tại ${px(p.marketPrice)} (không ${chase} hơn ${px(p.maxEntry)}): ${qty(m.qty)} coin = ${legQ(m.q, m.qty)}`);
+    lines.push(`    Chân 2 — LIMIT ${100 - P.splitMarketPct}%: ${px(l.price)}, ${cancel}: ${qty(l.qty)} coin = ${legQ(l.q, l.qty)}`);
   } else {
     lines.push(`  Kiểu vào lệnh: CHỈ ĐẶT LIMIT ${P.limitOnlyPct}% khối lượng tại ${px(p.limitPrice!)}, ${cancel} — ${p.entryReason}`);
   }
@@ -111,20 +132,26 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   const mOnly = p.targetsIfMarketOnly;
   p.targets.forEach((t, i) => {
     if (t.pct === 0) { lines.push(`  ${t.name}: bỏ — ${t.reason}`); return; }
+    if (c2 && t.price !== null && i > 0) { lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${num(t.r!, 2)}R — ${t.reason}`); return; }
+    if (c2 && t.price === null) return; // phần này nằm trong trailing của C2
     const amount = mOnly
       ? ` — khớp cả hai chân ${qty(t.qty)} coin; chỉ khớp chân market ${qty(mOnly[i]!)} coin`
       : ` = ${qty(t.qty)} coin`;
     lines.push(t.price === null
       ? `  ${t.name}: chốt ${t.pct}%${amount} — ${trail} — ${t.reason}`
-      : `  ${t.name}: ${px(t.price)} chốt ${t.pct}%${amount} | ${num(t.r!, 2)}R — ${t.reason}`);
+      : c2
+        ? `  ${t.name}: ${px(t.price)} chốt ${COMMON.exit.tp1Pct}%${amount} | ${num(t.r!, 2)}R — ${t.reason}; ${trailingText(p.exit.trailing!, tickSize, p.exit.trailQty)}`
+        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}%${amount} | ${num(t.r!, 2)}R — ${t.reason}`);
   });
-  if (p.entryType === 'split') {
+  if (c2) {
+    lines.push('  Đạt TP1 → trailing stop trên sàn nhận phần còn lại (không có SL cố định mới)');
+  } else if (p.entryType === 'split') {
     lines.push(`  Sau TP1 → SL về ${px(p.afterTp1Stop)} nếu khớp cả hai chân; về ${px(p.afterTp1StopIfMarketOnly!)} nếu chỉ khớp chân market (ước tính — theo luật dưới)`);
     lines.push(`    Luật: ${p.afterTp1Reason}`);
   } else {
     lines.push(`  Sau TP1 → SL về ${px(p.afterTp1Stop)} — ${p.afterTp1Reason}`);
   }
-  if (trailPct > COMMON.binanceTrailMaxCallbackPct) {
+  if (!p.exit.trailing && trailPct > COMMON.binanceTrailMaxCallbackPct) {
     lines.push(`  LƯU Ý: lệnh trailing stop của Binance chỉ nhận callbackRate tối đa ${COMMON.binanceTrailMaxCallbackPct}% (khoảng cách này là ${num(trailPct, 1)}%) → không đặt được nguyên văn, hãy tự dời SL thủ công theo ${px(p.trailAtr)} ${long ? 'dưới giá cao' : 'trên giá thấp'} nhất.`);
   }
   lines.push(`  TP1 sau phí + funding: ${num(p.tp1NetR, 2)}R ở giá khớp xấu nhất | R = ${num(p.riskAtr, 2)}×A`);
@@ -132,7 +159,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   lines.push(`  Bảng khối lượng theo giá khớp${p.entryType === 'limit' ? ' (chỉ chân limit)' : ' của chân market'} (ngân sách rủi ro ${num(p.riskAmount, 2)} USDT):`);
   for (const f of p.fillTable) {
     const legs = f.legs.length > 1 ? `${f.legs.map((l) => `${l.kind} ${qty(l.qty)}`).join(' + ')} = ` : '';
-    lines.push(`    Khớp ${px(f.fill)} (${f.label}): ${legs}${qty(f.qty)} coin = ${legQ(f.q)} | mất ước tính ${num(f.estLoss, 2)} USDT`);
+    lines.push(`    Khớp ${px(f.fill)} (${f.label}): ${legs}${qty(f.qty)} coin = ${legQ(f.q, f.qty)} | mất ước tính ${num(f.estLoss, 2)} USDT`);
   }
   lines.push(`  Tiền mất ước tính nếu chạm SL (khớp mọi chân): ${num(p.estLoss, 2)} USDT (đã gồm phí ước tính; ngân sách rủi ro ${dec(p.riskPct)}% vốn = ${num(p.riskAmount, 2)} USDT)`);
   lines.push(`  Dừng theo thời gian: chưa đạt +1R sau ${p.timeStopHours} giờ thì đóng; giữ tối đa ${p.maxHoldHours} giờ`);

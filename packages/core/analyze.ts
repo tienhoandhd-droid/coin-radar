@@ -139,10 +139,8 @@ export function analyze(i: AnalyzeInput): Analysis {
   });
   const price = last(i.entry.map((k) => k.close));
   const risk = contractRisk({ daily: i.daily, price, contract: i.contract, liquidityRankPct: i.liquidityRankPct, now: i.now });
-  // P-01: rủi ro mỗi lệnh tối đa 0,25% cho Lướt nhanh và coin rủi ro Cao/Rất cao
-  const capRisk = i.mode === 'fast' || risk.tier === 'Cao' || risk.tier === 'Rất cao';
-  const riskPct = capRisk ? Math.min(i.riskPct, COMMON.highRiskTierPct) : i.riskPct;
-  if (riskPct < i.riskPct) risk.notes.push(`P-01: hạ rủi ro mỗi lệnh từ ${i.riskPct}% xuống ${riskPct}% (${i.mode === 'fast' ? 'Lướt nhanh' : 'mức rủi ro ' + risk.tier})`);
+  // P-01: rủi ro mỗi lệnh = i.riskPct (mặc định COMMON.risk.perTradePct = 2%, người dùng chốt 19/10/2026). Không còn hạ xuống 0,25% theo chế độ/mức rủi ro; mức rủi ro chỉ để hiển thị và lọc Hạng A.
+  const riskPct = i.riskPct;
 
   const planFor = (side: Side) => buildPlan({
     mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,

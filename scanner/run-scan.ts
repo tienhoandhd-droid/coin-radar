@@ -101,7 +101,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
         regime: regime.regime, breakerTripped: breaker.tripped, breakerNote: breaker.reason ?? undefined,
         liquidityRankPct: rank, spreadPct: ((book.ask - book.bid) / mid) * 100,
         premium, fundingIntervalHours: input.fundingIntervals.get(c.symbol) ?? COMMON.defaultFundingIntervalHours,
-        fundingIntervalDefault: !input.fundingIntervals.has(c.symbol), now: new Date(now), events: input.events, capital: input.capital, riskPct: cfg.defaultRiskPct,
+        fundingIntervalDefault: !input.fundingIntervals.has(c.symbol), now: new Date(now), events: input.events, capital: input.capital, riskPct: COMMON.risk.perTradePct,
         patternData,
       }));
     } catch (error) {

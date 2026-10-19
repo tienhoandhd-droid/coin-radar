@@ -1,4 +1,5 @@
 import type { Mode } from './types.ts';
+import type { ExitPolicy } from './exit.ts';
 
 // MỌI ngưỡng dưới đây là điểm khởi đầu theo spec mục 3 — ĐỀ XUẤT, CHƯA BACKTEST.
 export type ModeConfig = {
@@ -14,7 +15,6 @@ export type ModeConfig = {
   trailAtrMult: number;
   timeStopHours: number;
   maxHoldHours: number;
-  defaultRiskPct: number;
   maxLeverage: number;
   fundingHoldHours: number; // thời gian giữ lệnh DỰ KIẾN (giờ) để ước chi phí funding; số kỳ = fundingHoldHours / chu kỳ funding thật của hợp đồng. Đề xuất, chưa backtest. KHÔNG phải trần maxHoldHours
   minAgeDays: number;
@@ -27,7 +27,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
     weights: { trend: 30, relativeStrength: 15, momentum: 10, flow: 25, path: 20 },
     rsBars: 48, flowBars: 16, flowSkipBars: 2,
     maxEntryAtr: 0.3, trailAtrMult: 3,
-    timeStopHours: 8, maxHoldHours: 24, defaultRiskPct: 0.25, maxLeverage: 10,
+    timeStopHours: 8, maxHoldHours: 24, maxLeverage: 10,
     fundingHoldHours: 8, minAgeDays: 30, breakerPauseHours: 3,
   },
   swing: {
@@ -35,7 +35,7 @@ export const CONFIG: Record<Mode, ModeConfig> = {
     weights: { trend: 35, relativeStrength: 25, momentum: 10, flow: 15, path: 15 },
     rsBars: 14, flowBars: 30, flowSkipBars: 0,
     maxEntryAtr: 0.3, trailAtrMult: 3,
-    timeStopHours: 7 * 24, maxHoldHours: 21 * 24, defaultRiskPct: 0.5, maxLeverage: 5,
+    timeStopHours: 7 * 24, maxHoldHours: 21 * 24, maxLeverage: 5,
     fundingHoldHours: 7 * 24, minAgeDays: 0, breakerPauseHours: 12,
   },
 };
@@ -52,7 +52,6 @@ export const COMMON = {
   maxSpreadPct: 0.15, // G-03: spread tối đa (%)
   pumpMovePct: 15, // G-04
   pumpVolumeZ: 5, // G-04
-  highRiskTierPct: 0.25, // P-01: rủi ro tối đa mỗi lệnh (% vốn) cho Lướt nhanh và cho coin mức rủi ro Cao/Rất cao — theo spec, đề xuất, chưa backtest
   defaultFundingIntervalHours: 8, // Binance: hợp đồng KHÔNG có trong /fapi/v1/fundingInfo dùng chu kỳ mặc định 8h (theo tài liệu Binance) — đề xuất, chưa backtest
   fundingExtremePer8h: 0.001, // G-09: |funding| > 0,1%/8h cùng chiều lệnh → chặn. Tạm dùng ngưỡng tuyệt đối (spec: z-score 30 ngày — làm ở kế hoạch 3 khi có lịch sử)
   fundingHotPer8h: 0.0005, // F-01: > 0,05%/8h cùng chiều → trừ điểm
@@ -64,6 +63,13 @@ export const COMMON = {
   regimeBandPct: 2,
   regimeDrawdownPct: 20,
   pivotConfirmBars: 3,
+  binanceTrailCallbackMinPct: 0.1, // callbackRate tối thiểu của TRAILING_STOP_MARKET — docs/reference/binance-usdm-api.md (tra 19/10/2026)
+  // Quyết định người dùng chốt 19/10/2026 (bot — docs/specs/2026-10-19-bot-design.md D9–D11)
+  portfolio: { maxOpenTrades: 10 }, // trần 10 lệnh mở cùng lúc, đủ 10 thì không vào lệnh mới (thay đề xuất cũ 3 lệnh/6%/5 altcoin/2 cùng ngành/3 cùng chiều) — người dùng chốt 19/10/2026
+  exit: {
+    defaultPolicy: 'C2' as ExitPolicy, // người dùng chốt 19/10/2026: TP1 chốt 50%, 50% còn lại trailing stop trên sàn kích hoạt tại TP1. 'A0' = 50/30/20 cố định (luật cũ, để đối chứng)
+    tp1Pct: 50, // % vị thế chốt tại TP1 (cả A0 và C2)
+  },
   binanceTrailMaxCallbackPct: 10, // lệnh TRAILING_STOP_MARKET của Binance: callbackRate tối đa 10 (%), tối thiểu 0,1 — developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order (tra 19/10/2026)
   // Vùng hỗ trợ/kháng cự — ĐỀ XUẤT, CHƯA BACKTEST
   zones: {
@@ -238,6 +244,7 @@ export const COMMON = {
   expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
   fundingCutoffMinutes: 30, // G-10: Lướt nhanh không vào lệnh phải trả funding khi còn < 30 phút — đề xuất, chưa backtest
   risk: {
+    perTradePct: 2, // % vốn bot rủi ro mỗi lệnh — người dùng chốt 19/10/2026. Không còn phân tầng 0,5%/0,25%; mức rủi ro (Thấp…Rất cao) chỉ để hiển thị/lọc Hạng A
     lowLiquidityRank: 0.5, // hạng thanh khoản > mức này thì tăng 1 bậc rủi ro
     maxDrawdown90Pct: 60, // sụt > mức này (%) trong 90 ngày thì tăng 1 bậc
     newListingDays: 90, // tuổi < mức này (ngày) thì tối thiểu 'Cao'

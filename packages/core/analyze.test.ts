@@ -23,7 +23,7 @@ const base: AnalyzeInput = {
   regime: 'up', breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false,
-  now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 0.5,
+  now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 2,
   patternData: null,
 };
 // TESTUSDT ở base thuộc phạm vi mô hình (rủi ro Thấp/Vừa, hạng thanh khoản 5%) → phải có dữ liệu mô hình.
@@ -90,26 +90,26 @@ const volatileDaily = Array.from({ length: 300 }, (_, i) => {
   return { ...c, high: c.close * 1.06, low: c.close * 0.94 };
 });
 
-test('M2: coin rủi ro Cao/Rất cao → rủi ro 0,25% (2,5 USDT/1000), plan ghi riskPct', () => {
+test('B0: coin rủi ro Cao/Rất cao KHÔNG bị hạ xuống 0,25% nữa — vẫn dùng riskPct truyền vào (2% = 20 USDT/1000)', () => {
   const a = analyze({ ...base, daily: volatileDaily, trend: volatileDaily, entry: upWaves(500, 0.2, 0.6, 1, 20) });
   assert.ok(a.risk.tier === 'Cao' || a.risk.tier === 'Rất cao', a.risk.tier);
   assert.ok(a.plan, a.label);
-  assert.equal(a.plan.riskAmount, 2.5);
-  assert.equal(a.plan.riskPct, 0.25);
-  assert.ok(a.risk.notes.some((n) => /P-01/.test(n)));
+  assert.equal(a.plan.riskAmount, 20);
+  assert.equal(a.plan.riskPct, 2);
+  assert.ok(!a.risk.notes.some((n) => /P-01/.test(n)));
 });
 
-test('M2: coin rủi ro thấp/vừa, swing → vẫn 0,5%', () => {
+test('B0: coin rủi ro thấp/vừa, swing → 2%', () => {
   const a = analyze(base);
   assert.ok(a.risk.tier === 'Thấp' || a.risk.tier === 'Vừa', a.risk.tier);
-  assert.equal(a.plan?.riskAmount, 5);
-  assert.equal(a.plan?.riskPct, 0.5);
+  assert.equal(a.plan?.riskAmount, 20);
+  assert.equal(a.plan?.riskPct, 2);
 });
 
-test('M2: chế độ fast luôn không quá 0,25% dù truyền 0,5', () => {
-  const a = analyze({ ...base, mode: 'fast', trend: up(500, 0.2, 0.6), btcTrend: up(500, 0.1), riskPct: 0.5 });
+test('B0: chế độ fast cũng 2% (bỏ trần 0,25% của Lướt nhanh)', () => {
+  const a = analyze({ ...base, mode: 'fast', trend: up(500, 0.2, 0.6), btcTrend: up(500, 0.1), riskPct: COMMON.risk.perTradePct });
   const p = a.plan ?? (() => { throw new Error('không có plan: ' + a.label + JSON.stringify(a.gates.filter((g) => !g.pass))); })();
-  assert.equal(p.riskPct, 0.25);
+  assert.equal(p.riskPct, 2);
 });
 
 test('D1: cắt lỗ rộng hơn 2×ATR ngày → G-11 trượt, không còn nhãn Đạt', () => {

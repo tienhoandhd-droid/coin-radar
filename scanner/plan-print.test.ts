@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { planLines, gradedReportLines, GRADE_A_DISCLAIMER, type GradedItem } from './plan-print.ts';
 import type { TradePlan } from '../packages/core/plan.ts';
+import { buildExit, trailingFor } from '../packages/core/exit.ts';
 
 const base: TradePlan = {
   side: 'long', entryType: 'market', marketPrice: 0.6143, entry: 0.6143, entryZone: { low: 0.6143, high: 0.6263 },
@@ -11,7 +12,7 @@ const base: TradePlan = {
     { name: 'TP2', price: null, pct: 30, qty: 8, r: null, reason: 'het vung' },
     { name: 'TP3', price: null, pct: 20, qty: 7, r: null, reason: 'het vung' },
   ],
-  afterTp1Stop: 0.6143, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
+  afterTp1Stop: 0.6143, exit: { policy: 'A0', tp1Qty: 14, trailQty: 0, trailing: null }, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
   riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
   fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2,
   fillTable: [
@@ -122,7 +123,7 @@ import type { Candle } from '../packages/core/types.ts';
 const H4 = 4 * 3600_000;
 const pk = (i: number, high: number, low: number, close: number): Candle =>
   ({ openTime: i * H4, closeTime: (i + 1) * H4 - 1, open: close, high, low, close, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 });
-function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: Candle[] = []): PatternPlan {
+function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: Candle[] = [], exitPolicy: 'A0' | 'C2' = 'A0'): PatternPlan {
   const c = Array.from({ length: 30 }, (_, i) => pk(i, 105.5, 104.5, 105));
   c.push(pk(30, close + 0.3, 109.9, close), ...extra);
   const g: PatternGeometry = { kind: 'rectangle', timeframe: '4h', pivots: [], startIndex: 0, endIndex: 20, upper: () => 110, lower: () => 100,
@@ -131,7 +132,7 @@ function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: 
   const a: PatternPlanArgs = { mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', price: { close: c[c.length - 1]!.close, time: c[c.length - 1]!.closeTime, tf: '4h' }, geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     state: { state: 'breakout', breakoutIndex: 30, side: 'up', breakoutLine: 110, distanceAtr: 0, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
     zones: [z(118, 118.5), z(121, 122), z(126, 127)], multiMonth: null, btcSma200ReclaimedAt: null,
-    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8 };
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
   const r = buildPatternPlan(a);
   if (r.status !== 'ready' || !r.plan) throw new Error(`fixture không ready: ${r.reason}`);
   return r.plan;
@@ -255,4 +256,48 @@ test('B3 tín hiệu mô hình cũ: một dòng "đã phát lúc …, còn hạn
 test('M3: dòng giá hiện tại ghi khung và thời điểm của giá dùng', () => {
   const t = patternPlanLines(ph, patternPlan(110.5), 0.01).join('\n');
   assert.match(t, /Giá hiện tại: 110,50 \(đóng nến 4H lúc 1970-01-06 03:59 UTC\)/);
+});
+
+// ---- B0: chính sách thoát C2 (mặc định) và rủi ro 2% ----
+const c2Long: TradePlan = {
+  ...base, riskPct: 2, riskAmount: 20,
+  exit: buildExit({ policy: 'C2', side: 'long', entry: 0.6143, tp1: 0.761, trailAtr: 0.05, costPct: 0.25, qty: 29, tp1Qty: 14 }),
+};
+
+test('C2 Long: TP1 chốt 50% + 50% còn lại trailing trên sàn, kích hoạt tại TP1, khoảng lùi và mức dừng', () => {
+  // ATR-khoảng 0,05 → 0,05/0,761 = 6,571%; bảo đảm không lỗ = (0,761 − 0,615836)/0,761 = 19,07% → callback 6,57%; dừng = 0,761 − 0,05 = 0,711
+  const t = planLines(head, c2Long, 0.0001).join('\n');
+  assert.match(t, /TP1: 0,7610 chốt 50% = 14 coin \| 1,78R — ly do tp1; 50% còn lại \(15 coin\): trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi 6,57% \(mức dừng lúc kích hoạt ≈ 0,7110 ≥ giá vào \+ phí\)/);
+  assert.match(t, /ngân sách rủi ro 2% vốn = 20,00 USDT/);
+  assert.doesNotMatch(t, /dời SL về/);
+  assert.doesNotMatch(t, /TP2: chốt/);
+  assert.match(t, /chia TP1 50% \/ trailing 50%/);
+  assert.match(t, /Khớp 0,6143 \(giá hiện tại\): 29 coin = TP1 14 \/ trailing 15/);
+});
+
+test('C2 Short: cùng định dạng', () => {
+  const c2Short: TradePlan = { ...base, side: 'short', riskPct: 2, riskAmount: 20,
+    exit: buildExit({ policy: 'C2', side: 'short', entry: 0.6143, tp1: 0.5, trailAtr: 0.05, costPct: 0.25, qty: 29, tp1Qty: 14 }) };
+  const t = planLines(head, { ...c2Short, targets: [{ ...base.targets[0]!, price: 0.5 }, base.targets[1]!, base.targets[2]!] }, 0.0001).join('\n');
+  assert.match(t, /TP1: 0,5000 chốt 50% = 14 coin .*khoảng lùi 10,00% \(mức dừng lúc kích hoạt ≈ 0,5500 ≥ giá vào \+ phí\)/);
+});
+
+test('C2: ATR vượt trần 10% thì ghi rõ kẹp 10%; bảo đảm < 0,1% thì ghi rõ cần lệnh dừng hòa vốn', () => {
+  const clamp = { ...base, exit: { policy: 'C2' as const, tp1Qty: 14, trailQty: 15, trailing: trailingFor('long', 100, 150, 20, 0.25) } };
+  const t1 = planLines(head, clamp, 0.01).join('\n');
+  assert.match(t1, /khoảng lùi 10,00% \(mức dừng lúc kích hoạt ≈ 135,00 ≥ giá vào \+ phí; khoảng lùi theo ATR 13,3% vượt trần 10% của sàn nên dùng 10%\)/);
+  const floor = { ...base, exit: { policy: 'C2' as const, tp1Qty: 14, trailQty: 15, trailing: trailingFor('long', 100, 100.3, 2, 0.25) } };
+  const t2 = planLines(head, floor, 0.01).join('\n');
+  assert.match(t2, /khoảng lùi 0,10% .*< giá vào \+ phí .*0,050% < 0,1% tối thiểu của sàn → bot phải giữ thêm lệnh dừng hòa vốn/);
+});
+
+test('B0 mô hình C2: chân chia TP1/trailing, TP1 kèm trailing, TP2/TP3 chỉ tham khảo, bỏ luật dời SL', () => {
+  const p = patternPlan(111.4, {}, [], 'C2');
+  const t = patternPlanLines(ph, p, 0.01).join('\n');
+  assert.equal(p.exit.policy, 'C2');
+  assert.ok(p.exit.trailing);
+  assert.match(t, /TP1: 115,00 chốt 50% — khớp cả hai chân 9,607 coin; chỉ khớp chân market 4,803 coin \| .*50% còn lại \(9,608 coin\): trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi [\d,]+% \(mức dừng lúc kích hoạt ≈ [\d,]+ ≥ giá vào \+ phí\)/);
+  assert.match(t, /Chân 1 — MARKET 50%.*= TP1 4,803 \/ trailing 4,804/);
+  assert.match(t, /TP2 \(tham khảo, không đặt lệnh với C2\)/);
+  assert.doesNotMatch(t, /Sau TP1 → SL về/);
 });

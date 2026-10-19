@@ -57,7 +57,7 @@ const top = (side: 'long' | 'short') => final
 mkdirSync(new URL('../output/', import.meta.url), { recursive: true });
 const file = new URL(`../output/scan-${mode}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`, import.meta.url);
 writeFileSync(file, JSON.stringify({ mode, capital, at: new Date(now).toISOString(), regime, breaker, errors, results: final }, null, 2));
-console.log(`Vốn: ${capital} USDT | Rủi ro mặc định: ${cfg.defaultRiskPct}%/lệnh (coin rủi ro Cao/Rất cao và Lướt nhanh: tối đa ${COMMON.highRiskTierPct}%)`);
+console.log(`Vốn: ${capital} USDT | Rủi ro: ${COMMON.risk.perTradePct}% vốn/lệnh (người dùng chốt 19/10/2026; mức rủi ro coin chỉ để hiển thị) = ${(capital * COMMON.risk.perTradePct / 100).toFixed(2).replace('.', ',')} USDT | Trần ${COMMON.portfolio.maxOpenTrades} lệnh mở | Thoát lệnh: ${COMMON.exit.defaultPolicy}`);
 console.log(`Chế độ: ${mode} | Thị trường: ${regime.regime} (${regime.reasons.join('; ')})`);
 console.log(`Cầu dao: ${breaker.tripped ? 'BẬT — ' + breaker.reason : 'tắt'}`);
 console.log(`Hợp đồng: ${contracts.length} | Đã chấm: ${final.length} | Lỗi: ${errors.length} | Thời gian: ${((Date.now() - started) / 1000).toFixed(0)}s`);
