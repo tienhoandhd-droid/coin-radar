@@ -6,7 +6,8 @@ import type { Side } from './types.ts';
 // Trần danh mục và ký quỹ (đánh giá độc lập C1, C3) — hàm THUẦN dùng chung cho máy quét (danh sách lệnh mở rỗng hoặc do người
 // dùng đưa vào → chỉ để thông tin), bộ mô phỏng của kế hoạch 2 và bot.
 
-// Một lệnh đang mở. riskAmount = số tiền mất nếu chạm SL hiện tại (USDT); pastTp1 = đã qua TP1 → tính rủi ro 0 (người dùng chốt 19/10/2026).
+// Một lệnh đang mở. riskAmount = số tiền mất nếu chạm SL hiện tại (USDT); pastTp1 = đã qua TP1 → tính rủi ro 0 VÀ không tính vào
+// trần số lệnh (kèo không rủi ro), nhưng vẫn tính ký quỹ (người dùng chốt 19/10/2026).
 export type OpenTrade = { symbol: string; side: Side; notional: number; leverage: number; riskAmount: number; pastTp1: boolean };
 
 // Lệnh định mở. qty = khối lượng theo 2% (từ kế hoạch); leverage = đòn bẩy sẽ dùng (≤ trần chế độ và trần bậc ký quỹ);
@@ -25,7 +26,9 @@ export type CanOpenResult = {
   riskAmount: number; // tiền mất nếu chạm SL với adjustedQty (đã gồm phí ước tính)
   riskPctActual: number; // riskAmount / vốn × 100 — có thể < 2% khi bị giảm
   marginNeeded: number; // notional / đòn bẩy với adjustedQty
-  openCount: number;
+  openCount: number; // tổng số lệnh đang mở (gồm cả lệnh đã qua TP1)
+  atRiskCount: number; // số lệnh CÒN RỦI RO (chưa qua TP1) — chỉ số này tính vào trần maxOpenTrades (người dùng chốt 19/10/2026)
+  pastTp1Count: number; // số lệnh đã qua TP1 (kèo không rủi ro): không tính trần lệnh, không tính rủi ro, VẪN tính ký quỹ
   sameSideOpen: number; // số lệnh đang mở cùng chiều lệnh mới (altcoin thường chạy cùng chiều BTC — theo dõi sau đánh giá C1)
   openRiskPct: number; // tổng rủi ro đang mở (lệnh đã qua TP1 = 0), % vốn
   openMarginPct: number; // tổng ký quỹ đang dùng, % vốn
@@ -51,10 +54,14 @@ export function canOpen(t: NewTrade, open: readonly OpenTrade[], capital: number
 
   const openRisk = openRiskAmount(open);
   const openMargin = open.reduce((s, o) => s + o.notional / o.leverage, 0);
-  const base = { requestedQty: t.qty, openCount: open.length, sameSideOpen: open.filter((o) => o.side === t.side).length, openRiskPct: (openRisk / capital) * 100, openMarginPct: (openMargin / capital) * 100 };
+  const atRiskCount = open.filter((o) => !o.pastTp1).length;
+  const base = { requestedQty: t.qty, openCount: open.length, atRiskCount, pastTp1Count: open.length - atRiskCount, sameSideOpen: open.filter((o) => o.side === t.side).length, openRiskPct: (openRisk / capital) * 100, openMarginPct: (openMargin / capital) * 100 };
   const reject = (reasons: string[]): CanOpenResult => ({ ...base, allowed: false, adjustedQty: 0, riskAmount: 0, riskPctActual: 0, marginNeeded: 0, reasons });
 
-  if (open.length >= cfg.maxOpenTrades) return reject([`Đã có ${open.length} lệnh mở = trần ${cfg.maxOpenTrades} lệnh — không vào lệnh mới`]);
+  // Trần lệnh chỉ đếm lệnh còn rủi ro: lệnh đã qua TP1 (phần còn lại do trailing quản) không tính (người dùng chốt 19/10/2026)
+  if (atRiskCount >= cfg.maxOpenTrades) {
+    return reject([`Đã có ${atRiskCount} lệnh còn rủi ro = trần ${cfg.maxOpenTrades} lệnh (không tính ${base.pastTp1Count} lệnh đã qua TP1) — không vào lệnh mới`]);
+  }
   const same = open.find((o) => o.symbol === t.symbol);
   if (same) return reject([`${t.symbol} đang có lệnh mở (${same.side === 'long' ? 'Long' : 'Short'}) — một vị thế mỗi hợp đồng`]);
 

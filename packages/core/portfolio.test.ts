@@ -29,10 +29,32 @@ test('C3 danh mục trống, đủ ký quỹ → cho vào nguyên khối lượn
   assert.deepEqual(r.reasons, []);
 });
 
-test('C1 đủ 10 lệnh mở → không cho vào', () => {
-  const r = canOpen(trade(), open(10, { riskAmount: 0, pastTp1: true }), 10_000, CFG);
+test('C1 đủ 10 lệnh CÒN RỦI RO → không cho vào', () => {
+  const r = canOpen(trade(), open(10, { riskAmount: 50 }), 1_000_000, CFG);
   assert.equal(r.allowed, false);
-  assert.match(r.reasons.join(), /10 lệnh/);
+  assert.match(r.reasons.join(), /10 lệnh còn rủi ro/);
+});
+
+test('C1 người dùng 19/10/2026: lệnh đã qua TP1 (kèo không rủi ro) KHÔNG tính vào trần 10 lệnh', () => {
+  const past = (n: number) => open(n, { pastTp1: true, riskAmount: 0 }).map((t, j) => ({ ...t, symbol: `P${j}USDT` }));
+  // 10 còn rủi ro + 3 đã qua TP1 → vẫn từ chối (trần tính trên 10 lệnh còn rủi ro)
+  const r1 = canOpen(trade(), [...open(10, { riskAmount: 50 }), ...past(3)], 1_000_000, CFG);
+  assert.equal(r1.allowed, false);
+  assert.equal(r1.atRiskCount, 10);
+  assert.equal(r1.pastTp1Count, 3);
+  assert.equal(r1.openCount, 13);
+  // 9 còn rủi ro + 5 đã qua TP1 → cho vào (ký quỹ và tổng rủi ro 10% còn chỗ)
+  const r2 = canOpen(trade(), [...open(9, { riskAmount: 50 }), ...past(5)], 1_000_000, CFG);
+  assert.equal(r2.allowed, true);
+  assert.equal(r2.adjustedQty, 100);
+  assert.equal(r2.atRiskCount, 9);
+  assert.equal(r2.pastTp1Count, 5);
+  // 0 còn rủi ro + 12 đã qua TP1 → cho vào
+  assert.equal(canOpen(trade(), past(12), 1_000_000, CFG).allowed, true);
+  // lệnh đã qua TP1 VẪN tính ký quỹ: 12 lệnh × 40.000/5 = 96.000 ký quỹ > 100.000 × 0,8 → bỏ vì ký quỹ
+  const m = canOpen(trade(), past(12).map((t) => ({ ...t, notional: 40_000 })), 100_000, CFG);
+  assert.equal(m.allowed, false);
+  assert.match(m.reasons.join(), /ký quỹ/);
 });
 
 test('C1 lệnh đã qua TP1 tính rủi ro 0; tổng rủi ro mở chạm 10% → giảm khối lượng phần còn lại, hết chỗ → bỏ', () => {
@@ -95,5 +117,5 @@ test('C1 (theo dõi sau rà soát): đếm số lệnh đang mở CÙNG CHIỀU 
   const mixed = [...open(3), ...open(2, { side: 'short' }).map((t, j) => ({ ...t, symbol: `S${j}USDT` }))];
   assert.equal(canOpen(trade(), mixed, 100_000, CFG).sameSideOpen, 3);
   assert.equal(canOpen(trade({ side: 'short' }), mixed, 100_000, CFG).sameSideOpen, 2);
-  assert.equal(canOpen(trade(), open(10), 100_000, CFG).sameSideOpen, 10); // kể cả khi bị từ chối
+  assert.equal(canOpen(trade(), open(10, { riskAmount: 50 }), 1_000_000, CFG).sameSideOpen, 10); // kể cả khi bị từ chối
 });

@@ -70,7 +70,7 @@ export const COMMON = {
   binanceTrailCallbackMinPct: 0.1, // callbackRate tối thiểu của TRAILING_STOP_MARKET — docs/reference/binance-usdm-api.md (tra 19/10/2026)
   // Quyết định người dùng chốt 19/10/2026 (bot — docs/specs/2026-10-19-bot-design.md D9–D11)
   portfolio: {
-    maxOpenTrades: 10, // trần 10 lệnh mở cùng lúc, đủ 10 thì không vào lệnh mới (thay đề xuất cũ 3 lệnh/6%/5 altcoin/2 cùng ngành/3 cùng chiều) — người dùng chốt 19/10/2026
+    maxOpenTrades: 10, // trần 10 lệnh CÒN RỦI RO cùng lúc (lệnh đã qua TP1 không tính — người dùng chốt 19/10/2026), đủ 10 thì không vào lệnh mới (thay đề xuất cũ 3 lệnh/6%/5 altcoin/2 cùng ngành/3 cùng chiều) — người dùng chốt 19/10/2026
     maxOpenRiskPct: 10, // tổng rủi ro đang mở ≤ 10% vốn, lệnh đã qua TP1 tính 0 (đánh giá độc lập C1) — người dùng chốt 19/10/2026
     marginSafetyFactor: 0.8, // tổng ký quỹ các lệnh mở + lệnh mới ≤ vốn bot × mức này (C3) — đề xuất, chưa backtest
   },

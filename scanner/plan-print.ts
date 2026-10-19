@@ -96,7 +96,7 @@ export function headerWarningLines(calendar: CalendarStatus): string[] {
 // C1/C3/I7: khối lượng tối đa cho phép theo danh mục đang mở + ký quỹ + thanh khoản (portfolio.canOpen).
 // Máy quét không biết lệnh đang mở của anh (danh sách trống) → chỉ để thông tin; bot dùng danh mục thật.
 export function portfolioLines(r: CanOpenResult): string[] {
-  const open = `danh mục đang mở: ${r.openCount} lệnh (${r.sameSideOpen} cùng chiều), rủi ro mở ${num(r.openRiskPct, 2)}%, ký quỹ ${num(r.openMarginPct, 2)}% vốn`;
+  const open = `danh mục đang mở: ${r.atRiskCount} lệnh còn rủi ro / ${r.pastTp1Count} lệnh đã qua TP1 (${r.sameSideOpen} cùng chiều), rủi ro mở ${num(r.openRiskPct, 2)}%, ký quỹ ${num(r.openMarginPct, 2)}% vốn`;
   if (!r.allowed) return [`  Danh mục/ký quỹ: KHÔNG VÀO — ${r.reasons.join('; ')} (${open})`];
   const money = `rủi ro thực ${num(r.riskPctActual, 2)}% vốn${r.riskPctActual < COMMON.risk.perTradePct - 1e-9 ? ` (< ${COMMON.risk.perTradePct}%)` : ''} = ${num(r.riskAmount, 2)} USDT, ký quỹ ≈ ${num(r.marginNeeded, 2)} USDT`;
   if (r.reasons.length === 0) return [`  Danh mục/ký quỹ: vào đủ khối lượng — ${money} (${open})`];

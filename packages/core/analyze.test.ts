@@ -409,15 +409,17 @@ test('I2: lệnh market vượt MARKET_LOT_SIZE.maxQty → không hợp lệ, G-
   assert.match(g12.note, /LOT_SIZE/);
 });
 
-test('C1/C3: tín hiệu có kiểm danh mục — danh mục trống thì cho vào; đủ 10 lệnh mở thì không', () => {
+test('C1/C3: tín hiệu có kiểm danh mục — danh mục trống thì cho vào; đủ 10 lệnh còn rủi ro thì không (lệnh qua TP1 không tính)', () => {
   const a = analyze(base);
   assert.ok(a.label.startsWith('Đạt') && a.portfolio !== null);
   assert.equal(a.portfolio.allowed, true, a.portfolio.reasons.join('; '));
   assert.ok(a.portfolio.riskPctActual > 0 && a.portfolio.riskPctActual <= 2 + 1e-9);
-  const ten = Array.from({ length: 10 }, (_, j) => ({ symbol: `X${j}USDT`, side: 'long' as const, notional: 10, leverage: 5, riskAmount: 0, pastTp1: true }));
+  const ten = Array.from({ length: 10 }, (_, j) => ({ symbol: `X${j}USDT`, side: 'long' as const, notional: 10, leverage: 5, riskAmount: 0, pastTp1: false }));
   const b = analyze({ ...base, openTrades: ten });
   assert.equal(b.portfolio!.allowed, false);
   assert.match(b.portfolio!.reasons.join(), /10 lệnh/);
+  const tenPast = ten.map((t) => ({ ...t, pastTp1: true }));
+  assert.equal(analyze({ ...base, openTrades: tenPast }).portfolio!.allowed, true);
 });
 
 test('I7: khối lượng 1H thấp → phí kế hoạch tăng theo cỡ lệnh và khối lượng bị giới hạn theo thanh khoản; thiếu nến 1H → ném lỗi', () => {

@@ -312,7 +312,7 @@ test('B0 mô hình chia 2 chân: bảo đảm không lỗ tính ở chân xấu 
 
 test('C1/C3 portfolioLines: vào đủ / giảm khối lượng (rủi ro thực < 2% in rõ) / không vào', async () => {
   const { portfolioLines } = await import('./plan-print.ts');
-  const base = { requestedQty: 100, openCount: 0, sameSideOpen: 0, openRiskPct: 0, openMarginPct: 0 };
+  const base = { requestedQty: 100, openCount: 0, atRiskCount: 0, pastTp1Count: 0, sameSideOpen: 0, openRiskPct: 0, openMarginPct: 0 };
   const full = portfolioLines({ ...base, allowed: true, adjustedQty: 100, riskAmount: 200, riskPctActual: 2, marginNeeded: 2000, reasons: [] }).join('\n');
   assert.match(full, /vào đủ khối lượng/);
   assert.match(full, /rủi ro thực 2,00% vốn/);
@@ -367,6 +367,6 @@ test('I7 rà soát B0b #3: bản in ghi nguồn bậc ký quỹ — "bậc ký q
 
 test('C1 portfolioLines in số lệnh mở cùng chiều', async () => {
   const { portfolioLines } = await import('./plan-print.ts');
-  const t = portfolioLines({ requestedQty: 1, openCount: 4, sameSideOpen: 3, openRiskPct: 6, openMarginPct: 20, allowed: true, adjustedQty: 1, riskAmount: 20, riskPctActual: 2, marginNeeded: 50, reasons: [] }).join('');
-  assert.match(t, /4 lệnh \(3 cùng chiều\)/);
+  const t = portfolioLines({ requestedQty: 1, openCount: 6, atRiskCount: 4, pastTp1Count: 2, sameSideOpen: 3, openRiskPct: 6, openMarginPct: 20, allowed: true, adjustedQty: 1, riskAmount: 20, riskPctActual: 2, marginNeeded: 50, reasons: [] }).join('');
+  assert.match(t, /4 lệnh còn rủi ro \/ 2 lệnh đã qua TP1 \(3 cùng chiều\)/);
 });
