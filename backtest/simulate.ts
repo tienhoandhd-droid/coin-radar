@@ -65,13 +65,15 @@ export type Flags = {
 };
 export type AfterTp1 = { rule: AfterTp1Rule; ruleIfMarketOnly: AfterTp1Rule | null } | null;
 export type TradeMeta = { grade: string | null; label: string; kind: 'zone' | 'pattern'; score: number; signalId: string; key: string; afterTp1: AfterTp1 };
+// Định cỡ của planner: rủi ro dự kiến (% vốn, ở giá khớp xấu nhất) + lý do giảm khối lượng (nếu có)
+export type Sizing = { plannedRiskPct: number; requestedQty: number; qty: number; notes: string[] };
 
 export type SimTrade = {
   k: {
     id: string; symbol: string; mode: Mode; side: Side; d: 1 | -1; policy: ExitPolicy; placedAt: number; equityAtEntry: number;
     tick: number; qStep: number; leverage: number; costPct: number; cost: SimCost; pathInterval: string; meta: TradeMeta;
     initialStopX: number; tp1X: number; actX: number; cbPct: number; beX: number | null; tp2X: number | null; tp3X: number | null;
-    trailAtr: number; timeStopMs: number; maxHoldMs: number; entryType: PlannerPlan['entryType'];
+    trailAtr: number; timeStopMs: number; maxHoldMs: number; entryType: PlannerPlan['entryType']; sizing: Sizing;
   };
   s: State;
   b: {
@@ -119,6 +121,7 @@ export function createTrade(a: {
       initialStopX: toX(d, sl.input.triggerPrice), tp1X: toX(d, tp.input.triggerPrice), actX: toX(d, tr.input.activatePrice), cbPct: tr.input.callbackPct,
       beX: be?.op === 'placeStopLoss' ? toX(d, be.input.triggerPrice) : null, tp2X: tgt(1), tp3X: tgt(2), trailAtr,
       timeStopMs: cfg.timeStopHours * HOUR, maxHoldMs: cfg.maxHoldHours * HOUR, entryType: a.plan.entryType,
+      sizing: { plannedRiskPct: pr.sizing.realRiskPct, requestedQty: pr.sizing.requestedQty, qty: pr.sizing.qty, notes: pr.reasons },
     },
     s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null },
     b: {
@@ -519,7 +522,7 @@ export type TradeRecord = {
   stop: number; tp1: number; callbackPct: number; beFloor: number | null; leverage: number;
   avgEntry: number | null; qty: number; exits: Exit[]; avgExit: number | null; reason: string | null;
   gross: number; costs: number; funding: number; pnl: number; equityAtEntry: number; pctEquity: number; riskAtFill: number; R: number;
-  maeR: number | null; mfeR: number | null; maePct: number | null; flags: Flags;
+  maeR: number | null; mfeR: number | null; maePct: number | null; flags: Flags; sizing: Sizing;
 };
 
 const iso = (t: number | null) => (t === null ? null : new Date(t).toISOString());
@@ -547,7 +550,7 @@ export function tradeRecord(tr: SimTrade): TradeRecord {
     maeR: filled && s.troughX !== null ? (s.troughX - avgXv) / oneR : null,
     mfeR: filled && s.peakX !== null ? (s.peakX - avgXv) / oneR : null,
     maePct: filled && s.troughX !== null && avg !== null ? ((s.troughX - avgXv) / avg) * 100 : null,
-    flags: { ...b.flags },
+    flags: { ...b.flags }, sizing: k.sizing,
   };
 }
 
