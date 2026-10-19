@@ -124,6 +124,43 @@ export const COMMON = {
       minConvergence: 0.3, // độ rộng thu hẹp từ đầu đến cuối ≥ mức này → cờ đuôi nheo — đề xuất, chưa backtest
       flatSlopeAtr: 0.03, // cờ không hội tụ chỉ được trôi thuận chiều cán tối đa mức này (×A mỗi nến) — đề xuất, chưa backtest
     },
+    hs: {
+      shoulderTolAtr: 0.75, // hai vai lệch tối đa (×A) — đề xuất, chưa backtest
+      neckTolAtr: 0.75, // hai nách lệch tối đa (×A)... — đề xuất, chưa backtest
+      neckSlopeAtr: 0.1, // ...hoặc độ dốc neckline tối đa (×A mỗi nến) — đề xuất, chưa backtest
+      shoulderMinRatio: 0.25, // vai cao tối thiểu so với đầu (tính từ neckline) — đề xuất, chưa backtest
+      shoulderMaxRatio: 0.7, // vai cao tối đa so với đầu — đề xuất, chưa backtest
+      headMinAtr: 1.5, // đầu − neckline tối thiểu (×A) — đề xuất, chưa backtest
+      symmetryMax: 2.5, // thời gian vai→đầu hai bên lệch tối đa (lần) — đề xuất, chưa backtest
+      emaPeriod: 200, // chu kỳ EMA lọc vị trí xu hướng — đề xuất, chưa backtest
+      minOnTrendSide: 3, // số pivot (trong 5) phải ở phía đúng của EMA — đề xuất, chưa backtest
+      minBars: 15, // thời lượng tối thiểu P1→P5 (nến) — đề xuất, chưa backtest
+      maxBars: 120, // thời lượng tối đa P1→P5 (nến) — đề xuất, chưa backtest
+      waitBars: 20, // chờ đóng thủng neckline tối đa (nến kể từ P5), quá hạn là hết hiệu lực — đề xuất, chưa backtest
+      activeBars: 60, // sau khi xác nhận, bối cảnh còn hiệu lực tối đa (nến) — đề xuất, chưa backtest
+    },
+    multiMonth: {
+      minTouches: 3, // số chạm tối thiểu mỗi biên — đề xuất, chưa backtest
+      tripleTouches: 3, // như chữ nhật — đề xuất, chưa backtest
+      minHeightAtr: 3, // như chữ nhật — đề xuất, chưa backtest
+      minBars: 60, // thời lượng tối thiểu (nến 1D) — đề xuất, chưa backtest
+      stopMaxAtr: 3, // như chữ nhật (chỉ để dùng chung hàm dựng vùng) — đề xuất, chưa backtest
+      confirmAtr: 0.5, // phá được xác nhận khi đóng ngoài biên ≥ mức này (×A 1D) — đề xuất, chưa backtest
+      confirmCloses: 2, // hoặc số nến 1D liên tiếp đóng ngoài biên — đề xuất, chưa backtest
+      nearAtr: 1, // 'ngay dưới/trên biên' = trong khoảng này (×A 1D) — đề xuất, chưa backtest
+    },
+    coil: {
+      bbPeriod: 20, // chu kỳ Bollinger — đề xuất, chưa backtest
+      bbK: 2, // số độ lệch chuẩn — đề xuất, chưa backtest
+      bbWindow: 125, // số nến xét phân vị BBW — đề xuất, chưa backtest
+      bbPercentile: 10, // BBW ≤ phân vị này (%) — đề xuất, chưa backtest
+      nrWide: 7, // NR7 — đề xuất, chưa backtest
+      nrNarrow: 4, // NR4 — đề xuất, chưa backtest
+      atrFast: 14, // ATR ngắn — đề xuất, chưa backtest
+      atrSlow: 100, // ATR dài — đề xuất, chưa backtest
+      atrRatioMax: 0.7, // ATR ngắn/ATR dài ≤ mức này — đề xuất, chưa backtest
+      minHits: 2, // số chỉ báo (trong 3) cùng bật mới gắn cờ — đề xuất, chưa backtest
+    },
   },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)

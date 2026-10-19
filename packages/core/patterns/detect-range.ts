@@ -19,8 +19,9 @@ export function atrAtConfirm(c: Candle[], atr: number[], last: Pivot): number {
 
 // Chữ nhật / vùng đi ngang (gồm ba đỉnh, ba đáy). Với mỗi pivot cuối, lấy cửa sổ pivot dài nhất lùi về trước
 // mà các đỉnh nằm cùng một vùng và các đáy nằm cùng một vùng (chênh ≤ zoneTolAtr×A, A tại nến xác nhận pivot cuối).
-export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], timeframe = ''): PatternGeometry[] {
-  const cfg = COMMON.patterns.rect;
+export type RectCfg = { minTouches: number; tripleTouches: number; minHeightAtr: number; minBars: number; stopMaxAtr: number };
+
+export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], timeframe = '', cfg: RectCfg = COMMON.patterns.rect): PatternGeometry[] {
   const tol = COMMON.patterns.zoneTolAtr;
   const out: PatternGeometry[] = [];
   for (let j = 1; j < pivots.length; j++) {
