@@ -3,7 +3,7 @@ import { CONFIG, COMMON } from '../config.ts';
 import { roundStep } from '../indicators.ts';
 import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
-import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, type CostTier, type Target, type FillRow } from '../plan.ts';
+import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, type CostTier, type Target, type FillRow } from '../plan.ts';
 import type { MultiMonthContext } from './context.ts';
 import { patternStopLevel, breakoutLevel, patternTargets, type StateResult } from './state.ts';
 import type { PatternGeometry, PatternKind } from './types.ts';
@@ -48,7 +48,7 @@ export type PatternPlan = {
   targetFull: number; // T_đủ (theo tick)
   targets: Target[]; // 3 phần tử; qty = khi mọi chân khớp
   targetsIfMarketOnly: [number, number, number] | null; // split: khối lượng TP nếu chỉ khớp chân market
-  tp1NetR: number; // TP1 tính bằng R sau phí khứ hồi + funding phải trả, ở giá khớp xấu nhất
+  tp1NetR: number; // TP1 tính bằng R sau phí khứ hồi + funding phải trả, ở giá khớp XẤU NHẤT cho phép: market = giá tối đa; limit = giá limit; split = tệ hơn của "chỉ khớp market ở giá tối đa" và "khớp cả hai" (giá TB dòng giá tối đa)
   afterTp1Stop: number; // ước tính tại giá vào dùng để tính
   afterTp1StopIfMarketOnly: number | null;
   afterTp1Rule: AfterTp1Rule; // market: dải [giá hiện tại, giá tối đa]; split: khi khớp cả hai; limit: giá limit
@@ -329,9 +329,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const fundingEvents = cfg.fundingHoldHours / a.fundingIntervalHours;
   const fundingPaidFrac = Math.max(0, dir * a.fundingRate * fundingEvents); // chỉ tính khi lệnh phải TRẢ funding
   const costFrac = costPct / 100 + fundingPaidFrac;
-  const netR = (f: number) => (dir * (tp1 - f) - costFrac * f) / Math.abs(f - stop);
+  const netR = (f: number) => tp1NetRAt(side, tp1, f, stop, costFrac);
   const minR = isFlag(g.kind) ? P.flagMinTp1R : P.minTp1R;
-  const tp1NetR = netR(worstEntry);
   const maxRisk = P.maxRiskAtr;
   const riskAtr = Math.abs(worstEntry - stop) / A;
 
@@ -385,6 +384,11 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     : [makeRow('giá hiện tại', marketPrice), makeRow('giữa', snapToTick((marketPrice + maxEntry) / 2, tick, 'nearest')), makeRow('giá tối đa', maxEntry)];
   const row0 = fillTable[0]!;
 
+  // ---- TP1 sau phí ở giá khớp xấu nhất cho phép (M2) ----
+  // Mọi tổ hợp giá khớp được in: chân market tới giá tối đa, khớp cả hai chân (giá TB ở dòng giá tối đa), chỉ limit. Lấy giá trị NHỎ NHẤT.
+  const worstOf = (rows: PatternFillRow[]) => Math.min(...rows.flatMap((r) => (entryType === 'split' ? [r.fill, r.avgEntry] : [r.fill])).map(netR));
+  let tp1NetR = worstOf(fillTable);
+
   // ---- Kiểm tra hợp lệ (lý do đầu tiên được in) ----
   const problems: string[] = [];
   if (entryType !== 'limit') {
@@ -411,6 +415,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
       fillTable = kept;
       maxEntry = snapToTick(kept[kept.length - 1]!.fill, tick, toward);
       maxNote = `; giá tối đa ${side === 'long' ? 'hạ xuống' : 'nâng lên'} ${fp(maxEntry)} vì khối lượng không chia được ở giá khớp xấu hơn`;
+      tp1NetR = worstOf(fillTable); // dải khớp hẹp lại → giá khớp xấu nhất mới
     }
   }
   const valid = problems.length === 0;

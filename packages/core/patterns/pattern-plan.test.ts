@@ -91,8 +91,8 @@ test('Long chữ nhật d = 0,5×A: market 100%, SL = 108,5 − 0,5×A, TP theo 
   assert.match(p.targets[0]!.reason, /T_ngắn/);
   assert.match(p.targets[1]!.reason, /121,00–122,00/);
   assert.equal(r6(p.targets[0]!.r!), r6(4.5 / 2.5));
-  // R sau phí 0,25% + funding 21 kỳ × 0,01% (Long trả): (4,5 − 0,0046×110,5)/2,5
-  assert.equal(r6(p.tp1NetR), r6((4.5 - 0.0046 * 110.5) / 2.5));
+  // M2: R sau phí 0,25% + funding 21 kỳ × 0,01% (Long trả) ở giá khớp XẤU NHẤT = giá tối đa 110,8: (115 − 110,8 − 0,0046×110,8)/2,8
+  assert.equal(r6(p.tp1NetR), r6((115 - 110.8 - 0.0046 * 110.8) / 2.8));
   // giá tối đa = min(110,5 + 0,3; 108 + 3; (115 + 108)/2,0046) = 110,8
   assert.equal(p.maxEntry, 110.8);
   // khối lượng = 50 / (2,5 + 110,5×0,25%) = 18,0099 → 18,009; chia 9,004 / 5,402 / 3,603
@@ -191,8 +191,8 @@ test('Long d = 1,4×A: 50% market + 50% limit tại đường phá + 0,25×A; t�
   // TP cho trường hợp chỉ khớp chân market và cả hai
   assert.deepEqual(p.targetsIfMarketOnly, [4.803, 2.882, 1.922]);
   assert.deepEqual(p.targets.map((t) => t.qty), [r6(4.803 + 4.804), r6(2.882 + 2.882), r6(1.922 + 1.922)]);
-  // R:R kiểm ở trường hợp xấu nhất (chỉ khớp market 111,4)
-  assert.equal(r6(p.tp1NetR), r6((3.6 - 0.0046 * 111.4) / 2.9));
+  // M2: R:R ở trường hợp xấu nhất = chỉ khớp market ở giá tối đa 111,49
+  assert.equal(r6(p.tp1NetR), r6((115 - 111.49 - 0.0046 * 111.49) / (111.49 - 108.5)));
   // sau TP1: cả hai trường hợp đều cách đường phá ≥ 0,5×A → giá khớp thật; câu in nêu cả hai giá
   assert.match(p.afterTp1Reason, /cả hai/);
   assert.match(p.afterTp1Reason, /111,40/);
@@ -323,7 +323,8 @@ test('Short chữ nhật phá xuống: đối xứng Long, funding dương khôn
   assert.equal(p.targetShort, 105);
   assert.equal(p.targetFull, 100);
   assert.deepEqual(p.targets.map((t) => t.price), [105, 99.2, 94.2]);
-  assert.equal(r6(p.tp1NetR), r6((4.5 - 0.0025 * 109.5) / 2.5));
+  // M2: ở giá khớp xấu nhất = giá tối đa 109,2 (Short): (109,2 − 105 − 0,0025×109,2)/(112 − 109,2)
+  assert.equal(r6(p.tp1NetR), r6((109.2 - 105 - 0.0025 * 109.2) / 2.8));
   assert.equal(p.maxEntry, 109.2);
   assert.equal(p.qty, 18.026);
   assert.deepEqual(p.targets.map((t) => t.qty), [9.013, 5.407, 3.606]);
@@ -508,4 +509,19 @@ test('B3 độ mới khi phải chờ thêm 1 nến (nến phá quá dài): lầ
   assert.equal(p.signalAgeBars, 0);
   assert.equal(p.firstSignalTime, T0 + 32 * H4 - 1);
   assert.equal(p.expiresInBars, COMMON.patterns.maxSignalAgeBars - 1);
+});
+
+test('M2: TP1 sau phí in và chấm hạng ở giá khớp XẤU NHẤT cho phép — market: giá tối đa; split: tệ hơn của "chỉ market" và "khớp cả hai"; limit: giá limit', () => {
+  const net = (p: PatternPlan, f: number) => (p.targets[0]!.price! - f - 0.0046 * f) / (f - p.stop);
+  const m = ready(args());
+  assert.equal(m.entryType, 'market');
+  assert.equal(r6(m.tp1NetR), r6(net(m, m.maxEntry)));
+  assert.ok(m.tp1NetR < net(m, m.marketPrice));
+  const sp = ready(args({ close: 111.4, geometry: geom({ stopRef: { up: 109, down: 101 } }) }));
+  assert.equal(sp.entryType, 'split');
+  const last = sp.fillTable[sp.fillTable.length - 1]!;
+  assert.equal(r6(sp.tp1NetR), r6(Math.min(net(sp, sp.maxEntry), net(sp, last.avgEntry))));
+  const lo = ready(args({ close: 112.5, geometry: geom({ stopRef: { up: 109, down: 101 } }) }));
+  assert.equal(lo.entryType, 'limit');
+  assert.equal(r6(lo.tp1NetR), r6(net(lo, lo.limitPrice!)));
 });

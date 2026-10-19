@@ -177,7 +177,9 @@ test('P1: chữ nhật h = 5A với pivot phía trong sát biên → kế hoạc
   assert.ok(Math.abs(p.riskAtr - 1.3) < 1e-9);
   // TP1 = T_ngắn = 110 + 5×0,5 = 112,5; chi phí = 0,25% + funding 0,01%×21 kỳ = 0,46% giá
   assert.equal(p.targets[0]!.price, 112.5);
-  const hand = (112.5 - 110.3 - 0.0046 * 110.3) / 1.3; // = 1,302
+  // M2: ở giá khớp xấu nhất = giá tối đa của chân market
+  const f = p.maxEntry;
+  const hand = (112.5 - f - 0.0046 * f) / (f - 109);
   assert.ok(Math.abs(p.tp1NetR - hand) < 1e-9, `${p.tp1NetR} vs ${hand}`);
   assert.ok(p.tp1NetR >= 1);
   // Cùng mô hình, dùng giữa vùng 107,5 → SL 107, R = 3,3A > 3A → bỏ (lỗi cũ)

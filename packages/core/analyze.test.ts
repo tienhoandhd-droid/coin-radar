@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyze, type AnalyzeInput } from './analyze.ts';
 import type { Candle } from './types.ts';
-import { COMMON } from './config.ts';
+import { COMMON, CONFIG } from './config.ts';
+import { worstTp1NetR } from './plan.ts';
 
 function k(i: number, close: number, takerShare = 0.5): Candle {
   return { openTime: i * 1000, closeTime: i * 1000 + 999, open: close * 0.999, high: close * 1.004, low: close * 0.996,
@@ -377,4 +378,12 @@ test('I1 finalizeSignal: chỉ mô hình / cùng chiều / ngược chiều / ch
   assert.equal(zone.label, 'Đạt tiêu chí Long');
   assert.equal(zone.plan, zplan);
   assert.deepEqual(flags, []);
+});
+
+test('M2 chấm hạng lệnh vùng: grading.tp1NetR = TP1 sau phí ở giá khớp XẤU NHẤT (giá tối đa nếu vào trực tiếp)', () => {
+  const a = analyze(base);
+  assert.ok(a.plan !== null);
+  const costFrac = COMMON.costRoundTripPct.high / 100 + Math.max(0, base.premium.lastFundingRate * (CONFIG.swing.fundingHoldHours / base.fundingIntervalHours));
+  // (dữ liệu này cho lệnh limit nên giá xấu nhất = giá limit; nhánh market kiểm ở plan.test.ts — worstTp1NetR)
+  assert.ok(Math.abs(a.grading.tp1NetR! - worstTp1NetR(a.plan, costFrac)!) < 1e-12);
 });

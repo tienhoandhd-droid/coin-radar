@@ -101,6 +101,23 @@ export function tp1R(plan: TradePlan): number | null {
   return plan.targets[0]?.r ?? null;
 }
 
+// TP1 tính bằng R sau phí khứ hồi + funding phải trả, TẠI MỘT GIÁ KHỚP f. costFrac = phí khứ hồi (phần giá) + funding phải trả (phần giá).
+// Dùng chung cho lệnh vùng và lệnh mô hình (in "ở giá khớp xấu nhất" và Hạng A tiêu chí 4).
+export function tp1NetRAt(side: Side, tp1: number, fill: number, stop: number, costFrac: number): number {
+  const dir = side === 'long' ? 1 : -1;
+  const risk = Math.abs(fill - stop);
+  if (!(risk > 0)) throw new Error(`tp1NetRAt: khoảng cắt lỗ bằng 0 hoặc không hợp lệ (giá khớp ${fill}, SL ${stop})`);
+  return (dir * (tp1 - fill) - costFrac * fill) / risk;
+}
+
+// Lệnh vùng: TP1 sau phí ở giá khớp XẤU NHẤT cho phép — market: giá tối đa (maxEntry); limit: giá limit. null = không có TP1 cố định.
+export function worstTp1NetR(plan: TradePlan, costFrac: number): number | null {
+  const tp1 = plan.targets[0]?.price ?? null;
+  if (tp1 === null) return null;
+  const worst = plan.entryType === 'market' ? plan.maxEntry : plan.entry;
+  return tp1NetRAt(plan.side, tp1, worst, plan.stop, costFrac);
+}
+
 // Số kiểu Việt Nam cho thông báo: dấu phẩy thập phân
 export function vn(x: number, digits: number): string {
   return x.toFixed(digits).replace('.', ',');

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan, tp1R } from './plan.ts';
+import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan, tp1R, tp1NetRAt, worstTp1NetR } from './plan.ts';
 import { COMMON } from './config.ts';
 import type { Zone } from './zones.ts';
 import type { Candle } from './types.ts';
@@ -500,4 +500,19 @@ test('3.1 dòng đầu hỏng → vẫn không hợp lệ như cũ', () => {
   const p = buildPlan({ ...baseArgs, stepSize: 1, capital: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
   assert.equal(p.valid, false);
   assert.equal(p.invalidReason, 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn');
+});
+
+test('M2 tp1NetRAt: R sau phí + funding phải trả tại một giá khớp (Long / Short đối xứng)', () => {
+  assert.equal(r6(tp1NetRAt('long', 115, 110.8, 108, 0.0046)), r6((115 - 110.8 - 0.0046 * 110.8) / 2.8));
+  assert.equal(r6(tp1NetRAt('short', 85, 89.2, 92, 0.0046)), r6((89.2 - 85 - 0.0046 * 89.2) / 2.8));
+});
+
+test('M2 worstTp1NetR (lệnh vùng): market tính ở giá tối đa, limit ở giá limit; không có TP1 → null', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.4), zones: [...supports, ...resistances] });
+  assert.equal(p.entryType, 'market');
+  const costFrac = COMMON.costRoundTripPct.high / 100 + Math.max(0, 0.0001 * (168 / 8));
+  const w = worstTp1NetR(p, costFrac)!;
+  assert.equal(r6(w), r6(tp1NetRAt('long', p.targets[0]!.price!, p.maxEntry, p.stop, costFrac)));
+  assert.ok(w <= tp1NetRAt('long', p.targets[0]!.price!, p.entry, p.stop, costFrac));
+  assert.equal(worstTp1NetR({ ...p, targets: p.targets.map((t) => ({ ...t, price: null, r: null })) }, costFrac), null);
 });

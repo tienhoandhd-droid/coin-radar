@@ -3,7 +3,7 @@ import { isClosed } from './candles.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
-import { buildPlan, tp1R, maxSafeLeverage, type TradePlan, type CostTier } from './plan.ts';
+import { buildPlan, tp1R, maxSafeLeverage, worstTp1NetR, type TradePlan, type CostTier } from './plan.ts';
 import { evaluateGates, ratePer8h, fundingNote, inPatternScope, dailyTrend, patternTrendGate, contextGate, type GateResult } from './gates.ts';
 import { eventWindow, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
@@ -290,10 +290,12 @@ export function analyze(i: AnalyzeInput): Analysis {
   ];
   const zoneOk = zoneGates.every((g) => g.pass) && best.score >= COMMON.qualifyScore;
   const chosen = finalizeSignal({ best, zoneGates, zoneOk, plan, pattern, flags });
-  // Hạng A/B (Task 8): dữ kiện gom ở đây vì Analysis không giữ nến. TP1 sau phí: lệnh vùng = R gộp trừ phí khứ hồi và funding phải trả (cùng cách tính tp1NetR của lệnh mô hình).
-  const zoneTp1Gross = tp1R(plan);
-  const zoneTp1Net = zoneTp1Gross === null ? null
-    : zoneTp1Gross - (COMMON.costRoundTripPct[costTier(i.liquidityRankPct)] / 100 * plan.entry) / plan.riskPerUnit - Math.max(0, plan.fundingCostR);
+  // Hạng A/B (Task 8): dữ kiện gom ở đây vì Analysis không giữ nến. TP1 sau phí ở giá khớp XẤU NHẤT cho phép (M2, rà soát cuối 1c):
+  // lệnh vùng = worstTp1NetR (market: giá tối đa; limit: giá limit), cùng công thức tp1NetRAt với lệnh mô hình.
+  const zoneDir = plan.side === 'long' ? 1 : -1;
+  const zoneCostFrac = COMMON.costRoundTripPct[costTier(i.liquidityRankPct)] / 100
+    + Math.max(0, zoneDir * i.premium.lastFundingRate * (CONFIG[i.mode].fundingHoldHours / i.fundingIntervalHours));
+  const zoneTp1Net = worstTp1NetR(plan, zoneCostFrac);
   const grading: GradeInput = {
     regime: i.regime, breakerTripped: i.breakerTripped,
     trendSide: dailyTrend(i.trend).trend, entrySide: dailyTrend(i.entry).trend,
