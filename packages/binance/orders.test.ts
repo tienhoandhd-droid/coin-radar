@@ -455,6 +455,14 @@ const samples: Record<keyof typeof builders, unknown[][]> = {
     [{ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'initial', id: id('SL') }],
     [{ contract: C, side: 'short', markPrice: 60000, triggerPrice: 61000, purpose: 'initial', id: id('SL') }],
   ],
+  reduceStop: [
+    [{ contract: C, side: 'long', markPrice: 61000, triggerPrice: 60100, purpose: 'breakeven', qty: 0.001, id: id('BE') }],
+    [{ contract: C, side: 'short', markPrice: 59000, triggerPrice: 59900, purpose: 'breakeven', qty: 0.001, id: id('BE') }],
+  ],
+  marketReduce: [
+    [{ contract: C, side: 'long', qty: 0.002, id: id('MC') }],
+    [{ contract: C, side: 'short', qty: 0.002, id: id('MC') }],
+  ],
   takeProfit: [
     [{ contract: C, side: 'long', entryPrice: 60000, triggerPrice: 62000, qty: 0.001, id: id('TP1'), openCount: 0 }],
     [{ contract: C, side: 'short', entryPrice: 60000, triggerPrice: 58000, qty: 0.001, id: id('TP1'), openCount: 0 }],
@@ -502,7 +510,7 @@ test('R1: KHÔNG bộ dựng nào gửi STOP*/TAKE_PROFIT*/TRAILING* tới /fapi
       assert.equal(b.req.createsOrder, creates, name);
     }
   }
-  assert.equal(conditional, 6); // SL, TP, trailing × Long/Short
+  assert.equal(conditional, 8); // SL, dừng theo khối lượng, TP, trailing × Long/Short
 });
 
 test('R1: chốt chặn trước khi gửi từ chối request điều kiện tới /fapi/v1/order dù có ai dựng tay', () => {
@@ -540,4 +548,67 @@ test('TP và activatePrice do core làm tròn (về phía giá vào) đi qua NGU
     assert.equal(h2.calls[1]!.params.activatePrice, h2.calls[0]!.params.triggerPrice, side);
     assert.equal(h2.calls[0]!.params.triggerPrice, side === 'long' ? '62000.0' : '58000.1');
   }
+});
+
+// ================= B5: dừng reduce-only theo khối lượng + đóng market reduce-only =================
+test('Dừng theo khối lượng (BE): STOP_MARKET reduceOnly + quantity, KHÔNG closePosition, MARK_PRICE, priceProtect=false — Long và Short', async () => {
+  const h = harness();
+  // Long hòa vốn 60060.05 → làm tròn LÊN (về phía được bảo vệ) 60060.1; khối lượng 0.0019 → XUỐNG 0.001
+  const l = await h.orders.placeReduceStop({ contract: C, side: 'long', markPrice: 61000, triggerPrice: 60060.05, purpose: 'breakeven', qty: 0.0019, id: id('BE') });
+  assert.equal(l.kind, 'ok');
+  assert.deepEqual(h.calls[0], {
+    method: 'POST', path: ALGO_PATH,
+    params: {
+      algoType: 'CONDITIONAL', symbol: 'BTCUSDT', side: 'SELL', type: 'STOP_MARKET', triggerPrice: '60060.1', quantity: '0.001',
+      reduceOnly: 'true', workingType: 'MARK_PRICE', priceProtect: 'false', clientAlgoId: makeClientId(id('BE')),
+    },
+  });
+  assert.equal('closePosition' in h.calls[0]!.params, false);
+  const s = await h.orders.placeReduceStop({ contract: C, side: 'short', markPrice: 58500, triggerPrice: 59939.96, purpose: 'breakeven', qty: 0.003, id: id('BE', 1) });
+  assert.equal(s.kind, 'ok');
+  assert.equal(h.calls[1]!.params.side, 'BUY');
+  assert.equal(h.calls[1]!.params.triggerPrice, '59939.9');
+  assert.equal(h.calls[1]!.params.quantity, '0.003');
+});
+
+test('Dừng theo khối lượng: sai phía giá mark / khối lượng 0 → stop_rejected tại chỗ (chưa gửi); sàn từ chối → stop_rejected', async () => {
+  const h = harness([{ status: 400, body: { code: -2022, msg: 'ReduceOnly Order is rejected.' } }]);
+  const wrong = await h.orders.placeReduceStop({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 60100, purpose: 'breakeven', qty: 0.002, id: id('BE') });
+  assert.equal(wrong.kind, 'stop_rejected');
+  assert.equal(wrong.sent, false);
+  const wrongS = await h.orders.placeReduceStop({ contract: C, side: 'short', markPrice: 60000, triggerPrice: 59900, purpose: 'breakeven', qty: 0.002, id: id('BE') });
+  assert.equal(wrongS.kind, 'stop_rejected');
+  const zero = await h.orders.placeReduceStop({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'breakeven', qty: 0.0004, id: id('BE') });
+  assert.equal(zero.kind, 'stop_rejected');
+  assert.equal(h.calls.length, 0);
+  const ex = await h.orders.placeReduceStop({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'breakeven', qty: 0.002, id: id('BE') });
+  assert.equal(ex.kind, 'stop_rejected');
+  assert.equal(ex.code, -2022);
+  assert.equal(ex.sent, true);
+});
+
+test('Đóng market reduce-only: /fapi/v1/order MARKET reduceOnly=true, chiều ngược vị thế, không kiểm MIN_NOTIONAL — Long và Short', async () => {
+  const h = harness();
+  const l = await h.orders.closeMarket({ contract: C, side: 'long', qty: 0.0025, id: id('MC') });
+  assert.equal(l.kind, 'ok');
+  assert.equal(l.clientId, makeClientId(id('MC')));
+  assert.deepEqual(h.calls[0], {
+    method: 'POST', path: ORDER_PATH,
+    params: { symbol: 'BTCUSDT', side: 'SELL', type: 'MARKET', quantity: '0.002', reduceOnly: 'true', newClientOrderId: makeClientId(id('MC')), newOrderRespType: 'RESULT' },
+  });
+  // 0.001 BTC ≈ 60 USDT, cả khi MIN_NOTIONAL rất lớn vẫn gửi (lệnh reduce-only được miễn)
+  const s = await h.orders.closeMarket({ contract: { ...C, minNotional: 1e9 }, side: 'short', qty: 0.001, id: id('MC', 1) });
+  assert.equal(s.kind, 'ok');
+  assert.equal(h.calls[1]!.params.side, 'BUY');
+  assert.equal(h.calls[1]!.params.reduceOnly, 'true');
+});
+
+test('Đóng market reduce-only: khối lượng 0 hoặc vượt MARKET_LOT_SIZE.maxQty → từ chối tại chỗ', async () => {
+  const h = harness();
+  for (const qty of [0, Number.NaN, 0.0004, 121]) {
+    const r = await h.orders.closeMarket({ contract: C, side: 'long', qty, id: id('MC') });
+    assert.equal(r.kind, 'rejected', String(qty));
+    assert.equal(r.sent, false);
+  }
+  assert.equal(h.calls.length, 0);
 });

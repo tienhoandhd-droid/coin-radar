@@ -201,17 +201,68 @@ function buildStopLoss(a: StopLossInput): Built {
   const c = a.contract;
   const idr = tryId(a.id);
   if ('problem' in idr) return fail(idr.problem);
-  if (!isPos(a.markPrice) || !isPos(a.triggerPrice)) return failId(idr.id, [`Giá mark ${a.markPrice} / giá dừng ${a.triggerPrice} không hợp lệ`]);
-  if (a.purpose !== 'initial' && a.purpose !== 'breakeven') return failId(idr.id, [`purpose "${String(a.purpose)}" phải là 'initial' hoặc 'breakeven'`]);
-  const up = a.purpose === 'initial' ? a.side === 'short' : a.side === 'long';
-  const trigger = snapToTick(a.triggerPrice, c.tickSize, up ? 'up' : 'down');
-  // Kiểm SAU khi làm tròn. Long (SELL stop) cần trigger < mark; Short (BUY stop) cần trigger > mark
-  const wrong = a.side === 'long' ? trigger >= a.markPrice : trigger <= a.markPrice;
-  if (wrong) return failId(idr.id, [`Giá dừng ${trigger} đã ở phía sai giá mark ${a.markPrice} (vị thế ${a.side}) — sẽ kích hoạt ngay`]);
+  const t = stopTrigger(a);
+  if (typeof t === 'string') return failId(idr.id, [t]);
   return okReq(algoRequest({
-    symbol: c.symbol, side: closeSide(a.side), type: 'STOP_MARKET', triggerPrice: fmt(trigger, c.tickSize),
+    symbol: c.symbol, side: closeSide(a.side), type: 'STOP_MARKET', triggerPrice: fmt(t, c.tickSize),
     closePosition: 'true', priceProtect: 'false', clientAlgoId: idr.id,
   }), idr.id);
+}
+
+// Giá kích hoạt lệnh dừng sau làm tròn (theo purpose) + kiểm phía giá mark. Trả chuỗi = lý do từ chối.
+function stopTrigger(a: StopLossInput): number | string {
+  if (!isPos(a.markPrice) || !isPos(a.triggerPrice)) return `Giá mark ${a.markPrice} / giá dừng ${a.triggerPrice} không hợp lệ`;
+  if (a.purpose !== 'initial' && a.purpose !== 'breakeven') return `purpose "${String(a.purpose)}" phải là 'initial' hoặc 'breakeven'`;
+  const up = a.purpose === 'initial' ? a.side === 'short' : a.side === 'long';
+  const trigger = snapToTick(a.triggerPrice, a.contract.tickSize, up ? 'up' : 'down');
+  // Kiểm SAU khi làm tròn. Long (SELL stop) cần trigger < mark; Short (BUY stop) cần trigger > mark
+  const wrong = a.side === 'long' ? trigger >= a.markPrice : trigger <= a.markPrice;
+  if (wrong) return `Giá dừng ${trigger} đã ở phía sai giá mark ${a.markPrice} (vị thế ${a.side}) — sẽ kích hoạt ngay`;
+  return trigger;
+}
+
+// Dừng reduce-only THEO KHỐI LƯỢNG (B5, nghĩa vụ B4 #2) — dừng sàn hòa vốn cho một PHẦN vị thế, cùng tồn tại với SL closePosition.
+// Tài liệu mục 4.2: STOP_MARKET + `quantity` + `reduceOnly` (chỉ cấm đi cùng closePosition=true). Giá làm tròn như buildStopLoss;
+// priceProtect CỐ ĐỊNH false (cùng lý do). Khối lượng XUỐNG theo bước lớn hơn của LOT_SIZE/MARKET_LOT_SIZE (khớp bằng market).
+// Không kiểm MIN_NOTIONAL (lệnh reduce-only được miễn — mục 5) và không kiểm MAX_NUM_ORDERS (như SL).
+export type ReduceStopInput = StopLossInput & { qty: number };
+function buildReduceStop(a: ReduceStopInput): Built {
+  const c = a.contract;
+  const idr = tryId(a.id);
+  if ('problem' in idr) return fail(idr.problem);
+  if (!isPos(a.qty)) return failId(idr.id, [`Khối lượng ${a.qty} không hợp lệ`]);
+  const t = stopTrigger(a);
+  if (typeof t === 'string') return failId(idr.id, [t]);
+  const { qty, step, problems: stepProblems } = exitQty(a.qty, c);
+  const problems = [...stepProblems];
+  if (!(qty > 0)) problems.push(`Khối lượng ${a.qty} làm tròn bước ${step} còn 0`);
+  else if (qty > c.marketMaxQty) problems.push(`Khối lượng ${qty} vượt MARKET_LOT_SIZE.maxQty ${c.marketMaxQty}`);
+  if (problems.length > 0) return failId(idr.id, problems);
+  return okReq(algoRequest({
+    symbol: c.symbol, side: closeSide(a.side), type: 'STOP_MARKET', triggerPrice: fmt(t, c.tickSize),
+    quantity: fmt(qty, step), reduceOnly: 'true', priceProtect: 'false', clientAlgoId: idr.id,
+  }), idr.id);
+}
+
+// Đóng/giảm vị thế bằng MARKET reduce-only (mục 3.1: type MARKET cần `quantity`; `reduceOnly` "true"; One-way). Dùng cho đóng
+// khẩn (market_close) và giảm vị thế khi trượt giá (reduce_only). Khối lượng XUỐNG theo MARKET_LOT_SIZE.stepSize; không kiểm
+// MIN_NOTIONAL (reduce-only được miễn, mục 5); > MARKET_LOT_SIZE.maxQty → từ chối tại chỗ (sàn sẽ trả -4005).
+export type MarketReduceInput = { contract: Contract; side: Side; qty: number; id: ClientIdParts };
+function buildMarketReduce(a: MarketReduceInput): Built {
+  const c = a.contract;
+  const idr = tryId(a.id);
+  if ('problem' in idr) return fail(idr.problem);
+  if (!isPos(a.qty)) return failId(idr.id, [`Khối lượng ${a.qty} không hợp lệ`]);
+  const qty = snapToTick(a.qty, c.marketStepSize, 'down');
+  if (!(qty > 0)) return failId(idr.id, [`Khối lượng ${a.qty} làm tròn bước ${c.marketStepSize} còn 0`]);
+  if (qty > c.marketMaxQty) return failId(idr.id, [`Khối lượng ${qty} vượt MARKET_LOT_SIZE.maxQty ${c.marketMaxQty}`]);
+  return okReq({
+    method: 'POST', path: ORDER_PATH, createsOrder: true,
+    params: {
+      symbol: c.symbol, side: closeSide(a.side), type: 'MARKET', quantity: fmt(qty, c.marketStepSize), reduceOnly: 'true',
+      newClientOrderId: idr.id, newOrderRespType: 'RESULT',
+    },
+  }, idr.id);
 }
 
 export type TakeProfitInput = {
@@ -328,6 +379,8 @@ function buildLeverage(symbol: string, leverage: number): Built {
 export const builders = {
   entry: buildEntry,
   stopLoss: buildStopLoss,
+  reduceStop: buildReduceStop,
+  marketReduce: buildMarketReduce,
   takeProfit: buildTakeProfit,
   trailing: buildTrailing,
   cancelOrder: (symbol: string, ref: OrderRef) => orderRefRequest('DELETE', symbol, ref),
@@ -385,6 +438,12 @@ export function createOrders(deps: { api: SignedApi; now?: () => number }) {
       const r = await send(buildStopLoss(a));
       return r.kind === 'rejected' ? { ...r, kind: 'stop_rejected' } : r;
     },
+    // Dừng reduce-only theo khối lượng: mọi từ chối → 'stop_rejected' như placeStopLoss
+    placeReduceStop: async (a: ReduceStopInput): Promise<OrderResult> => {
+      const r = await send(buildReduceStop(a));
+      return r.kind === 'rejected' ? { ...r, kind: 'stop_rejected' } : r;
+    },
+    closeMarket: (a: MarketReduceInput) => send(buildMarketReduce(a)),
     placeTakeProfit: (a: TakeProfitInput) => send(buildTakeProfit(a)),
     placeTrailing: (a: TrailingInput) => send(buildTrailing(a)),
     cancelOrder: (symbol: string, ref: OrderRef) => send(builders.cancelOrder(symbol, ref)),

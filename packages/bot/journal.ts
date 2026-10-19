@@ -13,7 +13,17 @@ export const DEFAULT_JOURNAL_DIR = 'data/bot';
 const SNAPSHOT = 'snapshot.json';
 const FILE_RE = /^journal-\d{4}-\d{2}-\d{2}\.jsonl$/;
 
-export type ProtectionState = { tripped: boolean; reason: string | null; since: number | null; resetBy: string | null };
+// resetAt: lúc người dùng mở lại (lệnh thua trước mốc này không tính nữa); baseline: % lỗ ngày lúc mở (daily_loss — chỉ nhảy lại
+// khi lỗ thêm quá ngưỡng từ mốc này, trong cùng ngày UTC). Hai trường có thể vắng ở nhật ký cũ.
+export type ProtectionState = {
+  tripped: boolean; reason: string | null; since: number | null; resetBy: string | null;
+  resetAt?: number | null; baseline?: number | null;
+};
+
+// Loại thao tác của order_intent/order_result (B5 executor). Vắng = 'place' (đặt lệnh của một chân — nhật ký B4).
+// cancel = hủy lệnh/algo; close = đóng market khẩn; reduce = giảm vị thế market reduce-only. Chỉ 'place' đổi chân lệnh khi ghi ý
+// định; 'cancel' thành công đánh dấu chân 'cancelled'. close/reduce không thuộc chân nào (role null) — khớp đến qua userTrades.
+export type OrderOp = 'place' | 'cancel' | 'close' | 'reduce';
 
 export type JournalState = {
   seq: number; // số thứ tự sự kiện cuối đã áp dụng
@@ -26,8 +36,8 @@ export type JournalState = {
 // algoStatus (tài liệu tra cứu mục 4): NEW, CANCELED, TRIGGERING, TRIGGERED, FINISHED, REJECTED, EXPIRED
 export type JournalEventBody =
   | { type: 'signal_accepted'; trade: TradeState }
-  | { type: 'order_intent'; signalId: string; role: LegRole; clientId: string; attempt: number; qty: number | null; triggerPrice: number | null }
-  | { type: 'order_result'; signalId: string; role: LegRole; clientId: string; kind: string; sent: boolean; orderId: number | null; code: number | null; msg: string }
+  | { type: 'order_intent'; op?: OrderOp; symbol?: string; signalId: string | null; role: LegRole | null; clientId: string; attempt: number; qty: number | null; triggerPrice: number | null }
+  | { type: 'order_result'; op?: OrderOp; symbol?: string; signalId: string | null; role: LegRole | null; clientId: string; kind: string; sent: boolean; orderId: number | null; code: number | null; msg: string }
   | { type: 'fill'; signalId: string; role: LegRole; fill: Fill }
   | { type: 'algo_update'; signalId: string; role: LegRole; clientId: string; algoStatus: string; activated: boolean | null; orderId: number | null }
   | { type: 'leg_update'; signalId: string; role: LegRole; clientId: string; status: LegStatus; reason?: string }
@@ -37,7 +47,7 @@ export type JournalEventBody =
   | { type: 'trade_closed'; signalId: string; reason: string }
   | { type: 'position_snapshot'; positions: ExPosition[] }
   | { type: 'protection_tripped'; name: string; reason: string }
-  | { type: 'protection_reset'; name: string; by: string }
+  | { type: 'protection_reset'; name: string; by: string; baseline?: number }
   | { type: 'signal_state'; symbol: string; state: SignalState | null }
   | { type: 'note'; text: string };
 export type JournalEvent = { seq: number; at: number } & JournalEventBody;
@@ -80,6 +90,11 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       else s.trades[e.trade.signalId] = structuredClone(e.trade);
       break;
     case 'order_intent': {
+      if ((e.op ?? 'place') !== 'place') break; // hủy/đóng/giảm: chỉ ghi lại, không đổi chân lệnh
+      if (e.signalId === null || e.role === null) {
+        warn(`sự kiện #${e.seq}: order_intent đặt lệnh thiếu signalId/role — bỏ qua`);
+        break;
+      }
       const t = tradeOf(e.signalId);
       if (t === null) break;
       const leg = legOf(t, e.role, e.clientId);
@@ -87,8 +102,16 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       break;
     }
     case 'order_result': {
+      const op = e.op ?? 'place';
+      if (op === 'close' || op === 'reduce' || e.signalId === null || e.role === null) break;
       const t = tradeOf(e.signalId);
       if (t === null) break;
+      if (op === 'cancel') {
+        // Hủy thành công → chân của ĐÚNG lần thử này hết hiệu lực (không chạm lần thử mới hơn)
+        const cur = t.legs[e.role];
+        if (e.kind === 'ok' && cur !== undefined && cur.clientId === e.clientId) cur.status = 'cancelled';
+        break;
+      }
       const leg = legOf(t, e.role, e.clientId);
       if (e.orderId !== null && !leg.orderIds.includes(e.orderId)) leg.orderIds.push(e.orderId);
       if (leg.clientId === e.clientId) leg.status = e.kind === 'ok' ? 'open' : e.kind === 'unknown_status' ? 'unknown' : 'rejected';
@@ -153,7 +176,7 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       s.protections[e.name] = { tripped: true, reason: e.reason, since: e.at, resetBy: null };
       break;
     case 'protection_reset':
-      s.protections[e.name] = { tripped: false, reason: null, since: null, resetBy: e.by };
+      s.protections[e.name] = { tripped: false, reason: null, since: null, resetBy: e.by, resetAt: e.at, baseline: e.baseline ?? null };
       break;
     case 'signal_state':
       if (e.state === null) delete s.prevSignals[e.symbol];
