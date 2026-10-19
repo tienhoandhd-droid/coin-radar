@@ -1,7 +1,7 @@
 import { redact } from '../binance/redact.ts';
 import type { Side } from '../core/types.ts';
 import { FUSE, resetProtection } from './protections.ts';
-import type { Journal } from './journal.ts';
+import type { Journal, JournalEventBody } from './journal.ts';
 import type { AlertLevel } from './reconcile.ts';
 
 // Telegram (B6): gửi cảnh báo + nhận lệnh điều khiển qua Bot API bằng fetch có sẵn của Node (không thêm thư viện).
@@ -26,6 +26,7 @@ const MAX_ATTEMPTS = 6; // tin thường
 const MAX_ATTEMPTS_URGENT = 10; // tin khẩn kiên trì hơn
 const BACKOFF_BASE_MS = 2000;
 const BACKOFF_MAX_MS = 60_000;
+export const USER_PAUSE = 'user_pause'; // tên 'cầu chì' người dùng trong nhật ký (/dung) — bền qua khởi động lại
 
 // Che bí mật: redact của lớp Binance (secret truyền vào, signature=, X-MBX-APIKEY) + listenKey + dạng token bot.
 export function scrubText(text: string, secrets: readonly string[] = []): string {
@@ -129,7 +130,9 @@ export function createTelegram(deps: TelegramDeps): Telegram {
   let pumping = false;
   let lastSentAt = -Infinity;
   let offset: number | undefined;
-  let paused = false;
+  let blockedUntil = -Infinity; // 429: Telegram bắt chờ retry_after cho MỌI tin
+  let wake: (() => void) | null = null; // đánh thức pump đang ngủ khi có tin khẩn
+  const isPaused = () => deps.journal.state().protections[USER_PAUSE]?.tripped === true;
   let confirmAt: number | null = null;
   let stopped = false;
   let abort: AbortController | null = null;
@@ -144,7 +147,7 @@ export function createTelegram(deps: TelegramDeps): Telegram {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.any(signals),
       });
       let json: Record<string, unknown> = {};
-      try { json = (await res.json()) as Record<string, unknown>; } catch { /* thân không phải JSON: giữ {} — phân loại theo mã HTTP bên dưới */ }
+      try { json = (await res.json()) as Record<string, unknown>; } catch (e) { log(`phản hồi ${method} (HTTP ${res.status}) không phải JSON: ${(e as Error).message}`); }
       return { ok: res.ok && json.ok === true, status: res.status, json };
     } catch (e) {
       throw new Error(scrub(e instanceof Error ? e.message : String(e)));
@@ -161,11 +164,12 @@ export function createTelegram(deps: TelegramDeps): Telegram {
       st.dropped++;
     }
     queue.push({ text: t, urgent: o.urgent, retry: o.retry, attempts: 0, notBefore: 0 });
+    if (o.urgent) wake?.();
     void pump();
   }
 
   async function sendOne(it: Item): Promise<void> {
-    const wait = lastSentAt + MIN_SEND_INTERVAL_MS - now();
+    const wait = Math.max(lastSentAt + MIN_SEND_INTERVAL_MS, blockedUntil) - now();
     if (wait > 0) await sleep(wait);
     lastSentAt = now();
     it.attempts++;
@@ -179,7 +183,10 @@ export function createTelegram(deps: TelegramDeps): Telegram {
       const code = typeof r.json.error_code === 'number' ? r.json.error_code : r.status;
       failure = `Telegram trả lỗi ${code}: ${desc}`;
       const p = r.json.parameters as { retry_after?: unknown } | undefined;
-      if (typeof p?.retry_after === 'number') retryAfterMs = p.retry_after * 1000;
+      if (typeof p?.retry_after === 'number') {
+        retryAfterMs = p.retry_after * 1000;
+        blockedUntil = Math.max(blockedUntil, now() + retryAfterMs);
+      }
       permanent = code >= 400 && code < 500 && code !== 429;
     } catch (e) {
       failure = `lỗi mạng khi gửi: ${(e as Error).message}`;
@@ -203,7 +210,8 @@ export function createTelegram(deps: TelegramDeps): Telegram {
         const t = now();
         const ready = queue.filter((x) => x.notBefore <= t);
         if (ready.length === 0) {
-          await sleep(Math.max(1, Math.min(...queue.map((x) => x.notBefore)) - t));
+          await Promise.race([sleep(Math.max(1, Math.min(...queue.map((x) => x.notBefore)) - t)), new Promise<void>((r) => { wake = r; })]);
+          wake = null;
           continue;
         }
         const it = ready.find((x) => x.urgent) ?? ready[0]!;
@@ -226,7 +234,7 @@ export function createTelegram(deps: TelegramDeps): Telegram {
 
   function statusText(): string {
     const s = deps.getStatus();
-    const lines = [`Trạng thái bot — chế độ ${s.mode}${paused ? ' — ĐANG TẠM DỪNG mở lệnh mới (/dung)' : ''}`];
+    const lines = [`Trạng thái bot — chế độ ${s.mode}${isPaused() ? ' — ĐANG TẠM DỪNG mở lệnh mới (/dung)' : ''}`];
     lines.push(`Vốn: ${s.equity === null ? '?' : `${num(s.equity, 2)} USDT`}`);
     if (s.openTrades.length === 0) lines.push('Không có lệnh mở.');
     else {
@@ -242,23 +250,29 @@ export function createTelegram(deps: TelegramDeps): Telegram {
 
   function resume(): void {
     const prot = deps.journal.state().protections;
-    const done: string[] = [];
+    // Tất cả hoặc không gì: tính trước mọi sự kiện mở cầu chì; có cái nào lỗi thì KHÔNG ghi gì và KHÔNG bỏ tạm dừng
+    const events: JournalEventBody[] = [];
+    const names: string[] = [];
     const failed: string[] = [];
     for (const name of [FUSE.lossStreak, FUSE.dailyLoss]) {
       if (prot[name]?.tripped !== true) continue;
       const r = resetProtection({ name, by: 'telegram:/tieptuc', state: prot, dayLossPct: deps.getDayLossPct() });
-      if (r.ok) { deps.journal.append(r.event); done.push(name); } else failed.push(`${name}: ${r.reason}`);
+      if (r.ok) { events.push(r.event); names.push(name); } else failed.push(`${name}: ${r.reason}`);
     }
-    const wasPaused = paused;
-    paused = false;
+    if (failed.length > 0) {
+      log(`/tieptuc thất bại, giữ nguyên trạng thái: ${failed.join('; ')}`);
+      reply(`KHÔNG tiếp tục được, giữ nguyên tạm dừng và cầu chì: ${failed.join('; ')}`);
+      return;
+    }
+    const wasPaused = isPaused();
+    if (wasPaused) events.push({ type: 'protection_reset', name: USER_PAUSE, by: 'telegram:/tieptuc' });
+    for (const e of events) deps.journal.append(e);
     const parts: string[] = [];
     if (wasPaused) parts.push('đã bỏ tạm dừng');
-    for (const n of done) parts.push(`đã mở cầu chì ${fuseVn(n)}`);
-    if (parts.length === 0 && failed.length === 0) parts.push('không có gì cần mở (không tạm dừng, không cầu chì nào nhảy)');
-    let msg = `Tiếp tục: ${parts.join('; ')}.`;
-    if (failed.length > 0) msg += `\nKHÔNG mở được: ${failed.join('; ')}`;
-    reply(msg);
-    for (const n of done) enqueue(alerts.fuseReset({ name: n, by: 'Telegram /tieptuc' }).text, { urgent: false, retry: true });
+    for (const n of names) parts.push(`đã mở cầu chì ${fuseVn(n)}`);
+    if (parts.length === 0) parts.push('không có gì cần mở (không tạm dừng, không cầu chì nào nhảy)');
+    reply(`Tiếp tục: ${parts.join('; ')}.`);
+    for (const n of names) enqueue(alerts.fuseReset({ name: n, by: 'Telegram /tieptuc' }).text, { urgent: false, retry: true });
   }
 
   function handleCommand(text: string): void {
@@ -268,7 +282,7 @@ export function createTelegram(deps: TelegramDeps): Telegram {
     switch (cmd) {
       case '/trangthai': reply(statusText()); return;
       case '/dung':
-        paused = true;
+        if (!isPaused()) deps.journal.append({ type: 'protection_tripped', name: USER_PAUSE, reason: 'người dùng gõ /dung qua Telegram' });
         reply('Đã ngừng mở lệnh MỚI. Lệnh đang mở vẫn giữ dừng trên sàn. Gõ /tieptuc để mở lại.');
         return;
       case '/tieptuc':
@@ -299,15 +313,19 @@ export function createTelegram(deps: TelegramDeps): Telegram {
       const id = u.update_id;
       if (typeof id !== 'number') continue;
       offset = Math.max(offset ?? 0, id + 1);
-      const m = u.message as { chat?: { id?: unknown }; text?: unknown; date?: unknown } | undefined;
+      const m = u.message as { chat?: { id?: unknown; type?: unknown }; from?: { id?: unknown }; text?: unknown; date?: unknown } | undefined;
       if (m === undefined) continue;
-      if (String(m.chat?.id) !== chatId) {
-        log(`bỏ qua tin từ chat lạ ${String(m.chat?.id)} (không ghi nội dung)`);
+      // Chỉ chat RIÊNG, và người gửi phải đúng chat ID cấu hình (nếu ID cấu hình là nhóm, thành viên khác không điều khiển được)
+      if (String(m.chat?.id) !== chatId || m.chat?.type !== 'private' || String(m.from?.id) !== chatId) {
+        log(`bỏ qua tin từ chat/người gửi lạ (chat ${String(m.chat?.id)}, loại ${String(m.chat?.type)}, người gửi ${String(m.from?.id)}; không ghi nội dung)`);
         continue;
       }
       if (typeof m.text !== 'string') continue;
-      if (typeof m.date !== 'number' || m.date * 1000 < startedAt) {
+      const stale = typeof m.date !== 'number' || m.date * 1000 < startedAt;
+      // Lệnh DỪNG (/dung) gửi lúc bot tắt vẫn phải thi hành (chiều an toàn); lệnh khác bị bỏ và báo người dùng gõ lại
+      if (stale && m.text.trim().split(/\s+/)[0]!.split('@')[0]!.toLowerCase() !== '/dung') {
         log('bỏ lệnh gửi từ trước lúc khởi động (không chạy lại lệnh cũ)');
+        if (m.text.trim().startsWith('/')) reply('Bỏ qua một lệnh cũ gửi từ trước lúc bot khởi động (không thi hành). Nếu vẫn cần, hãy gõ lại.');
         continue;
       }
       try {
@@ -347,7 +365,7 @@ export function createTelegram(deps: TelegramDeps): Telegram {
     },
     stop() { stopped = true; abort?.abort(); },
     drain: () => (queue.length === 0 && !pumping ? Promise.resolve() : new Promise<void>((r) => { drainWaiters.push(r); })),
-    isPaused: () => paused,
+    isPaused,
     stats: () => ({ ...st, queued: queue.length }),
   };
 }

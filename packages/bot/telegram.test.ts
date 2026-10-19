@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { alerts, createTelegram, scrubText, type StatusSnapshot, type TelegramDeps } from './telegram.ts';
-import { emptyState, type JournalEventBody, type JournalState } from './journal.ts';
+import { applyEvent, emptyState, type JournalEventBody, type JournalState } from './journal.ts';
 
 const TOKEN = '123456789:AAHsecretTOKENsecretTOKENsecretTOKEN12';
 const CHAT = '5550001';
 const T0 = Date.UTC(2026, 9, 20, 12, 0, 0);
 
-type Call = { url: string; body: Record<string, unknown> };
+type Call = { url: string; body: Record<string, unknown>; at: number };
 type Reply = unknown | Error | ((c: Call) => unknown);
 
 // fetch giả: ghi lại mọi lời gọi, trả theo kịch bản. Không có mạng thật.
@@ -18,7 +18,7 @@ function harness(over: Partial<TelegramDeps> = {}) {
   const script: Reply[] = [];
   let clock = T0;
   const fetchFake = (async (url: string, init?: RequestInit) => {
-    const call: Call = { url: String(url), body: JSON.parse(String(init?.body ?? '{}')) };
+    const call: Call = { url: String(url), body: JSON.parse(String(init?.body ?? '{}')), at: clock };
     calls.push(call);
     let r: Reply = script.length > 0 ? script.shift() : { ok: true, result: call.url.endsWith('/getUpdates') ? [] : { message_id: 1 } };
     if (typeof r === 'function') r = (r as (c: Call) => unknown)(call);
@@ -37,16 +37,16 @@ function harness(over: Partial<TelegramDeps> = {}) {
     now: () => clock, sleep: async (ms) => { sleeps.push(ms); clock += ms; },
     log: (m) => logs.push(m),
     getStatus: () => status,
-    journal: { state: () => state, append: (b) => { events.push(b); return { seq: events.length, at: clock, ...b }; } },
+    journal: { state: () => state, append: (b) => { events.push(b); const e = { seq: events.length, at: clock, ...b }; state = applyEvent(state, e, () => {}); return e; } },
     getDayLossPct: () => 4,
     ...over,
   };
   const tg = createTelegram(deps);
-  return { tg, calls, sleeps, logs, script, events, setState: (s: JournalState) => { state = s; }, status, advance: (ms: number) => { clock += ms; }, now: () => clock };
+  return { deps, tg, calls, sleeps, logs, script, events, setState: (s: JournalState) => { state = s; }, status, advance: (ms: number) => { clock += ms; }, now: () => clock };
 }
 
-const upd = (id: number, text: string, chat: string | number = CHAT, date = Math.floor(T0 / 1000) + 5) =>
-  ({ update_id: id, message: { message_id: id, date, chat: { id: Number(chat) }, text } });
+const upd = (id: number, text: string, chat: string | number = CHAT, date = Math.floor(T0 / 1000) + 5, type = 'private') =>
+  ({ update_id: id, message: { message_id: id, date, chat: { id: Number(chat), type }, from: { id: Number(chat) }, text } });
 const sends = (calls: Call[]) => calls.filter((c) => c.url.endsWith('/sendMessage'));
 const trippedState = (names: string[]): JournalState => {
   const s = emptyState();
@@ -238,7 +238,7 @@ test('/tieptuc: bước 1 chỉ yêu cầu xác nhận, chưa mở gì', async (
   await h.tg.pollOnce();
   await h.tg.drain();
   assert.equal(h.tg.isPaused(), true);
-  assert.equal(h.events.length, 0);
+  assert.equal(h.events.length, 1); // chỉ sự kiện user_pause của /dung
   assert.ok(String(sends(h.calls).at(-1)!.body.text).includes('/tieptuc XACNHAN'));
 });
 
@@ -253,7 +253,7 @@ test('/tieptuc XACNHAN trong 2 phút: bỏ tạm dừng + mở cầu chì chặn
   await h.tg.drain();
   assert.equal(h.tg.isPaused(), false);
   const names = h.events.map((e) => (e as { name: string }).name).sort();
-  assert.deepEqual(names, ['daily_loss', 'loss_streak']);
+  assert.deepEqual(names, ['daily_loss', 'loss_streak', 'user_pause', 'user_pause']); // user_pause: 1 lần tripped (/dung) + 1 lần reset
   const dl = h.events.find((e) => (e as { name: string }).name === 'daily_loss') as { by: string; baseline?: number };
   assert.equal(dl.baseline, 4);
   assert.ok(dl.by.startsWith('telegram'));
@@ -269,7 +269,7 @@ test('/tieptuc XACNHAN quá 2 phút: từ chối, không mở gì', async () => 
   await h.tg.pollOnce();
   await h.tg.drain();
   assert.equal(h.tg.isPaused(), true);
-  assert.equal(h.events.length, 0);
+  assert.equal(h.events.length, 1); // chỉ user_pause từ /dung, không có reset
 });
 
 test('/tieptuc XACNHAN khi chưa từng yêu cầu: từ chối', async () => {
@@ -301,10 +301,11 @@ test('lệnh cũ tồn từ trước lúc khởi động bị bỏ (không chạ
   const h = harness();
   h.setState(trippedState(['loss_streak']));
   const old = Math.floor(T0 / 1000) - 3600;
-  h.script.push({ ok: true, result: [upd(1, '/tieptuc', CHAT, old), upd(2, '/tieptuc XACNHAN', CHAT, old), upd(3, '/dung', CHAT, old)] });
+  h.script.push({ ok: true, result: [upd(1, '/tieptuc', CHAT, old), upd(2, '/tieptuc XACNHAN', CHAT, old)] });
   await h.tg.pollOnce();
+  await h.tg.drain();
   assert.equal(h.events.length, 0);
-  assert.equal(h.tg.isPaused(), false);
+  assert.ok(String(sends(h.calls)[0]!.body.text).includes('cũ'), 'phải báo đã bỏ lệnh cũ');
 });
 
 test('/trogiup liệt kê lệnh; lệnh lạ trả gợi ý; chữ thường không phải lệnh thì im', async () => {
@@ -356,4 +357,94 @@ test('mẫu tin: đủ 11 loại, tiếng Việt, nêu số liệu chính, khôn
   assert.ok(m[9]!.text.includes('30'));
   assert.equal(m[5]!.urgent, true);
   assert.equal(m[6]!.urgent, true);
+});
+
+test('/dung bền: ghi nhật ký user_pause, khởi động lại vẫn tạm dừng', async () => {
+  const h = harness();
+  h.script.push({ ok: true, result: [upd(1, '/dung')] });
+  await h.tg.pollOnce();
+  assert.deepEqual(h.events.map((e) => e.type), ['protection_tripped']);
+  assert.equal((h.events[0] as { name: string }).name, 'user_pause');
+  const again = createTelegram(h.deps); // "khởi động lại" cùng nhật ký
+  assert.equal(again.isPaused(), true);
+});
+
+test('chỉ /tieptuc XACNHAN hợp lệ mới bỏ tạm dừng bền', async () => {
+  const h = harness();
+  h.script.push({ ok: true, result: [upd(1, '/dung'), upd(2, '/tieptuc')] });
+  await h.tg.pollOnce();
+  assert.equal(createTelegram(h.deps).isPaused(), true);
+  h.script.push({ ok: true, result: [upd(3, '/tieptuc XACNHAN')] });
+  await h.tg.pollOnce();
+  assert.equal(createTelegram(h.deps).isPaused(), false);
+});
+
+test('/dung hai lần không ghi trùng nhật ký', async () => {
+  const h = harness();
+  h.script.push({ ok: true, result: [upd(1, '/dung'), upd(2, '/dung')] });
+  await h.tg.pollOnce();
+  assert.equal(h.events.length, 1);
+});
+
+test('nhóm (chat.type != private) bị bỏ dù chat id khớp', async () => {
+  const h = harness();
+  h.script.push({ ok: true, result: [upd(1, '/dung', CHAT, undefined, 'group')] });
+  await h.tg.pollOnce();
+  assert.equal(h.tg.isPaused(), false);
+});
+
+test('from.id khác chat id cấu hình bị bỏ', async () => {
+  const h = harness();
+  const u = upd(1, '/dung');
+  (u.message.from as { id: number }).id = 424242;
+  h.script.push({ ok: true, result: [u] });
+  await h.tg.pollOnce();
+  assert.equal(h.tg.isPaused(), false);
+});
+
+test('/dung gửi lúc bot đang tắt (cũ hơn lúc khởi động) vẫn được thi hành', async () => {
+  const h = harness();
+  h.script.push({ ok: true, result: [upd(1, '/dung', CHAT, Math.floor(T0 / 1000) - 3600)] });
+  await h.tg.pollOnce();
+  assert.equal(h.tg.isPaused(), true);
+});
+
+test('tin khẩn không phải chờ sau giấc ngủ lùi của tin thử lại', async () => {
+  const sleeps: number[] = [];
+  const h = harness({ sleep: (ms) => { sleeps.push(ms); return ms >= 2000 ? new Promise<void>(() => {}) : Promise.resolve(); } });
+  h.script.push(new Error('ECONNRESET'));
+  h.tg.send('thường');
+  await new Promise((r) => setImmediate(r));
+  assert.ok(sleeps.some((ms) => ms >= 2000), 'đang ngủ lùi');
+  h.tg.send('KHẨN', { urgent: true });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sends(h.calls).map((c) => c.body.text), ['thường', 'KHẨN']);
+});
+
+test('429 chặn TOÀN CỤC: tin khác cũng chờ retry_after', async () => {
+  const h = harness();
+  h.script.push({ ok: false, error_code: 429, parameters: { retry_after: 9 }, __status: 429 });
+  h.tg.send('a'); h.tg.send('b');
+  await h.tg.drain();
+  const s = sends(h.calls);
+  const first = s[0]!.at;
+  assert.ok(s.slice(1).every((c) => c.at >= first + 9000), s.map((c) => c.at - first).join(','));
+});
+
+test('thân phản hồi 2xx không phải JSON: có ghi log', async () => {
+  const h = harness({ fetch: (async () => new Response('<html>', { status: 200 })) as unknown as typeof fetch });
+  h.tg.send('x');
+  await h.tg.drain();
+  assert.ok(h.logs.some((l) => l.includes('JSON')));
+});
+
+test('/tieptuc: một cầu chì mở lỗi -> KHÔNG bỏ tạm dừng, không ghi gì, báo lỗi', async () => {
+  const h = harness({ getDayLossPct: () => NaN }); // daily_loss cần % lỗ hợp lệ -> resetProtection thất bại
+  h.setState(trippedState(['loss_streak', 'daily_loss']));
+  h.script.push({ ok: true, result: [upd(1, '/dung'), upd(2, '/tieptuc'), upd(3, '/tieptuc XACNHAN')] });
+  await h.tg.pollOnce();
+  await h.tg.drain();
+  assert.equal(h.tg.isPaused(), true);
+  assert.equal(h.events.filter((e) => e.type === 'protection_reset').length, 0);
+  assert.ok(String(sends(h.calls).at(-1)!.body.text).includes('KHÔNG'));
 });
