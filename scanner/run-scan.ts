@@ -1,6 +1,7 @@
 import { analyze, contractRisk, type Analysis, type PatternData } from '../packages/core/analyze.ts';
 import { marketRegime, circuitBreaker, btcSma200ReclaimedAt, type Regime } from '../packages/core/regime.ts';
 import { inPatternScope } from '../packages/core/gates.ts';
+import { candleProblems } from '../packages/core/candles.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } from '../packages/core/types.ts';
@@ -12,7 +13,8 @@ import type { OpenTrade } from '../packages/core/portfolio.ts';
 // (isClosed), tối đa `limit` nến gần nhất. Máy quét: tải từ Binance; phát lại: cắt từ kho dữ liệu lịch sử tại mốc t.
 // Nến BTC (1D 400, 1H 100, khung xu hướng Lướt nhanh) cũng lấy qua `klines`.
 // Thay thế theo thời điểm mà phát lại phải tự cung cấp: tickers (quoteVolume 24h → hạng thanh khoản), books (spread — không có
-// lịch sử, cần quy ước thay thế cho G-02/G-03), premiums (funding gần nhất + giờ funding kế tiếp), fundingIntervals.
+// lịch sử, cần quy ước thay thế cho G-02/G-03), premiums (giá mark tại t — "giá hiện tại" của kế hoạch, I3 — + funding gần nhất + giờ funding kế tiếp),
+// fundingIntervals. Chuỗi nến cũ hơn 1 khung so với `now`, thiếu nến hoặc sai thứ tự → mã bị ghi lỗi, không chấm (BTC hỏng → ném lỗi).
 export type ScanInput = {
   mode: Mode;
   contracts: Contract[];
@@ -49,10 +51,16 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
   const tradable = new Set(contracts.map((c) => c.symbol));
   const ranks = liquidityRanks(input.tickers.filter((t) => tradable.has(t.symbol)));
 
-  const btcDaily = await kl('BTCUSDT', '1d', 400);
+  // I3: chuỗi nến cũ / thiếu nến / sai thứ tự → không dùng. BTC hỏng thì cả lần quét dừng (chế độ thị trường, cầu dao, RS dựa vào BTC).
+  const fresh = (c: Candle[], interval: string, who: string): Candle[] => {
+    const problems = candleProblems(c, interval, now);
+    if (problems.length > 0) throw new Error(`${who}: ${problems.join('; ')}`);
+    return c;
+  };
+  const btcDaily = fresh(await kl('BTCUSDT', '1d', 400), '1d', 'BTC');
   // Cầu dao xét lại mọi nến 1H trong thời gian dừng (tối đa 12h) + 20 nến khởi động → 100 nến là đủ
-  const btcHourly = await kl('BTCUSDT', '1h', 100);
-  const btcTrend = mode === 'swing' ? btcDaily : await kl('BTCUSDT', cfg.trendInterval, cfg.trendLimit);
+  const btcHourly = fresh(await kl('BTCUSDT', '1h', 100), '1h', 'BTC');
+  const btcTrend = mode === 'swing' ? btcDaily : fresh(await kl('BTCUSDT', cfg.trendInterval, cfg.trendLimit), cfg.trendInterval, 'BTC');
   const regime = marketRegime(btcDaily);
   // Mô hình đảo chiều Short: cấm 30 ngày sau khi BTC lấy lại SMA200 ngày (P-G2 và kế hoạch lệnh mô hình)
   const btcReclaim = btcSma200ReclaimedAt(btcDaily);
@@ -69,8 +77,8 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
   let inScope = 0;
   for (const c of universe) {
     try {
-      const trend = await kl(c.symbol, cfg.trendInterval, cfg.trendLimit);
-      const entry = await kl(c.symbol, cfg.entryInterval, cfg.entryLimit);
+      const trend = fresh(await kl(c.symbol, cfg.trendInterval, cfg.trendLimit), cfg.trendInterval, 'Không chấm');
+      const entry = fresh(await kl(c.symbol, cfg.entryInterval, cfg.entryLimit), cfg.entryInterval, 'Không chấm');
       // Lướt nhanh: 1D tải 300 nến (cùng trọng số API với 120) để dùng luôn cho bối cảnh mô hình 1D
       const daily = mode === 'swing' ? trend : await kl(c.symbol, '1d', FB.d1);
       const rank = ranks.get(c.symbol) ?? 1;

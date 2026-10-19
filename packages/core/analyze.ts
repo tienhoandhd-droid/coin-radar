@@ -159,7 +159,7 @@ export function analyze(i: AnalyzeInput): Analysis {
   // I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL, LOT_SIZE/MARKET_LOT_SIZE, MAX_NUM_ORDERS) → không hợp lệ kèm lý do
   const planFor = (side: Side) => {
     const build = (extraCostPct: number) => buildPlan({
-      mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
+      mode: i.mode, side, entry: i.entry, markPrice: i.premium.markPrice, dailyAtr, capital: i.capital, riskPct,
       costTier: costTier(i.liquidityRankPct), extraCostPct, tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
     });
@@ -232,12 +232,8 @@ export function analyze(i: AnalyzeInput): Analysis {
     }
     tracked.sort((x, y) => TF_ORDER[x.tf]! - TF_ORDER[y.tf]! || x.t.geometry.endIndex - y.t.geometry.endIndex);
     const atr1hAll = atr(pd.c1h, 14);
-    // M3: "giá hiện tại" của kế hoạch mô hình = nến ĐÃ ĐÓNG gần nhất của khung vào lệnh (Swing: 4H = pd.c4h, cũng là nến nhận diện 4H;
-    // Lướt nhanh: 15m = i.entry), kể cả mô hình 1D — nến ngày cuối có thể cũ tới 24 giờ.
-    const priceBars = i.mode === 'swing' ? pd.c4h : i.entry;
-    const lastEntry = priceBars[priceBars.length - 1];
-    if (!lastEntry) throw new Error(`${i.contract.symbol}: không có nến khung vào lệnh để lấy giá hiện tại`);
-    const priceNow = { close: lastEntry.close, time: lastEntry.closeTime, tf: CONFIG[i.mode].entryInterval };
+    // I3: giá hiện tại = giá MARK lúc quét (premiumIndex), không phải giá đóng nến (có thể cũ tới 1 khung, nến 1D tới 24 giờ)
+    const priceNow = { close: i.premium.markPrice, time: i.now.getTime(), tf: 'mark' };
     for (const { t, c, tf } of tracked) {
       const g = t.geometry;
       const r = t.result;

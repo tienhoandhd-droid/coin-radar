@@ -64,7 +64,7 @@ export type FillRow = { label: 'giá hiện tại' | 'giữa' | 'giá tối đa'
 export type TradePlan = {
   side: Side;
   entryType: 'market' | 'limit';
-  marketPrice: number; // giá đóng nến gần nhất, để hiển thị
+  marketPrice: number; // giá hiện tại = giá MARK (premiumIndex) lúc lập kế hoạch (I3), không phải giá đóng nến đã có thể cũ tới 1 khung
   entry: number; // giá DÙNG ĐỂ TÍNH: giá hiện tại nếu market, giá limit nếu limit
   entryZone: { low: number; high: number };
   limitExpiryHours: number | null;
@@ -99,6 +99,7 @@ export type PlanArgs = {
   mode: Mode;
   side: Side;
   entry: Candle[];
+  markPrice: number; // giá mark hiện tại (premiumIndex) — "giá hiện tại" của kế hoạch (I3)
   dailyAtr: number;
   capital: number;
   riskPct: number;
@@ -145,7 +146,8 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const cfg = CONFIG[a.mode];
   const zc = COMMON.zones;
   const dir = a.side === 'long' ? 1 : -1;
-  const marketPrice = last(a.entry.map((k) => k.close));
+  if (!Number.isFinite(a.markPrice) || a.markPrice <= 0) throw new Error(`Không lập được kế hoạch: giá mark không hợp lệ (${a.markPrice})`);
+  const marketPrice = a.markPrice;
   const atrEntry = last(atr(a.entry, 14));
   if (!Number.isFinite(atrEntry) || atrEntry <= 0) {
     throw new Error(`Không lập được kế hoạch: ATR khung vào lệnh không hợp lệ (${atrEntry})`);

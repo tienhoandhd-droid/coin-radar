@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan, tp1R, tp1NetRAt, worstTp1NetR } from './plan.ts';
+import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan as buildPlanRaw, tp1R, tp1NetRAt, worstTp1NetR, type PlanArgs } from './plan.ts';
 import { COMMON } from './config.ts';
 import type { Zone } from './zones.ts';
 import type { Candle } from './types.ts';
 
 const r6 = (x: number) => Math.round(x * 1e6) / 1e6;
+// Phần lớn test dựng giá hiện tại = giá đóng nến cuối; I3 (giá mark khác giá đóng) truyền markPrice tường minh
+const buildPlan = (a: Omit<PlanArgs, 'markPrice'> & { markPrice?: number }) => buildPlanRaw({ markPrice: a.entry[a.entry.length - 1]?.close ?? NaN, ...a });
 
 test('roundStep theo độ lớn giá', () => {
   assert.equal(roundStep(82_000), 1000);
@@ -601,4 +603,18 @@ test('I7: trượt giá thêm theo cỡ lệnh (extraCostPct) cộng vào phí �
   assert.equal(r6(p1.estLoss), r6(p1.qty * p1.riskPerUnit + (p1.notional * (COMMON.costRoundTripPct.high + 0.5)) / 100));
   assert.throws(() => buildPlan({ ...a, extraCostPct: -0.1 }), /trượt giá/);
   assert.throws(() => buildPlan({ ...a, extraCostPct: NaN }), /trượt giá/);
+});
+
+test('I3: giá hiện tại = giá MARK truyền vào (không phải giá đóng nến cũ); dòng "giá hiện tại" của bảng khớp ở giá mark', () => {
+  const a = { ...baseArgs, side: 'long' as const, entry: flat(96.3), zones: [...supports, ...resistances] };
+  const p = buildPlanRaw({ ...a, markPrice: 96.4 });
+  assert.equal(p.marketPrice, 96.4);
+  assert.equal(p.entry, 96.4);
+  assert.equal(p.fillTable[0]!.label, 'giá hiện tại');
+  assert.equal(p.fillTable[0]!.fill, 96.4);
+  // giá mark đã chạy vào vùng cản → không hợp lệ, dù giá đóng nến cũ thì không
+  const inZone = buildPlanRaw({ ...a, markPrice: 99.5 });
+  assert.equal(inZone.valid, false);
+  assert.match(inZone.invalidReason!, /nằm trong vùng/);
+  for (const bad of [0, -1, NaN]) assert.throws(() => buildPlanRaw({ ...a, markPrice: bad }), /giá mark/);
 });

@@ -31,7 +31,7 @@ test('I2 phần chốt lời/trailing (reduce-only): miễn MIN_NOTIONAL nhưng 
 const k = (i: number, c: number): Candle => ({ openTime: i, closeTime: i, open: c, high: c + 0.5, low: c - 0.5, close: c, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 });
 const flat = (p: number) => Array.from({ length: 60 }, (_, i) => k(i, p));
 const zone = (low: number, high: number, strength = 1): Zone => ({ low, high, strength, touches: 1, sources: ['test'] });
-const plan = () => buildPlan({ mode: 'swing', side: 'long', entry: flat(96.3), dailyAtr: 1, capital: 1000, riskPct: 0.5, costTier: 'high',
+const plan = () => buildPlan({ mode: 'swing', side: 'long', entry: flat(96.3), markPrice: 96.3, dailyAtr: 1, capital: 1000, riskPct: 0.5, costTier: 'high',
   tickSize: 0.001, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8,
   zones: [zone(95, 96, 3), zone(99, 100), zone(102, 103), zone(106, 107)] });
 

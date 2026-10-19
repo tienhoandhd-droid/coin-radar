@@ -308,10 +308,12 @@ const h1Wide = (c4: Candle[]) => h1For(c4).map((x) => ({ ...x, high: x.close + 1
 // Gương giá quanh M: Long ↔ Short (đỉnh ↔ đáy, taker mua ↔ bán)
 const M = 2000;
 const mirror = (c: Candle[]): Candle[] => c.map((x) => ({ ...x, open: M - x.open, close: M - x.close, high: M - x.low, low: M - x.high, quoteVolume: x.quoteVolume, takerBuyQuote: x.quoteVolume - x.takerBuyQuote }));
+// I3: giá hiện tại của kế hoạch = giá mark → đặt bằng giá đóng nến phá của chữ nhật (532)
+const MARK_RECT = 532;
 const pdLong = () => { const c4 = rectInner(); return { c4h: c4, c1d: base.daily, c1h: h1Wide(c4), btcSma200ReclaimedAt: null }; };
 
 test('I1: Long — vùng và mô hình cùng chiều → phát tín hiệu MÔ HÌNH (label Đạt, plan null, gates của mô hình, ghi chú cùng chiều)', () => {
-  const a = analyze({ ...base, patternData: pdLong() });
+  const a = analyze({ ...base, premium: { ...base.premium, markPrice: MARK_RECT }, patternData: pdLong() });
   const r = a.patterns.find((p) => p.kind === 'rectangle');
   assert.ok(a.patternSignal, `không có tín hiệu mô hình: ${JSON.stringify(r?.notes)} | ${a.label}`);
   assert.equal(a.label, 'Đạt tiêu chí Long');
@@ -329,7 +331,7 @@ test('I1: Short (gương) — tín hiệu mô hình Short được phát', () =>
   const pd = pdLong();
   const a = analyze({
     ...base, regime: 'down', trend: mirror(base.trend), entry: mirror(base.entry), daily: mirror(base.daily), hourly: mirror(base.hourly), btcTrend: mirror(base.btcTrend),
-    premium: { ...base.premium, markPrice: M - base.premium.markPrice },
+    premium: { ...base.premium, markPrice: M - MARK_RECT },
     patternData: { c4h: mirror(pd.c4h), c1d: mirror(base.daily), c1h: mirror(pd.c1h), btcSma200ReclaimedAt: null },
   });
   const r = a.patterns.find((p) => p.kind === 'rectangle');
@@ -342,7 +344,7 @@ test('I1: Short (gương) — tín hiệu mô hình Short được phát', () =>
 
 test('I1: điểm phía mô hình < minSideScore → không phát tín hiệu mô hình, ghi lý do', () => {
   // btcTrend tăng mạnh hơn coin → điểm Long thấp; vùng cũng không Đạt
-  const a = analyze({ ...base, btcTrend: up(300, 3), patternData: pdLong() });
+  const a = analyze({ ...base, btcTrend: up(300, 3), premium: { ...base.premium, markPrice: MARK_RECT }, patternData: pdLong() });
   if (a.long.score >= COMMON.patterns.minSideScore) return assert.fail(`fixture cần điểm Long < ${COMMON.patterns.minSideScore}, có ${a.long.score}`);
   assert.equal(a.patternSignal, null);
   const r = a.patterns.find((p) => p.kind === 'rectangle')!;

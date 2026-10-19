@@ -31,9 +31,9 @@ export type PatternPlan = {
   timeframe: string;
   side: Side;
   entryType: 'market' | 'split' | 'limit'; // split = 50% market + 50% limit
-  marketPrice: number; // "giá hiện tại" = giá đóng nến ĐÃ ĐÓNG gần nhất của KHUNG VÀO LỆNH (args.price), không phải nến 1D (M3)
+  marketPrice: number; // "giá hiện tại" = args.price.close — analyze truyền giá MARK lúc quét (I3); test có thể truyền giá đóng nến khung vào lệnh
   priceTime: number; // closeTime (ms) của nến cho giá hiện tại
-  priceTf: string; // khung của nến cho giá hiện tại (Swing: 4H; Lướt nhanh: 15m)
+  priceTf: string; // nguồn giá hiện tại: 'mark' (giá mark premiumIndex, I3) hoặc khung nến ('4h', '15m')
   minEntry: number; // biên phía mô hình của dải vào lệnh = mức phá cố định (Long: không vào DƯỚI; Short: không vào TRÊN)
   breakoutLine: number; // MỨC PHÁ CỐ ĐỊNH = giá đường phá tại nến phá (breakoutLevel) — dùng cho d, giá limit, mục tiêu, SL sau TP1, như state.ts
   atr: number; // A = ATR khung nhận diện tại nến cuối
@@ -94,7 +94,7 @@ export type PatternPlanResult = {
 export type PatternPlanArgs = {
   mode: Mode;
   patternId: string; // patternId(symbol, geometry, candles)
-  // Giá hiện tại: giá đóng nến ĐÃ ĐÓNG gần nhất của khung vào lệnh (Swing 4H, Lướt nhanh 15m) — với mô hình 1D, nến ngày cuối có thể cũ tới 24 giờ.
+  // Giá hiện tại: analyze truyền giá MARK lúc quét (tf = 'mark', time = thời điểm quét) — I3; nến đóng cuối có thể cũ tới 1 khung.
   // time = closeTime nến đó; phải ≥ closeTime nến cuối của `candles`.
   price: { close: number; time: number; tf: string };
   geometry: PatternGeometry;
@@ -202,7 +202,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   }
 
   const d = (dir * (marketPrice - line)) / A;
-  if (d <= 0) return reject(`Giá đã quay vào trong mô hình (đóng ${fp(marketPrice)}, đường phá ${fp(line)}) — không lập lệnh`);
+  if (d <= 0) return reject(`Giá đã quay vào trong mô hình (giá hiện tại ${fp(marketPrice)}, đường phá ${fp(line)}) — không lập lệnh`);
 
   // ---- Kiểu vào lệnh theo d ----
   let entryType: PatternPlan['entryType'] = d <= P.marketMaxAtr ? 'market' : d <= P.splitMaxAtr ? 'split' : 'limit';
