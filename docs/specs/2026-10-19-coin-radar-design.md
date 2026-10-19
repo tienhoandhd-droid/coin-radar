@@ -1,7 +1,7 @@
 # Coin Radar — Thiết kế
 
 Ngày: 19/10/2026 · Cập nhật lần 2: 19/10/2026 (chuyển sang **Binance Futures**, Long + Short, hai chế độ
-15m/1H và 4H/1D) · Trạng thái: chờ người dùng duyệt
+15m/1H và 4H/1D) · Trạng thái: **người dùng đã duyệt 19/10/2026** (bot: giai đoạn 2, làm sau)
 
 ## Mục tiêu
 
@@ -307,7 +307,27 @@ Dự án Pháp Sư; schema `public`, tiền tố `coin_`.
 - Binance có thể chặn runner Mỹ — chưa kiểm.
 - Không có nguồn miễn phí ổn định cho dòng tiền ETF, lịch mở khóa token, bản đồ thanh lý.
 
-## 9. Thứ tự làm
+## 9. Giai đoạn 2 — Bot tự giao dịch (CHƯA LÀM, người dùng duyệt 19/10/2026 để “xử lý sau”)
+
+Bot là chương trình chạy luật trong `core` và đặt lệnh qua API Binance; không phải Claude giao dịch trong
+chat. Chỉ bắt đầu khi đạt tiêu chí của bậc trước:
+
+| Bậc | Làm gì | Tiêu chí qua bậc sau |
+|---|---|---|
+| 1 | Web phân tích + sổ tín hiệu (thiết kế này) | Backtest kỳ vọng R dương sau phí + funding, ngoài mẫu |
+| 2 | Giao dịch giấy: sổ tự đóng lệnh theo đúng kế hoạch | ≥ 100 lệnh thực tế, kỳ vọng > 0, cận dưới khoảng tin cậy > 0, sụt giảm trong giới hạn |
+| 3 | Bot trên **Binance Futures Testnet** (tiền ảo) | ≥ 2–4 tuần không lỗi; lệnh trên sàn khớp kế hoạch |
+| 4 | Tiền thật rất nhỏ, khóa cứng: đòn bẩy tối đa, lỗ tối đa/ngày, nút dừng khẩn cấp | Kết quả khớp sổ giấy |
+| 5 | Tăng vốn từng bậc | Theo dõi liên tục |
+
+Ràng buộc bất biến: key **không có quyền rút tiền**, **giới hạn IP** → bot chạy trên máy chủ có IP cố định
+(không phải GitHub Actions); key chỉ nằm trên máy chủ đó, không ở repo, không dán vào chat. Thiết kế chi tiết
+bot làm thành spec riêng khi tới bậc 3.
+
+**Việc giai đoạn 1 phải chuẩn bị sẵn:** sổ tín hiệu lưu đủ trường để giao dịch giấy (giá vào, cắt lỗ, chốt
+lời, khối lượng, thời điểm, từng lần chốt một phần) — đã có trong mục 4.
+
+## 10. Thứ tự làm
 
 Mỗi bước kiểm xong, báo số thật, rồi mới sang bước sau.
 
