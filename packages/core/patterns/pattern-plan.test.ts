@@ -47,7 +47,7 @@ function args(over: Partial<PatternPlanArgs> & { close?: number; side?: 'long' |
     price: { close: lastBar.close, time: lastBar.closeTime, tf: '4h' },
     mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', geometry: geom(), state: st(), candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     zones: longZones, multiMonth: null, btcSma200ReclaimedAt: null,
-    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8,
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8,
     ...rest,
   };
 }
@@ -97,9 +97,9 @@ test('Long chữ nhật d = 0,5×A: market 100%, SL = 108,5 − 0,5×A, TP theo 
   assert.equal(r6(p.tp1NetR), r6((115 - 110.8 - 0.0046 * 110.8) / 2.8));
   // giá tối đa = min(110,5 + 0,3; 108 + 3; (115 + 108)/2,0046) = 110,8
   assert.equal(p.maxEntry, 110.8);
-  // khối lượng = 50 / (2,5 + 110,5×0,25%) = 18,0099 → 18,009; chia 9,004 / 5,402 / 3,603
-  assert.equal(p.qty, 18.009);
-  assert.deepEqual(p.targets.map((t) => t.qty), [9.004, 5.402, 3.603]);
+  // khối lượng (core/sizing.ts, như planner) = 50 / (2,5 + (110,5 + 108)×0,125%) = 50 / 2,773125 = 18,0302 → 18,030; chia 9,015 / 5,409 / 3,606
+  assert.equal(p.qty, 18.03);
+  assert.deepEqual(p.targets.map((t) => t.qty), [9.015, 5.409, 3.606]);
   assert.equal(p.fillTable.length, 3);
   assert.deepEqual(p.fillTable.map((r) => r.label), ['giá hiện tại', 'giữa', 'giá tối đa']);
   assert.equal(p.targetsIfMarketOnly, null);
@@ -183,16 +183,16 @@ test('Long d = 1,4×A: 50% market + 50% limit tại đường phá + 0,25×A; t�
   assert.equal(p.limitExpiryHours, 40);
   assert.equal(p.cancelIfTp1First, true); // TP1 115 ở phía trước giá hiện tại 111,4
   assert.match(p.entryReason, /hoặc khi giá chạm TP1 trước/);
-  // giá TB 50/50 = 110,825; khối lượng = 50 / (2,325 + 110,825×0,25%) = 19,2156 → 19,215; chân market 9,607, chân limit 9,608
+  // giá TB 50/50 = 110,825; khối lượng = 50 / (2,325 + (110,825 + 108,5)×0,125%) = 50 / 2,59915625 = 19,2370 → 19,237; chân market 9,618, limit 9,619
   const row = p.fillTable[0]!;
-  assert.deepEqual(row.legs.map((l) => [l.kind, l.price, l.qty]), [['market', 111.4, 9.607], ['limit', 110.25, 9.608]]);
-  assert.equal(p.qty, 19.215);
+  assert.deepEqual(row.legs.map((l) => [l.kind, l.price, l.qty]), [['market', 111.4, 9.618], ['limit', 110.25, 9.619]]);
+  assert.equal(p.qty, 19.237);
   // rủi ro khi khớp cả hai ≤ ngân sách 50
   assert.ok(row.estLoss <= 50 + 1e-9, `rủi ro ${row.estLoss}`);
   assert.ok(row.estLoss > 49.9);
   // TP cho trường hợp chỉ khớp chân market và cả hai
-  assert.deepEqual(p.targetsIfMarketOnly, [4.803, 2.882, 1.922]);
-  assert.deepEqual(p.targets.map((t) => t.qty), [r6(4.803 + 4.804), r6(2.882 + 2.882), r6(1.922 + 1.922)]);
+  assert.deepEqual(p.targetsIfMarketOnly, [4.809, 2.885, 1.924]); // chân market 9,618 chia 50/30/20
+  assert.deepEqual(p.targets.map((t) => t.qty), [r6(4.809 + 4.809), r6(2.885 + 2.885), r6(1.924 + 1.925)]); // + chân limit 9,619
   // M2: R:R ở trường hợp xấu nhất = chỉ khớp market ở giá tối đa 111,49
   assert.equal(r6(p.tp1NetR), r6((115 - 111.49 - 0.0046 * 111.49) / (111.49 - 108.5)));
   // sau TP1: cả hai trường hợp đều cách đường phá ≥ 0,5×A → giá khớp thật; câu in nêu cả hai giá
@@ -213,8 +213,8 @@ test('Long d = 2,5×A: không vào trực tiếp, chỉ limit 50% khối lượn
   assert.equal(p.limitPrice, 110.25);
   assert.equal(p.fillTable.length, 1);
   assert.equal(p.fillTable[0]!.label, 'limit');
-  // khối lượng đủ = 50 / (1,75 + 110,25×0,25%) = 24,6838 → 24,683; một nửa = 12,341
-  assert.equal(p.qty, 12.341);
+  // khối lượng đủ = 50 / (1,75 + (110,25 + 108,5)×0,125%) = 50 / 2,0234375 = 24,7104 → 24,710; một nửa = 12,355
+  assert.equal(p.qty, 12.355);
   assert.equal(p.cancelIfTp1First, true);
   assert.equal(p.afterTp1Stop, 109.5);
   assert.match(p.afterTp1Reason, /đường phá 110,00 − 0,5×A = 109,50/);
@@ -305,7 +305,7 @@ test('T_đủ nằm sau biên trên vùng nhiều tháng chưa phá → TP2 = bi
   assert.equal(p.targets[2]!.pct, 0);
   assert.equal(p.targets[2]!.qty, 0);
   assert.deepEqual(p.targets.map((t) => t.pct), [50, 50, 0]);
-  assert.deepEqual(p.targets.map((t) => t.qty), [9.004, 9.005, 0]);
+  assert.deepEqual(p.targets.map((t) => t.qty), [9.015, 9.015, 0]); // 18,030 chia 50/50
   assertGrid(p);
   // vùng đã phá lên thì không chặn
   const broken = ready(args({ multiMonth: { upper: 119, lower: 90, state: 'broken_up' } }));
@@ -328,8 +328,9 @@ test('Short chữ nhật phá xuống: đối xứng Long, funding dương khôn
   // M2: ở giá khớp xấu nhất = giá tối đa 109,2 (Short): (109,2 − 105 − 0,0025×109,2)/(112 − 109,2)
   assert.equal(r6(p.tp1NetR), r6((109.2 - 105 - 0.0025 * 109.2) / 2.8));
   assert.equal(p.maxEntry, 109.2);
-  assert.equal(p.qty, 18.026);
-  assert.deepEqual(p.targets.map((t) => t.qty), [9.013, 5.407, 3.606]);
+  // 50 / (2,5 + (109,5 + 112)×0,125%) = 50 / 2,776875 = 18,0059 → 18,005
+  assert.equal(p.qty, 18.005);
+  assert.deepEqual(p.targets.map((t) => t.qty), [9.002, 5.401, 3.602]);
   assert.equal(p.afterTp1Stop, 109.5);
   assertGrid(p);
 });

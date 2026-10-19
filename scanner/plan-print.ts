@@ -12,6 +12,8 @@ import type { CalendarStatus } from '../packages/core/events.ts';
 import type { SignalIdentity } from '../packages/core/signal.ts';
 
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
+// R thô + R sau phí nhóm và trượt hai chiều, chia cho 1R thật của khối lượng in (core/sizing.ts netRAt — cùng công thức với planner)
+const rTxt = (t: { r: number | null; rNet?: number | null }): string => `${num(t.r!, 2)}R${t.rNet != null ? ` (sau phí ${num(t.rNet, 2)}R)` : ''}`;
 const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
 const dec = (x: number): string => String(x).replace('.', ',');
 // Thời điểm (ms) → "YYYY-MM-DD HH:MM UTC" (giờ UTC như biểu đồ Binance mặc định)
@@ -57,9 +59,9 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
     lines.push(`  Không có vùng ${long ? 'cản phía trên' : 'đỡ phía dưới'} → không có TP cố định; toàn bộ vị thế theo ${trail}`);
   } else if (c2) {
     const t1 = p.targets[0]!;
-    lines.push(`  TP1: ${px(t1.price!)} chốt ${COMMON.zones.exitPcts[0]}% = ${qty(p.exit.tp1Qty)} coin | ${num(t1.r!, 2)}R — ${t1.reason}; ${trailingText(p.exit.trailing, tickSize, p.exit.trailQty)}`);
+    lines.push(`  TP1: ${px(t1.price!)} chốt ${COMMON.zones.exitPcts[0]}% = ${qty(p.exit.tp1Qty)} coin | ${rTxt(t1)} — ${t1.reason}; ${trailingText(p.exit.trailing, tickSize, p.exit.trailQty)}`);
     for (const t of p.targets.slice(1)) {
-      if (t.price !== null) lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${num(t.r!, 2)}R — ${t.reason}`);
+      if (t.price !== null) lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${rTxt(t)} — ${t.reason}`);
     }
     lines.push('  Đạt TP1 → trailing stop trên sàn nhận phần còn lại (không có SL cố định mới)');
   } else {
@@ -68,7 +70,7 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
         ? (t.qty > 0
           ? `  ${t.name}: chốt ${t.pct}% = ${qty(t.qty)} coin — ${trail} — ${t.reason}`
           : `  ${t.name}: chốt ${t.pct}% — gộp vào ${p.targets[p.targets.length - 1]!.name} (khối lượng nhỏ hơn 1 bước, không tách được) — ${t.reason}`)
-        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}% = ${qty(t.qty)} coin | ${num(t.r!, 2)}R — ${t.reason}`);
+        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}% = ${qty(t.qty)} coin | ${rTxt(t)} — ${t.reason}`);
     }
     lines.push('  Đạt TP1 → dời SL về đúng giá KHỚP THẬT của anh (giữ nguyên sau TP2)');
   }
@@ -166,7 +168,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   const mOnly = p.targetsIfMarketOnly;
   p.targets.forEach((t, i) => {
     if (t.pct === 0) { lines.push(`  ${t.name}: bỏ — ${t.reason}`); return; }
-    if (c2 && t.price !== null && i > 0) { lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${num(t.r!, 2)}R — ${t.reason}`); return; }
+    if (c2 && t.price !== null && i > 0) { lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${rTxt(t)} — ${t.reason}`); return; }
     if (c2 && t.price === null) return; // phần này nằm trong trailing của C2
     const amount = mOnly
       ? ` — khớp cả hai chân ${qty(t.qty)} coin; chỉ khớp chân market ${qty(mOnly[i]!)} coin`
@@ -174,8 +176,8 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
     lines.push(t.price === null
       ? `  ${t.name}: chốt ${t.pct}%${amount} — ${trail} — ${t.reason}`
       : c2
-        ? `  ${t.name}: ${px(t.price)} chốt ${COMMON.zones.exitPcts[0]}%${amount} | ${num(t.r!, 2)}R — ${t.reason}; ${trailingText(p.exit.trailing, tickSize, p.exit.trailQty)}`
-        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}%${amount} | ${num(t.r!, 2)}R — ${t.reason}`);
+        ? `  ${t.name}: ${px(t.price)} chốt ${COMMON.zones.exitPcts[0]}%${amount} | ${rTxt(t)} — ${t.reason}; ${trailingText(p.exit.trailing, tickSize, p.exit.trailQty)}`
+        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}%${amount} | ${rTxt(t)} — ${t.reason}`);
   });
   if (c2) {
     lines.push('  Đạt TP1 → trailing stop trên sàn nhận phần còn lại (không có SL cố định mới)');

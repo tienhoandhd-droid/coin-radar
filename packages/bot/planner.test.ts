@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { planOrders, exitSplit, type PlannerInput, type PlannerPlan, type DesiredOrder } from './planner.ts';
 import { trailingFor } from '../core/exit.ts';
+import { COMMON } from '../core/config.ts';
 import { makeClientId, CLIENT_ID_RE } from '../binance/orders.ts';
 import type { Contract, Side } from '../core/types.ts';
 import type { OpenTrade } from '../core/portfolio.ts';
@@ -403,4 +404,35 @@ test('I1 costModel: luật "TP1 phải bù phí" (dừng sàn hòa vốn) xét l
   assert.match(planOrders(input(plan)).reasons.join(' '), /TP1 chưa bù phí/);
   const r = planOrders(input(plan, { costModel: { tierPct: 0.1, quoteVolPerMin: BIG_VOL } }));
   assert.equal(r.allowed, true, r.reasons.join('; '));
+});
+
+// ---- Rà soát lại Task 3 (vòng 2): bản in máy quét định cỡ ĐÚNG như planner (một công thức ở core/sizing.ts) ----
+test('Bản in = planner: Short limit kiểu AKE (SL xa, funding chu kỳ 4 giờ, nhóm phí 0,25%) — khối lượng in = khối lượng planner, rủi ro in ≤ 2%', async () => {
+  const { buildPlan } = await import('../core/plan.ts');
+  const flatBars = Array.from({ length: 60 }, (_, j) => ({ openTime: j, closeTime: j, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 }));
+  const zones = [
+    { low: 103, high: 104, strength: 3, touches: 1, sources: ['t'] }, // kháng cự đặt SL → limit 102,9, SL 104,3
+    { low: 95, high: 96, strength: 2, touches: 1, sources: ['t'] }, // hỗ trợ đặt TP1
+  ];
+  const costModel = { tierPct: COMMON.costRoundTripPct.high, quoteVolPerMin: 50_000 };
+  const fundingBuffer = { maxAbsRate: 0.0015, intervalHours: 4 };
+  const plan = buildPlan({
+    mode: 'swing', side: 'short', entry: flatBars, markPrice: 100, dailyAtr: 1, capital: 10_000, riskPct: 2, costTier: 'high',
+    quoteVolPerMin: costModel.quoteVolPerMin, fundingBuffer, tickSize: 0.001, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 4, zones,
+  });
+  assert.equal(plan.valid, true, plan.invalidReason ?? '');
+  assert.equal(plan.entryType, 'limit');
+  const C3 = { ...C, tickSize: 0.001 };
+  const r = planOrders({
+    plan, grade: 'A', signal: { id: 'AKE|swing|short|zone|1|104.3', fresh: true }, mode: 'swing', contract: C3, capital: 10_000,
+    openTrades: [], openOrderCount: 0, maxNotional: Infinity, markPrice: 100, runId: 'r1', now: NOW, costModel, fundingBuffer,
+  });
+  assert.equal(r.allowed, true, r.reasons.join('; '));
+  assert.equal(plan.qty, r.sizing!.requestedQty, 'khối lượng in phải bằng khối lượng planner');
+  assert.equal(plan.fillTable[0]!.qty, r.sizing!.requestedQty);
+  assert.ok(plan.estLoss <= 200 + 1e-9, `rủi ro in ${plan.estLoss} USDT > 2% vốn`);
+  assert.ok(Math.abs(plan.estLoss - r.sizing!.riskAmount) < 1e-9);
+  // R của TP1 in ra có bản sau phí, nhỏ hơn R thô
+  const t1 = plan.targets[0]!;
+  assert.ok(t1.rNet != null && t1.r !== null && t1.rNet < t1.r, `${t1.rNet} < ${t1.r}`);
 });

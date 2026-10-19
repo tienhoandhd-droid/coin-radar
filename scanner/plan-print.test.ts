@@ -132,7 +132,7 @@ function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: 
   const a: PatternPlanArgs = { mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', price: { close: c[c.length - 1]!.close, time: c[c.length - 1]!.closeTime, tf: '4h' }, geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     state: { state: 'breakout', breakoutIndex: 30, side: 'up', breakoutLine: 110, distanceAtr: 0, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
     zones: [z(118, 118.5), z(121, 122), z(126, 127)], multiMonth: null, btcSma200ReclaimedAt: null,
-    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, extraCostPct: 0, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, quoteVolPerMin: Infinity, fundingBuffer: { maxAbsRate: 0, intervalHours: 8 }, fundingRate: 0.0001, fundingIntervalHours: 8, exitPolicy };
   const r = buildPatternPlan(a);
   if (r.status !== 'ready' || !r.plan) throw new Error(`fixture không ready: ${r.reason}`);
   return r.plan;
@@ -145,13 +145,13 @@ test('kế hoạch mô hình chia 2 chân: in từng chân + khối lượng m�
   const t = patternPlanLines(ph, p, 0.01).join('\n');
   assert.match(t, /BTCUSDT — LONG theo mô hình chữ nhật 4H \| điểm 74 \| rủi ro Thấp/);
   assert.match(t, /Kiểu vào lệnh: CHIA 2 CHÂN/);
-  assert.match(t, /Chân 1 — MARKET 50%: giá hiện tại 111,40 \(không mua cao hơn 111,49\): 9,607 coin/);
-  assert.match(t, /Chân 2 — LIMIT 50%: 110,25, hủy sau 10 nến \(40 giờ\) chưa khớp hoặc khi giá chạm TP1 trước: 9,608 coin/);
-  assert.match(t, /TP1: 115,00 chốt 50% — khớp cả hai chân 9,607 coin; chỉ khớp chân market 4,803 coin/);
+  assert.match(t, /Chân 1 — MARKET 50%: giá hiện tại 111,40 \(không mua cao hơn 111,49\): 9,618 coin/); // 50 / 2,59915625 = 19,237 (core/sizing.ts, như planner)
+  assert.match(t, /Chân 2 — LIMIT 50%: 110,25, hủy sau 10 nến \(40 giờ\) chưa khớp hoặc khi giá chạm TP1 trước: 9,619 coin/);
+  assert.match(t, /TP1: 115,00 chốt 50% — khớp cả hai chân 9,618 coin; chỉ khớp chân market 4,809 coin \| 1,80R \(sau phí [\d,]+R\)/);
   assert.match(t, /Sau TP1 → SL về/);
   assert.match(t, /nếu chỉ khớp chân market/);
   assert.ok(t.includes(p.afterTp1Reason), 'phải in nguyên văn luật sau TP1');
-  assert.match(t, /Khớp 111,40 \(giá hiện tại\): market 9,607 \+ limit 9,608 = 19,215 coin/);
+  assert.match(t, /Khớp 111,40 \(giá hiện tại\): market 9,618 \+ limit 9,619 = 19,237 coin/);
   assert.doesNotMatch(t, /NaN|undefined|Infinity/);
 });
 
@@ -296,8 +296,8 @@ test('B0 mô hình C2: chân chia TP1/trailing, TP1 kèm trailing, TP2/TP3 chỉ
   const t = patternPlanLines(ph, p, 0.01).join('\n');
   assert.equal(p.exit.policy, 'C2');
   assert.ok(p.exit.trailing);
-  assert.match(t, /TP1: 115,00 chốt 50% — khớp cả hai chân 9,607 coin; chỉ khớp chân market 4,803 coin \| .*50% còn lại \(9,608 coin\): trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi [\d,]+% \(mức dừng lúc kích hoạt ≈ [\d,]+ ≥ giá vào \+ phí\)/);
-  assert.match(t, /Chân 1 — MARKET 50%.*= TP1 4,803 \/ trailing 4,804/);
+  assert.match(t, /TP1: 115,00 chốt 50% — khớp cả hai chân 9,618 coin; chỉ khớp chân market 4,809 coin \| .*50% còn lại \(9,619 coin\): trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi [\d,]+% \(mức dừng lúc kích hoạt ≈ [\d,]+ ≥ giá vào \+ phí\)/);
+  assert.match(t, /Chân 1 — MARKET 50%.*= TP1 4,809 \/ trailing 4,809/);
   assert.match(t, /TP2 \(tham khảo, không đặt lệnh với C2\)/);
   assert.doesNotMatch(t, /Sau TP1 → SL về/);
 });

@@ -3,7 +3,8 @@ import { CONFIG, COMMON } from '../config.ts';
 import { roundStep } from '../indicators.ts';
 import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetZonesSplit, zoneContaining, describeZone, type Zone } from '../zones.ts';
-import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, mmrFor, type CostTier, type Target, type FillRow } from '../plan.ts';
+import { positionSize, planCostPct, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, mmrFor, type CostTier, type Target, type FillRow } from '../plan.ts';
+import { riskModel, riskAt, netRAt, costModelProblems, fundingBufferProblems, type CostModel, type FundingBuffer } from '../sizing.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from '../exit.ts';
 import type { MarginBracket, MarginSource } from '../margin.ts';
 import type { MultiMonthContext } from './context.ts';
@@ -112,7 +113,8 @@ export type PatternPlanArgs = {
   capital: number;
   riskPct: number;
   costTier: CostTier;
-  extraCostPct: number; // trượt giá THÊM theo cỡ lệnh (% khứ hồi, I7), cộng vào phí theo nhóm thanh khoản
+  quoteVolPerMin: number; // KL giao dịch 1 phút (USDT) — trượt theo cỡ (I7); Infinity = bỏ (test)
+  fundingBuffer: FundingBuffer; // đệm funding trong định cỡ — cùng công thức với planner (core/sizing.ts)
   leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật (leverageBracket); không có → bảng giả định thận trọng
   tickSize: number;
   stepSize: number;
@@ -347,8 +349,13 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const reasons = [tp1Reason, tp2Reason, tp3Reason];
 
   // ---- Chi phí và R:R ở giá khớp xấu nhất ----
-  if (!Number.isFinite(a.extraCostPct) || a.extraCostPct < 0) throw new Error(`Kế hoạch mô hình: trượt giá thêm theo cỡ lệnh không hợp lệ (${a.extraCostPct})`);
-  const costPct = COMMON.costRoundTripPct[a.costTier] + a.extraCostPct;
+  const cost: CostModel = { tierPct: COMMON.costRoundTripPct[a.costTier], quoteVolPerMin: a.quoteVolPerMin };
+  const sizingProblems = [...costModelProblems(cost), ...fundingBufferProblems(a.fundingBuffer)];
+  if (sizingProblems.length > 0) throw new Error(`Kế hoạch mô hình: ${sizingProblems.join('; ')}`);
+  // Định cỡ: CÙNG công thức với planner của bot (core/sizing.ts) — phí hai chiều (ra ở giá SL), trượt theo cỡ, đệm funding
+  const sizeAt = (f: number) => positionSize({ mode: a.mode, capital: a.capital, riskPct: a.riskPct, entry: f, stop, stepSize: a.stepSize, cost, fundingBuffer: a.fundingBuffer });
+  const lossAt = (f: number, q: number) => riskAt(riskModel(a.mode, f, stop, cost, a.fundingBuffer), q);
+  const costPct = planCostPct(cost, sizeAt(worstEntry).notional); // phí + trượt khứ hồi (%) dùng cho TP1 sau phí, giá tối đa
   const fundingEvents = cfg.fundingHoldHours / a.fundingIntervalHours;
   const fundingPaidFrac = Math.max(0, dir * a.fundingRate * fundingEvents); // chỉ tính khi lệnh phải TRẢ funding
   const costFrac = costPct / 100 + fundingPaidFrac;
@@ -377,7 +384,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     while (parts.length < 3) parts.push(0);
     return parts as [number, number, number];
   };
-  const fullQty = (f: number) => positionSize(a.capital, a.riskPct, f, stop, costPct, a.stepSize).qty;
+  const fullQty = (f: number) => sizeAt(f).qty;
   const mPct = P.splitMarketPct;
   const makeRow = (label: FillRow['label'], f: number): PatternFillRow => {
     let raw: Array<{ kind: EntryLeg['kind']; price: number; qty: number }>;
@@ -388,7 +395,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     } else {
       // Tổng khối lượng tính theo giá TB có trọng số → rủi ro khi khớp cả hai = ngân sách; chân market nhận phần làm tròn xuống
       const avg = (mPct * f + (100 - mPct) * limitPrice!) / 100;
-      const total = positionSize(a.capital, a.riskPct, avg, stop, costPct, a.stepSize).qty;
+      const total = sizeAt(avg).qty;
       const [qm, ql] = splitQuantity(total, a.stepSize, [mPct, 100 - mPct]);
       raw = [{ kind: 'market', price: f, qty: qm! }, { kind: 'limit', price: limitPrice!, qty: ql! }];
     }
@@ -397,7 +404,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     const q = [0, 1, 2].map((i) => sq(legs.reduce((sum, l) => sum + l.q[i]!, 0))) as [number, number, number];
     const notional = legs.reduce((sum, l) => sum + l.qty * l.price, 0);
     const avgEntry = qty > 0 ? notional / qty : legs.reduce((sum, l) => sum + l.price, 0) / legs.length;
-    const estLoss = legs.reduce((sum, l) => sum + l.qty * Math.abs(l.price - stop), 0) + (notional * costPct) / 100;
+    const estLoss = lossAt(avgEntry, qty); // lỗ thật khi chạm SL, mọi chân khớp (xấp xỉ bằng giá vào TB)
     return { label, fill: f, qty, q, estLoss, legs, avgEntry };
   };
   const exitPolicy = a.exitPolicy ?? COMMON.exit.defaultPolicy;
@@ -457,6 +464,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     pct: pcts[i] ?? 0,
     qty: row0.q[i]!,
     r: prices[i] === null ? null : (dir * (prices[i]! - entry)) / riskPerUnit,
+    rNet: prices[i] === null ? null : netRAt(riskModel(a.mode, entry, stop, cost, a.fundingBuffer), row0.qty, side, entry, prices[i]!),
     reason: reasons[i]!,
   }));
   const cancelIfTp1First = hasLimit && dir * (tp1 - marketPrice) > 0;

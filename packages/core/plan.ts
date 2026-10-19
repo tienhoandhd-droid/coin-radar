@@ -4,6 +4,7 @@ import { stopSideZones, targetZonesSplit, zoneContaining, describeZone, type Zon
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from './exit.ts';
 import { marginTier, defaultBrackets, type MarginBracket, type MarginSource } from './margin.ts';
+import { riskModel, sizeForRisk, costPctAt, netRAt, costModelProblems, fundingBufferProblems, type CostModel, type FundingBuffer } from './sizing.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
@@ -31,13 +32,18 @@ export function maxSafeLeverage(stopDistPct: number, mmr: number, bufferStops: n
   return 1 / ((1 + bufferStops) * stopDistPct + mmr);
 }
 
-export function positionSize(capital: number, riskPct: number, entry: number, stop: number, costPct: number, stepSize: number) {
-  const riskAmount = (capital * riskPct) / 100;
-  const perUnit = Math.abs(entry - stop) + (entry * costPct) / 100;
-  const raw = riskAmount / perUnit;
-  const qty = Math.floor(raw / stepSize + 1e-9) * stepSize;
-  const q = Math.round(qty * 1e8) / 1e8;
-  return { qty: q, notional: Math.round(q * entry * 1e8) / 1e8, riskAmount };
+// Khối lượng 2% + rủi ro thật: CÙNG công thức với planner của bot (packages/core/sizing.ts — rà soát Task 3 kế hoạch 2):
+// phí nhóm chiều vào ở giá vào, chiều ra ở giá SL, trượt theo cỡ hai chiều, đệm funding. Bản in máy quét = số bot sẽ vào.
+export function positionSize(a: { mode: Mode; capital: number; riskPct: number; entry: number; stop: number; stepSize: number; cost: CostModel; fundingBuffer: FundingBuffer }) {
+  const model = riskModel(a.mode, a.entry, a.stop, a.cost, a.fundingBuffer);
+  const s = sizeForRisk(model, a.capital, a.riskPct, a.stepSize);
+  return { qty: s.qty, notional: Math.round(s.qty * a.entry * 1e8) / 1e8, riskAmount: s.budget, estLoss: s.riskAmount, model };
+}
+
+// Phí + trượt khứ hồi (%) của kế hoạch: trượt theo cỡ trên notional đã cắt theo trần thanh khoản (0,25 × KL 1 phút — canOpen cắt về đó)
+export function planCostPct(cost: CostModel, notional: number): number {
+  const cap = Number.isFinite(cost.quoteVolPerMin) ? COMMON.slippage.maxParticipation * cost.quoteVolPerMin : Infinity;
+  return costPctAt(cost, Math.min(notional, cap));
 }
 
 // Chia khối lượng theo % chốt: các phần đầu làm tròn XUỐNG theo stepSize, phần cuối nhận phần còn lại (tổng luôn bằng qty)
@@ -56,7 +62,8 @@ export function splitQuantity(qty: number, stepSize: number, pcts: readonly numb
 }
 
 // qty = khối lượng của phần này; nếu price = null thì phần này nằm trong phần để trailing stop
-export type Target = { name: 'TP1' | 'TP2' | 'TP3'; price: number | null; pct: number; qty: number; r: number | null; reason: string };
+// r = R thô (|TP − vào| / |vào − SL|); rNet = R SAU phí nhóm + trượt hai chiều, chia cho 1R thật của khối lượng in (core/sizing.ts netRAt)
+export type Target = { name: 'TP1' | 'TP2' | 'TP3'; price: number | null; pct: number; qty: number; r: number | null; rNet?: number | null; reason: string };
 
 // Một dòng của bảng khối lượng theo giá khớp: cùng ngân sách rủi ro, khối lượng đổi theo giá khớp
 export type FillRow = { label: 'giá hiện tại' | 'giữa' | 'giá tối đa' | 'limit'; fill: number; qty: number; q: [number, number, number]; estLoss: number };
@@ -107,7 +114,8 @@ export type PlanArgs = {
   capital: number;
   riskPct: number;
   costTier: CostTier;
-  extraCostPct: number; // trượt giá THÊM theo cỡ lệnh (% khứ hồi, I7 — sizeSlippagePct), cộng vào phí theo nhóm thanh khoản; 0 = không thêm
+  quoteVolPerMin: number; // KL giao dịch 1 phút (USDT) — trượt theo cỡ (I7) của CHÍNH khối lượng in; Infinity = bỏ trượt theo cỡ (test)
+  fundingBuffer: FundingBuffer; // |funding| lớn nhất gần đây + chu kỳ — đệm funding trong định cỡ (giữ lỗ ≤ 2%), như planner
   leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật của mã (leverageBracket); không có → bảng giả định thận trọng
   tickSize: number; // bước giá của hợp đồng: mọi giá trong kế hoạch là bội của số này
   stepSize: number;
@@ -162,9 +170,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
   if (!Number.isFinite(a.fundingIntervalHours) || a.fundingIntervalHours <= 0) {
     throw new Error(`Không lập được kế hoạch: chu kỳ funding không hợp lệ (${a.fundingIntervalHours})`);
   }
-  if (!Number.isFinite(a.extraCostPct) || a.extraCostPct < 0) {
-    throw new Error(`Không lập được kế hoạch: trượt giá thêm theo cỡ lệnh không hợp lệ (${a.extraCostPct})`);
-  }
+  const cost: CostModel = { tierPct: COMMON.costRoundTripPct[a.costTier], quoteVolPerMin: a.quoteVolPerMin };
+  const sizingProblems = [...costModelProblems(cost), ...fundingBufferProblems(a.fundingBuffer)];
+  if (sizingProblems.length > 0) throw new Error(`Không lập được kế hoạch: ${sizingProblems.join('; ')}`);
   const tick = a.tickSize;
   const fp = (x: number) => formatTick(x, tick);
   const dz = (z: Zone) => describeZone(z, tick);
@@ -230,7 +238,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     if (found.length === 0 && z === candidates[0] && dir * (tp - entry) <= 0) { blockedBy = z; break; }
     const prev = found.length ? found[found.length - 1]!.price! : entry;
     if (dir * (tp - prev) <= 0) continue;
-    found.push({ name: `TP${found.length + 1}` as Target['name'], price: tp, pct: 0, qty: 0, r: (dir * (tp - entry)) / riskPerUnit,
+    found.push({ name: `TP${found.length + 1}` as Target['name'], price: tp, pct: 0, qty: 0, r: (dir * (tp - entry)) / riskPerUnit, rNet: null,
       reason: `Trước vùng cản ${dz(z)}` });
   }
   const names = ['TP1', 'TP2', 'TP3'] as const;
@@ -238,7 +246,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     const pct = zc.exitPcts[idx]!;
     const hit = found[idx];
     if (hit) return { ...hit, name, pct };
-    return { name, price: null, pct, qty: 0, r: null,
+    return { name, price: null, pct, qty: 0, r: null, rNet: null,
       reason: found.length === 0 ? 'Không có vùng cản phía trên (giá ở vùng đỉnh mới) — để trailing stop' : 'Không còn vùng cản — phần này để trailing stop (3×ATR)' };
   });
   if (blockedBy !== null) {
@@ -311,18 +319,19 @@ export function buildPlan(a: PlanArgs): TradePlan {
 
   const exitPolicy = a.exitPolicy ?? COMMON.exit.defaultPolicy;
   const c2 = exitPolicy === 'C2' && targets[0]!.price !== null; // C2 không có TP1 -> cả vị thế theo trailing ATR như cũ, giữ kiểm tra cũ
-  const costPct = COMMON.costRoundTripPct[a.costTier] + a.extraCostPct;
-  const size = positionSize(a.capital, a.riskPct, entry, stop, costPct, a.stepSize);
-  const estLoss = size.qty * riskPerUnit + (size.notional * costPct) / 100;
+  const size = positionSize({ mode: a.mode, capital: a.capital, riskPct: a.riskPct, entry, stop, stepSize: a.stepSize, cost, fundingBuffer: a.fundingBuffer });
+  const costPct = planCostPct(cost, size.notional);
+  const estLoss = size.estLoss; // lỗ thật khi chạm SL (phí hai chiều, trượt, đệm funding) — ≤ ngân sách 2%
+  targets.forEach((t) => { if (t.price !== null) t.rNet = netRAt(size.model, size.qty, a.side, entry, t.price); });
   // Hiệu khối lượng làm tròn theo bước như pattern-plan.ts (tránh sai số dấu phẩy động khi so phần trailing > 0)
   const sq = (x: number) => Number(x.toFixed(tickDecimals(a.stepSize)));
   const parts = splitQuantity(size.qty, a.stepSize, zc.exitPcts);
   targets.forEach((t, i) => { t.qty = parts[i]!; });
   // Bảng khối lượng theo giá khớp: cùng ngân sách rủi ro, khối lượng = rủi ro ÷ (|khớp − SL| + phí)
   const row = (label: FillRow['label'], fill: number): FillRow => {
-    const sz = positionSize(a.capital, a.riskPct, fill, stop, costPct, a.stepSize);
+    const sz = positionSize({ mode: a.mode, capital: a.capital, riskPct: a.riskPct, entry: fill, stop, stepSize: a.stepSize, cost, fundingBuffer: a.fundingBuffer });
     const q = splitQuantity(sz.qty, a.stepSize, zc.exitPcts) as [number, number, number];
-    return { label, fill, qty: sz.qty, q, estLoss: sz.qty * Math.abs(fill - stop) + (sz.notional * costPct) / 100 };
+    return { label, fill, qty: sz.qty, q, estLoss: sz.estLoss };
   };
   const fillTable: FillRow[] = entryType === 'limit'
     ? [row('limit', entry)]

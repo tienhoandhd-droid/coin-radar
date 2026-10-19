@@ -3,7 +3,7 @@ import { snapToTick, tickDecimals } from '../core/price.ts';
 import { entryLegProblems, exitPartProblems, isStepMultiple } from '../core/filters.ts';
 import { canOpen, type OpenTrade } from '../core/portfolio.ts';
 import { mmrFor, liquidationPrice, splitQuantity, type TradePlan } from '../core/plan.ts';
-import { sizeSlippagePct } from '../core/margin.ts';
+import { riskModel, riskAt as riskAtModel, qtyForRisk, costPctAt, costModelProblems, fundingBufferProblems, type CostModel, type FundingBuffer } from '../core/sizing.ts';
 import type { ExitPolicy } from '../core/exit.ts';
 import type { MarginBracket } from '../core/margin.ts';
 import type { Contract, Mode } from '../core/types.ts';
@@ -42,11 +42,11 @@ export type PlannerInput = {
   exitPolicy?: ExitPolicy; // mặc định COMMON.exit.defaultPolicy (C2); bot chỉ chạy C2
   // Rà soát Task 3 kế hoạch 2 (I1): phí nhóm thanh khoản (% khứ hồi, COMMON.costRoundTripPct) + KL 1 phút (USDT) để planner tính lại
   // trượt theo cỡ (I7) cho KHỐI LƯỢNG CUỐI thay vì dùng costPct của kế hoạch. Không có → dùng costPct của kế hoạch như cũ.
-  costModel?: { tierPct: number; quoteVolPerMin: number };
+  costModel?: CostModel;
   // Ràng buộc cứng người dùng "lỗ thật mỗi lệnh ≤ 2% vốn": đệm funding cho thời gian giữ dự kiến. maxAbsRate = |funding| lớn nhất mỗi kỳ
   // của mã trong COMMON.risk.fundingBufferLookbackDays ngày gần nhất (biết tại thời điểm lập lệnh); intervalHours = chu kỳ funding.
   // Số kỳ = ceil(CONFIG[mode].fundingHoldHours / intervalHours). Bắt buộc — thiếu thì không định cỡ được đúng ràng buộc.
-  fundingBuffer: { maxAbsRate: number; intervalHours: number };
+  fundingBuffer: FundingBuffer;
 };
 
 export type EntryRole = 'E1' | 'E2';
@@ -153,12 +153,8 @@ export function planOrders(i: PlannerInput): PlannerResult {
   if (!(tr.callbackPct >= cbMin && tr.callbackPct <= cbMax)) problems.push(`callbackRate ${tr.callbackPct} ngoài [${cbMin}; ${cbMax}]`);
   const cm = i.costModel;
   const fb = i.fundingBuffer;
-  if (!(fb !== undefined && fb.maxAbsRate >= 0 && Number.isFinite(fb.maxAbsRate) && fb.intervalHours > 0 && Number.isFinite(fb.intervalHours))) {
-    problems.push(`fundingBuffer không hợp lệ (${JSON.stringify(fb)}) — cần |funding| lớn nhất gần đây và chu kỳ để giữ lỗ ≤ ${COMMON.risk.perTradePct}%`);
-  }
-  if (cm !== undefined && !(cm.tierPct >= 0 && Number.isFinite(cm.tierPct) && cm.quoteVolPerMin > 0 && Number.isFinite(cm.quoteVolPerMin))) {
-    problems.push(`costModel không hợp lệ (phí nhóm ${cm.tierPct}%, KL 1 phút ${cm.quoteVolPerMin})`);
-  }
+  problems.push(...fundingBufferProblems(fb).map((x) => `${x} — cần để giữ lỗ ≤ ${COMMON.risk.perTradePct}%`));
+  if (cm !== undefined) problems.push(...costModelProblems(cm));
   let expireAt: number | undefined;
   if (hasLimit) {
     const h = p.limitExpiryHours;
@@ -181,21 +177,14 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // plan.qty chỉ là trần trên (vd kế hoạch mô hình chỉ đặt limit cho 50% khối lượng) — không bao giờ phóng to.
   const dec = tickDecimals(qStep);
   const floorQ = (x: number) => (x > 0 && Number.isFinite(x) ? Number((Math.floor(x / qStep + 1e-9) * qStep).toFixed(dec)) : 0);
-  // Lỗ thật khi chạm SL (ràng buộc cứng ≤ 2% vốn): rủi ro(q) = q·a + q²·b với
-  //   a = |giá xấu nhất − SL| + nửa phí nhóm ở giá xấu nhất (chiều vào) + nửa phí nhóm ở giá SL (chiều ra) + đệm funding/coin
-  //   b = trượt theo cỡ (I7) hai chiều: mỗi chiều trượt TB = ½ × pctPerParticipation% × notional / KL 1 phút → ½·k·(giá vào² + SL²)/KL
-  // Không có costModel: phí = costPct của kế hoạch (cả trượt), b = 0. Có costModel (rà soát Task 3, I1): trượt tính trên CHÍNH khối lượng q.
-  // Đệm funding: số kỳ chốt trong thời gian giữ dự kiến (CONFIG.fundingHoldHours) × |funding| lớn nhất gần đây × giá (lấy giá lớn hơn).
-  const kSlip = COMMON.slippage.pctPerParticipation / 100;
-  const fundingSettlements = Math.ceil(CONFIG[i.mode].fundingHoldHours / fb.intervalHours - 1e-9);
-  const fundingPerUnit = fundingSettlements * fb.maxAbsRate * Math.max(worstEntry, stop);
-  const baseCostPct = cm !== undefined ? cm.tierPct : p.costPct;
-  const ra = Math.abs(worstEntry - stop) + ((worstEntry + stop) * baseCostPct) / 200 + fundingPerUnit;
-  const rb = cm !== undefined ? (kSlip * (worstEntry * worstEntry + stop * stop)) / 2 / cm.quoteVolPerMin : 0;
-  const riskAt = (q: number) => q * ra + q * q * rb;
-  // nghiệm dương của q·a + q²·b = r, dạng ổn định số (không trừ hai số gần bằng nhau khi b rất nhỏ)
-  const qForRisk = (r: number) => (2 * r) / (ra + Math.sqrt(ra * ra + 4 * rb * r));
-  const costAt = (q: number) => (cm !== undefined ? cm.tierPct + sizeSlippagePct(q * worstEntry, cm.quoteVolPerMin) : p.costPct); // % khứ hồi
+  // Lỗ thật khi chạm SL (ràng buộc cứng ≤ 2% vốn): công thức DUY NHẤT ở packages/core/sizing.ts (dùng chung với kế hoạch/bản in máy quét).
+  // Không có costModel: phí = costPct của kế hoạch, không trượt theo cỡ riêng.
+  const cost: CostModel = cm ?? { tierPct: p.costPct, quoteVolPerMin: Infinity };
+  const model = riskModel(i.mode, worstEntry, stop, cost, fb);
+  const { a: ra, fundingPerUnit, fundingSettlements } = model;
+  const riskAt = (q: number) => riskAtModel(model, q);
+  const qForRisk = (r: number) => qtyForRisk(model, r);
+  const costAt = (q: number) => costPctAt(cost, q * worstEntry); // % khứ hồi
   const budget = (i.capital * COMMON.risk.perTradePct) / 100;
   const riskCapQty = floorQ(qForRisk(budget)); // khối lượng tối đa theo trần 2% vốn
   const requestedQty = floorQ(Math.min(p.qty, qForRisk(budget)));
@@ -337,7 +326,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   return {
     allowed: true, reasons: adjust, legs, exitByFill: scenarios, exitRule,
     sizing: { requestedQty, qty, adjusted, riskAmount, realRiskPct, leverage: lev, notional, marginNeeded: notional / lev, worstEntry, costPct,
-      riskModel: { a: ra, b: rb, fundingPerUnit, fundingSettlements } },
+      riskModel: { a: ra, b: model.b, fundingPerUnit, fundingSettlements } },
   };
 }
 

@@ -17,7 +17,7 @@ import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
 import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from './grade.ts';
 import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
-import { sizeSlippagePct, type MarginBracket } from './margin.ts';
+import type { MarginBracket } from './margin.ts';
 import { canOpen, type CanOpenResult, type OpenTrade } from './portfolio.ts';
 import { chooseZoneSide, flipAllowed, zoneSignalId, signalIdentity, type SignalState, type SignalIdentity } from './signal.ts';
 
@@ -65,6 +65,7 @@ export type AnalyzeInput = {
   patternData: PatternData | null; // null = không tải (hợp đồng ngoài phạm vi P-G1); trong phạm vi mà null → ném lỗi
   openTrades: readonly OpenTrade[]; // lệnh đang mở (C1/C3). Máy quét: [] hoặc danh sách người dùng đưa vào → chỉ để thông tin
   leverageBrackets?: readonly MarginBracket[]; // bậc ký quỹ thật của mã (leverageBracket, cần key); không có → bảng giả định thận trọng
+  fundingMaxAbsRate?: number; // |funding| lớn nhất mỗi kỳ trong COMMON.risk.fundingBufferLookbackDays ngày (biết tại now) — đệm funding trong định cỡ
   prevSignal: SignalState | null; // I5: tín hiệu đang mở của hợp đồng × chế độ ở lần quét trước (bot/backtest giữ); máy quét: null
 };
 
@@ -157,19 +158,18 @@ export function analyze(i: AnalyzeInput): Analysis {
   if (!Number.isFinite(quoteVolPerMin) || quoteVolPerMin <= 0) {
     throw new Error(`${i.contract.symbol}: thiếu khối lượng 1H để ước trượt giá theo cỡ lệnh (${volBars.length} nến)`);
   }
-  // Trượt giá thêm tính trên notional của lần lập đầu (chưa có trượt thêm) → lần lập thứ hai có khối lượng nhỏ hơn, nên mức trượt đã tính là thận trọng.
-  // Notional giao dịch được không vượt trần thanh khoản (maxParticipation × KL 1 phút — canOpen cắt về đó) → trượt ước trên notional SAU trần
-  // (rà soát Task 3 kế hoạch 2, I1: ước trên notional chưa cắt làm phí kế hoạch phồng gấp nhiều lần phí thật ở mã thanh khoản mỏng).
-  const extraFor = (notional: number) => sizeSlippagePct(Math.min(notional, COMMON.slippage.maxParticipation * quoteVolPerMin), quoteVolPerMin);
+  // Định cỡ kế hoạch = CÙNG công thức với planner của bot (core/sizing.ts): trượt theo cỡ (I7) của chính khối lượng in, phí kế hoạch ước trên
+  // notional SAU trần thanh khoản (rà soát Task 3 kế hoạch 2, I1), đệm funding. |funding| lớn nhất gần đây: nơi gọi truyền từ lịch sử
+  // (fundingMaxAbsRate); không có → |funding kỳ gần nhất| (máy quét chưa tải lịch sử funding).
+  const fundingBuffer = { maxAbsRate: i.fundingMaxAbsRate ?? Math.abs(i.premium.lastFundingRate), intervalHours: i.fundingIntervalHours };
 
   // I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL, LOT_SIZE/MARKET_LOT_SIZE, MAX_NUM_ORDERS) → không hợp lệ kèm lý do
   const planFor = (side: Side) => {
-    const build = (extraCostPct: number) => buildPlan({
+    const p = buildPlan({
       mode: i.mode, side, entry: i.entry, markPrice: i.premium.markPrice, dailyAtr, capital: i.capital, riskPct,
-      costTier: costTier(i.liquidityRankPct), extraCostPct, leverageBrackets: i.leverageBrackets, tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
+      costTier: costTier(i.liquidityRankPct), quoteVolPerMin, fundingBuffer, leverageBrackets: i.leverageBrackets, tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
     });
-    const p = build(extraFor(build(0).notional));
     const problems = p.valid ? zonePlanFilterProblems(p, i.contract) : [];
     return problems.length > 0 ? invalidateZonePlan(p, `Bộ lọc sàn: ${problems.join('; ')}`) : p;
   };
@@ -272,13 +272,11 @@ export function analyze(i: AnalyzeInput): Analysis {
       }
       // Mức cắt lỗ (chữ nhật: pivot nhỏ phía trong) do patternStopLevel tính chung cho kế hoạch và máy trạng thái
       const multiMonth = context.multiMonth;
-      const buildP = (extraCostPct: number) => buildPatternPlan({
+      const res = buildPatternPlan({
         mode: i.mode, patternId: t.id, price: priceNow, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth,
-        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct), extraCostPct, leverageBrackets: i.leverageBrackets,
+        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct), quoteVolPerMin, fundingBuffer, leverageBrackets: i.leverageBrackets,
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });
-      const first = buildP(0);
-      const res = first.plan === null ? first : buildP(extraFor(first.plan.notional));
       if (res.status !== 'ready' || res.plan === null) {
         info.notes.push(`Kế hoạch mô hình: ${res.status === 'wait_confirm' ? 'chờ xác nhận' : 'bỏ'} — ${res.reason}`);
         continue;
