@@ -107,6 +107,11 @@ const list: Variant[] = [
   // #7: một giá trị N = 150 (như phạm vi Lướt nhanh, nghiên cứu "~150 hợp đồng thanh khoản nhất") — không thử thêm 100
   wired('p7-swing-top150', 7, '#7 Swing chỉ xét 150 hợp đồng thanh khoản nhất (hạng tại thời điểm) + Long cần RS 14 ngày ≥ trung vị',
     `${RESEARCH} #7 — quán tính chỉ ở coin lớn`, {}, { 'COMMON.entryRules.swingUniverseSize': 150, 'COMMON.entryRules.swingLongRsTopHalf': true }, { modes: ['swing'] }),
+  // Lần thử cuối do điều phối đăng ký trước (k → 13): ghép #4 + #7 + #5 + #8 với ĐÚNG tham số đã thử, không chỉnh lại
+  wired('combo-loc', null, 'ghép bộ lọc Swing: #4 bỏ Đi ngang + #7 top 150 & Long RS ≥ trung vị + #5 Short chặt + #8 funding phân vị 70% (tham số như đã thử)',
+    'đăng ký trước bởi điều phối sau 7 lần thử Swing đơn lẻ — một lần thử, không chỉnh tham số', {},
+    { 'COMMON.entryRules.swingTrendOnly': true, 'COMMON.entryRules.swingUniverseSize': 150, 'COMMON.entryRules.swingLongRsTopHalf': true,
+      'COMMON.entryRules.shortAsym': true, 'COMMON.entryRules.fundingXsPct': 70 }, { modes: ['swing'] }),
   wired('p8-funding-xs70', 8, '#8 lọc funding mặt cắt ngang: Long khi phân vị funding TB 7 ngày ≤ 70%, Short khi ≥ 70%',
     `${RESEARCH} #8 — basis/carry là tín hiệu mặt cắt ngang`, {}, { 'COMMON.entryRules.fundingXsPct': 70 }, { modes: ['swing'] }),
 ];

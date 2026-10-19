@@ -523,3 +523,15 @@ test('#3 không TP1: mặc định từ chối; bật + đóng 1D phá đỉnh D
     assert.equal(planOrders(input(noTp1('short'), { breakout: { closeAboveDonchian: true } })).allowed, false, 'chỉ Long');
   });
 });
+
+test('COMMON.bot.modes: mặc định bot giao dịch cả Swing lẫn Lướt nhanh; bỏ "fast" → planner từ chối mọi lệnh Lướt nhanh, Swing vẫn vào', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  assert.deepEqual(COMMON.bot.modes, ['swing', 'fast']);
+  const plan = mkPlan('long', 'market', false);
+  await withConfigOverride({ 'COMMON.bot.modes': ['swing'] }, async () => {
+    const r = planOrders(input(plan, { mode: 'fast' }));
+    assert.equal(r.allowed, false);
+    assert.match(r.reasons.join(' '), /chế độ fast đang tắt/);
+    assert.equal(planOrders(input(plan)).allowed, true);
+  });
+});

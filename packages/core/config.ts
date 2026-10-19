@@ -242,6 +242,9 @@ export const COMMON = {
     minFlowShare: 0.7, // tiêu chí 6: điểm S-02 (dòng tiền taker) ≥ mức này × điểm tối đa của S-02 — đề xuất, chưa backtest
     coilLookbackBars: 6, // tiêu chí 6: coil bật ở một nến 4H trong số nến này (không kể nến cuối) và nến cuối đóng ra ngoài biên của chúng theo chiều lệnh = "vừa bung" — xấp xỉ, đề xuất, chưa backtest
   },
+  // Chế độ bot được phép giao dịch (planner từ chối chế độ không có trong danh sách). Mặc định cả hai = hành vi hiện tại. Task 8: Lướt nhanh âm
+  // ở mọi cấu hình trên kỳ D → muốn tắt cho bot thì đặt ['swing'] (người dùng quyết định).
+  bot: { modes: ['swing', 'fast'] as Mode[] },
   // Luật vào lệnh MỚI thử ở Task 8 (kế hoạch 2) — reports/Nghiên cứu cải thiện lợi nhuận.md. Mặc định = hành vi hiện tại (tắt). Áp sau khi quét
   // (packages/core/entry-filters.ts → ScanResult.entryBlocks): máy quét in lý do, bot/mô phỏng không vào lệnh mới bị chặn. Đề xuất, chưa backtest.
   entryRules: {

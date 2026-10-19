@@ -120,6 +120,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // ---- 1. Tín hiệu và kế hoạch -----------------------------------------------------------------
   const p = i.plan;
   if (i.signal === null) return reject('Không có tín hiệu (signal = null) — không vào lệnh');
+  if (!COMMON.bot.modes.includes(i.mode)) return reject(`Bot: chế độ ${i.mode} đang tắt (COMMON.bot.modes = ${COMMON.bot.modes.join(', ')})`);
   if (i.grade !== 'A') problems.push(`Chỉ giao dịch tín hiệu Hạng A (tín hiệu này: ${i.grade === null ? 'chưa chấm hạng' : `Hạng ${i.grade}`})`);
   if (!i.signal.fresh) problems.push('Chỉ giao dịch tín hiệu MỚI — tín hiệu này đang giữ từ lần quét trước');
   if (!p.valid) problems.push(`Kế hoạch không hợp lệ: ${p.invalidReason ?? '(không rõ lý do)'}`);
