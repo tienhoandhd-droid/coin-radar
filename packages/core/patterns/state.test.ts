@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateState, patternId, dedupePatterns } from './state.ts';
+import { evaluateState, patternId, dedupePatterns, type StateResult } from './state.ts';
 import { detectRectangles } from './detect-range.ts';
 import { detectDoubles } from './detect-double.ts';
 import { detectTriangles } from './detect-triangle.ts';
@@ -208,7 +208,8 @@ test('patternId xác định và gồm mã, khung, loại, chỉ số 2 pivot đ
 test('dedupePatterns: trong cùng (loại, khung) cửa sổ chồng nhau chỉ giữ cái mới nhất đang armed/breakout', () => {
   const mkRec = (kind: PatternKind, tf: string, s: number, e: number, state: 'armed' | 'expired' | 'breakout') => ({
     geometry: rect({ kind, timeframe: tf, startIndex: s, endIndex: e }),
-    result: { state, breakoutIndex: null, side: null, breakoutLine: null, distanceAtr: null, retest: null, notes: [] },
+    id: `${kind}|${tf}|${s}|${e}`,
+    result: { state, breakoutIndex: null, side: null, breakoutLine: null, distanceAtr: null, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
     tag: `${kind}${tf}${s}-${e}${state}`,
   });
   const recs = [
@@ -221,6 +222,70 @@ test('dedupePatterns: trong cùng (loại, khung) cửa sổ chồng nhau chỉ 
   ];
   const kept = dedupePatterns(recs).map((r) => r.tag);
   assert.deepEqual(kept.sort(), ['double_top1d0-30armed', 'rectangle1d10-40armed', 'rectangle1d60-90breakout', 'rectangle4h0-30armed'].sort());
+});
+
+test('C1: failed vẫn được phát hiện SAU 10 nến (chạm cắt lỗ)', () => {
+  const far = (n: number) => Array.from({ length: n }, () => bar(115, 116, 114));
+  const r = run(rect({ stopRef: { up: 107, down: 106 } }), [bar(111), ...far(15), bar(112, 113, 106.5)]);
+  assert.equal(r.state, 'failed');
+});
+
+test('C1: failed sau 10 nến khi đóng quay vào trong > 0,5×A', () => {
+  const far = (n: number) => Array.from({ length: n }, () => bar(115, 116, 114));
+  const r = run(rect(), [bar(111), ...far(15), bar(108.9, 112, 108.5)]);
+  assert.equal(r.state, 'failed');
+});
+
+test('C1: retest chỉ ghi nhận trong 10 nến; sau đó chạm lại đường phá không thành retested', () => {
+  const far = (n: number) => Array.from({ length: n }, () => bar(115, 116, 114));
+  const r = run(rect(), [bar(111), ...far(11), bar(112, 113, 110.2)]);
+  assert.notEqual(r.state, 'retested');
+  assert.equal(r.retest, 'none');
+});
+
+test('C1: signalStale khi breakout/retested quá maxSignalAgeBars nến', () => {
+  const far = (n: number) => Array.from({ length: n }, () => bar(115, 116, 114));
+  const max = COMMON.patterns.maxSignalAgeBars;
+  const fresh = run(rect(), [bar(111), ...far(max)]);
+  assert.equal(fresh.state, 'breakout');
+  assert.equal(fresh.signalStale, false);
+  const old = run(rect(), [bar(111), ...far(max + 1)]);
+  assert.equal(old.state, 'breakout');
+  assert.equal(old.signalStale, true);
+});
+
+test('I2: inBreakoutWindow máy đọc được: null nếu không phải tam giác; boolean cho tam giác', () => {
+  assert.equal(run(rect(), [bar(111)]).inBreakoutWindow, null);
+  const g = rect({ kind: 'sym_triangle', upper: (i) => 110 - i / 6, lower: (i) => 100 + i / 6, startIndex: 0, endIndex: 20 });
+  assert.equal(run(g, [bar(106.6)]).inBreakoutWindow, true);
+  assert.equal(run(g, [bar(105), bar(105), bar(106.5)]).inBreakoutWindow, false);
+  assert.equal(run(g, [bar(105)]).inBreakoutWindow, null); // chưa phá
+});
+
+const ASOF = 160; // tại nến này bản phát đầu đã failed nhưng bản phát lại vẫn cho breakout (repro của review)
+test('C2: cùng patternId nhiều hình học cờ → giữ trạng thái của hình học phát ĐẦU TIÊN (failed không bị ghi đè)', () => {
+  const c = series();
+  const a = atr(c, COMMON.patterns.atrPeriod);
+  const id = 'X|1h|bear_flag|129|144';
+  const same = geometriesOf(c).map(({ g }) => g).filter((g) => patternId('X', g) === id).sort((x, y) => x.endIndex - y.endIndex);
+  assert.ok(same.length >= 3, `cần ≥3 bản phát lại cùng id, có ${same.length}`);
+  const recs = same.map((g) => ({ id, geometry: g, result: evaluateState(g, c, a, TF, ASOF) }));
+  const firstState = recs[0]!.result.state;
+  assert.equal(firstState, 'failed');
+  assert.ok(recs.some((r) => r.result.state === 'breakout'), 'repro: bản phát lại cho thấy breakout mâu thuẫn');
+  const kept = dedupePatterns(recs);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0]!.geometry.endIndex, same[0]!.endIndex);
+  assert.equal(kept[0]!.result.state, 'failed');
+});
+
+test('dedupe không để active chồng cửa sổ thay thế... xếp hạng breakout > pending > armed', () => {
+  const mk = (id: string, s: number, e: number, state: 'armed' | 'breakout_pending' | 'breakout'): { id: string; geometry: PatternGeometry; result: StateResult } => ({
+    id, geometry: rect({ startIndex: s, endIndex: e }),
+    result: { state, breakoutIndex: null, side: null, breakoutLine: null, distanceAtr: null, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
+  });
+  const kept = dedupePatterns([mk('a', 0, 30, 'breakout'), mk('b', 5, 40, 'armed'), mk('c', 6, 41, 'breakout_pending')]);
+  assert.deepEqual(kept.map((r) => r.id), ['a']);
 });
 
 // ---------- Bài kiểm bắt buộc chống look-ahead: chạy toàn bộ == chạy tăng dần ----------
@@ -253,38 +318,65 @@ function geometriesOf(c: Candle[]): { g: PatternGeometry; a: number[] }[] {
   return gs.map((g) => ({ g, a }));
 }
 
-test('chạy toàn bộ == chạy tăng dần từng nến (không look-ahead)', () => {
-  const full = series();
+// Chuỗi 2: chữ nhật, phá lên có retest nông, đi tiếp, rồi (sau > 10 nến) quay đầu thủng vùng → failed muộn.
+function series2(): Candle[] {
+  const c: Candle[] = [];
+  const push = (close: number, w = 1.5, lo = close - w) => c.push(k(close + w, lo, close, 1 + (c.length % 5) * 0.4));
+  const leg = (from: number, to: number, n: number) => { for (let i = 1; i <= n; i++) push(from + ((to - from) * i) / n); };
+  for (let i = 0; i < 20; i++) push(100);
+  for (let r = 0; r < 4; r++) { leg(100, 120, 8); leg(120, 100, 8); }
+  leg(100, 120, 8);
+  leg(120, 124, 2); // phá lên
+  push(125, 1.5, 120.2); // retest: râu chạm lại đường phá (~120) nhưng đóng ngoài
+  leg(125, 135, 6);
+  for (let i = 0; i < 14; i++) push(135 + (i % 2), 1);
+  leg(135, 112, 6); // quay đầu thủng sâu vào trong sau > 10 nến
+  for (let i = 0; i < 6; i++) push(112 + (i % 2), 1);
+  return c;
+}
+
+function checkReplay(full: Candle[], minCompared: number): Set<string> {
   const fullAtr = atr(full, COMMON.patterns.atrPeriod);
   const fullGeoms = geometriesOf(full);
-  assert.ok(fullGeoms.length >= 5, `cần đủ mô hình để kiểm, chỉ có ${fullGeoms.length}`);
-  const kinds = new Set(fullGeoms.map((x) => x.g.kind));
-  assert.ok(kinds.size >= 3, `cần ≥3 loại mô hình, có ${[...kinds].join(',')}`);
-  const seen = new Set<string>();
+  assert.ok(fullGeoms.length >= 3, `cần đủ mô hình để kiểm, chỉ có ${fullGeoms.length}`);
+  const states = new Set<string>();
   let compared = 0;
   for (let last = 30; last < full.length; last++) {
     const prefix = full.slice(0, last + 1);
     const prefixAtr = fullAtr.slice(0, last + 1);
     const incr = new Map<string, string>();
     for (const { g } of geometriesOf(prefix)) {
-      const id = `${patternId('X', g)}|${g.endIndex}`;
-      incr.set(id, JSON.stringify(evaluateState(g, prefix, prefixAtr, TF)));
+      incr.set(`${patternId('X', g)}|${g.endIndex}`, JSON.stringify(evaluateState(g, prefix, prefixAtr, TF)));
     }
     for (const { g } of fullGeoms) {
       // Hình học chỉ tồn tại khi đã đủ dữ liệu: pivot cuối xác nhận (hoặc nến e của cờ) nằm trong tiền tố.
       const known = g.kind.endsWith('flag') ? g.endIndex <= last : g.endIndex + COMMON.pivotConfirmBars <= last;
       if (!known) continue;
       const id = `${patternId('X', g)}|${g.endIndex}`;
-      const viaFull = JSON.stringify(evaluateState(g, full, fullAtr, TF, last)); // chạy trên toàn bộ chuỗi, xét tới nến `last`
+      const viaFull = evaluateState(g, full, fullAtr, TF, last); // chạy trên toàn bộ chuỗi, xét tới nến `last`
       assert.ok(incr.has(id), `tiền tố ${last} thiếu mô hình ${id} mà toàn bộ có`);
-      assert.equal(viaFull, incr.get(id), `lệch trạng thái ${id} tại nến ${last}`);
-      seen.add(id);
+      assert.equal(JSON.stringify(viaFull), incr.get(id), `lệch trạng thái ${id} tại nến ${last}`);
+      states.add(viaFull.state);
       compared++;
     }
   }
-  assert.ok(compared > 100, `quá ít phép so sánh: ${compared}`);
-  assert.ok(seen.size >= 5);
-  const states = new Set<string>();
-  for (const { g } of fullGeoms) states.add(evaluateState(g, full, fullAtr, TF).state);
-  assert.ok(states.has('breakout') || states.has('retested') || states.has('failed'), `chuỗi thử chưa có phá vỡ: ${[...states].join(',')}`);
+  assert.ok(compared > minCompared, `quá ít phép so sánh: ${compared}`);
+  return states;
+}
+
+test('chạy toàn bộ == chạy tăng dần từng nến (không look-ahead), phủ mọi trạng thái', () => {
+  const s1 = checkReplay(series(), 100);
+  const s2 = checkReplay(series2(), 50);
+  const all = new Set([...s1, ...s2]);
+  for (const st of ['armed', 'breakout_pending', 'breakout', 'retested', 'failed', 'expired', 'invalidated']) {
+    assert.ok(all.has(st), `bài replay chưa phủ trạng thái ${st}; có: ${[...all].join(',')}`);
+  }
+});
+
+test('series2 có failed muộn (> 10 nến sau phá) và retested', () => {
+  const full = series2();
+  const a = atr(full, COMMON.patterns.atrPeriod);
+  const rs = geometriesOf(full).map(({ g }) => ({ g, r: evaluateState(g, full, a, TF) }));
+  assert.ok(rs.some(({ r }) => r.state === 'failed' && r.breakoutIndex !== null && full.length - 1 - r.breakoutIndex > COMMON.patterns.state.retestBars));
+  assert.ok(rs.some(({ g }) => { for (let t = 30; t < full.length; t++) if (evaluateState(g, full, a, TF, t).state === 'retested') return true; return false; }));
 });

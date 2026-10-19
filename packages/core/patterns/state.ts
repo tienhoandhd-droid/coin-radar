@@ -12,6 +12,8 @@ export type StateResult = {
   distanceAtr: number | null; // khoảng cách đóng cửa nến cuối so với đường phá (×A), dương = ngoài mô hình
   retest: 'none' | 'yes' | null;
   notes: string[];
+  signalStale: boolean; // breakout/retested đã cũ hơn COMMON.patterns.maxSignalAgeBars nến → không lập kế hoạch lệnh
+  inBreakoutWindow: boolean | null; // tam giác: phá trong 50–80% quãng tới apex (điều kiện dùng); null nếu không phải tam giác hoặc chưa phá
 };
 
 // Định danh ổn định, xác định (không cần thư viện hash): mã | khung | loại | chỉ số nến của 2 pivot đầu.
@@ -49,7 +51,7 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
   const flag = isFlag(g);
   const armedFrom = flag ? g.endIndex : g.endIndex + COMMON.pivotConfirmBars;
   const out = (state: PatternState, extra: Partial<StateResult> = {}): StateResult => ({
-    state, breakoutIndex: null, side: null, breakoutLine: null, distanceAtr: null, retest: null, notes: [], ...extra,
+    state, breakoutIndex: null, side: null, breakoutLine: null, distanceAtr: null, retest: null, notes: [], signalStale: false, inBreakoutWindow: null, ...extra,
   });
   if (last < armedFrom) return out('forming');
 
@@ -103,23 +105,26 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
       continue;
     }
     // --- giai đoạn sau phá vỡ ---
-    const age = i - bi;
-    if (age > cfg.retestBars) break; // hết cửa sổ theo dõi
+    // Thất bại (đóng quay vào > failAtr×A hoặc chạm cắt lỗ) được kiểm ở MỌI nến sau phá; chỉ retest bị giới hạn retestBars nến.
     const line = lineOf(side, i);
     const inside = -outside(side, i); // dương = đóng quay vào trong
     const stop = side === 'up' ? g.stopRef.up : g.stopRef.down;
     const hitStop = side === 'up' ? c[i]!.low <= stop : c[i]!.high >= stop;
     if (inside > cfg.failAtr * a || hitStop) {
-      return out('failed', { breakoutIndex: bi, side, breakoutLine: lineOf(side, bi), notes: breakoutNotes() });
+      return out('failed', { breakoutIndex: bi, side, breakoutLine: lineOf(side, bi), notes: breakoutNotes(), inBreakoutWindow: windowOk() });
     }
-    const wickDist = side === 'up' ? c[i]!.low - line : line - c[i]!.high; // râu chạm lại: <= retestAtr×A
-    if (!retested && wickDist <= cfg.retestAtr * a && outside(side, i) > 0) retested = true;
+    if (!retested && i - bi <= cfg.retestBars) {
+      const wickDist = side === 'up' ? c[i]!.low - line : line - c[i]!.high; // râu chạm lại: <= retestAtr×A
+      if (wickDist <= cfg.retestAtr * a && outside(side, i) > 0) retested = true;
+    }
   }
 
   if (pending !== null) return out('breakout_pending', { side: pending, distanceAtr: outside(pending, last) / atrAt(last) });
   if (side === null) return out('armed');
   const done = last - bi >= cfg.retestBars;
   return out(retested ? 'retested' : 'breakout', {
+    signalStale: last - bi > COMMON.patterns.maxSignalAgeBars,
+    inBreakoutWindow: windowOk(),
     breakoutIndex: bi,
     side,
     breakoutLine: lineOf(side, bi),
@@ -127,6 +132,12 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
     retest: retested ? 'yes' : done ? 'none' : null,
     notes: breakoutNotes(),
   });
+
+  function windowOk(): boolean | null {
+    if (apex === null || bi < 0) return null;
+    const frac = (bi - g.startIndex) / (apex - g.startIndex);
+    return frac >= cfg.triangleWindow.min - EPS && frac <= cfg.triangleWindow.max + EPS;
+  }
 
   function breakoutNotes(): string[] {
     const n = [...notes];
@@ -137,23 +148,27 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
       for (let j = bi - p; j < bi; j++) sum += c[j]!.volume;
       if (c[bi]!.volume >= cfg.volumeMult * (sum / p)) n.push('volume nến phá cao: dự kiến retest cao');
     }
-    if (apex !== null) {
-      const frac = (bi - g.startIndex) / (apex - g.startIndex);
-      if (frac < cfg.triangleWindow.min - EPS || frac > cfg.triangleWindow.max + EPS) {
-        n.push(`phá ngoài cửa sổ ${cfg.triangleWindow.min * 100}–${cfg.triangleWindow.max * 100}% quãng tới apex`);
-      }
-    }
+    if (windowOk() === false) n.push(`phá ngoài cửa sổ ${cfg.triangleWindow.min * 100}–${cfg.triangleWindow.max * 100}% quãng tới apex`);
     return n;
   }
 }
 
-const ACTIVE: PatternState[] = ['armed', 'breakout_pending', 'breakout', 'retested'];
+// Thứ hạng ưu tiên: đang có lệnh (breakout/retested) > chờ xác nhận > armed > còn lại (kết thúc/forming).
+const RANK: Record<PatternState, number> = {
+  retested: 3, breakout: 3, breakout_pending: 2, armed: 1, forming: 0, failed: 0, expired: 0, invalidated: 0,
+};
 
-// Mỗi (loại, khung) chỉ giữ một mô hình trong các cửa sổ chồng nhau: ưu tiên đang hoạt động
-// (armed/pending/breakout/retested), rồi đến cái kết thúc muộn nhất, rồi bắt đầu muộn nhất.
-export function dedupePatterns<T extends { geometry: PatternGeometry; result: StateResult }>(items: T[]): T[] {
-  const rank = (t: T) => (ACTIVE.includes(t.result.state) ? 1 : 0);
-  const sorted = [...items].sort(
+// Bước 1: cùng id (patternId) → chỉ giữ bản hình học phát ĐẦU TIÊN (endIndex nhỏ nhất); các bản phát lại sau (vd. cờ vẽ lại
+// ở nến sau) không được ghi đè hay làm sống lại trạng thái đã kết thúc. Người gọi phải tính `result` từ chính hình học đó.
+// Bước 2: mỗi (loại, khung) chỉ giữ một mô hình trong các cửa sổ chồng nhau: ưu tiên hạng cao, rồi kết thúc muộn nhất, rồi bắt đầu muộn nhất.
+export function dedupePatterns<T extends { id: string; geometry: PatternGeometry; result: StateResult }>(items: T[]): T[] {
+  const firstById = new Map<string, T>();
+  for (const t of items) {
+    const prev = firstById.get(t.id);
+    if (!prev || t.geometry.endIndex < prev.geometry.endIndex) firstById.set(t.id, t);
+  }
+  const rank = (t: T) => RANK[t.result.state] - (t.result.signalStale ? 3 : 0);
+  const sorted = [...firstById.values()].sort(
     (x, y) => rank(y) - rank(x) || y.geometry.endIndex - x.geometry.endIndex || y.geometry.startIndex - x.geometry.startIndex,
   );
   const kept: T[] = [];
