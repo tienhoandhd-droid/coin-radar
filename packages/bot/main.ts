@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '../binance/client.ts';
 import { createSigned, hmacSigner, loadCredentials, nodeFetch, type RequestOpts, type SignedResult } from '../binance/signed.ts';
 import { createOrders } from '../binance/orders.ts';
+import { withConfigOverride } from '../core/config-override.ts';
 import { createMarketStream, createUserStream, createListenKeyApi, type MarketEvent, type MarkPrice, type UserEvent } from '../binance/stream.ts';
 import { parseBookTickers, parseContracts, parseFundingInfo, parseKlines, parseLeverageBrackets, parsePremium, parseTickers } from '../binance/parse.ts';
 import { CONFIG, COMMON } from '../core/config.ts';
@@ -82,7 +83,8 @@ export type BotDeps = {
   now(): number;
   sleep(ms: number): Promise<void>;
   log(msg: string): void;
-  publicGet(path: string): Promise<unknown>; // REST công khai (client.get)
+  publicGet(path: string): Promise<unknown>; // REST công khai (client.get) — quét
+  publicGetBot?: (path: string) => Promise<unknown>; // REST công khai bằng ngân sách ưu tiên của bot (đối chiếu, mốc nến, giá mark); vắng = publicGet
   api: Api; // paper: sàn giả lập; demo/live: REST có ký
   syncClock(): Promise<number>; // lệch giờ server − máy (ms)
   paper: PaperLike | null;
@@ -125,6 +127,7 @@ export function createBot(deps: BotDeps) {
   const traceLog: string[] = [];
   const trace = (s: string) => { traceLog.push(s); if (traceLog.length > 5000) traceLog.splice(0, 1000); };
   const log = (m: string) => deps.log(m);
+  const botGet = (path: string) => (deps.publicGetBot ?? deps.publicGet)(path);
 
   let contracts = new Map<string, Contract>();
   let filters: Record<string, Contract> = {};
@@ -136,6 +139,11 @@ export function createBot(deps: BotDeps) {
   const pinned = new Set<string>(); // mã ứng viên đang chờ vào lệnh — giữ trong luồng theo dõi
   const lastProcessed = new Map<string, number>(); // khoảng nến → closeTime nến quyết định đã xử lý
   const nextFunding = new Map<string, number>();
+  // Chốt chặn funding: kỳ chốt chưa kiểm xong (lỗi) → giữ, thử lại lượt sau; lỗi kéo dài → KHẨN + chặn vào lệnh mới mã đó
+  const fundingFail = new Map<string, { settlement: number; attempts: number; alerted: boolean }>();
+  const fundingBlocked = new Set<string>();
+  const slLatencyLogged = new Set<string>();
+  let startedAt = 0;
   const blocked = new Set<string>(); // mã reconcile yêu cầu khóa (vị thế lạ/mơ hồ)
   const recentAlerts = new Map<string, number>();
   let lastFetched: FetchedState | null = null;
@@ -234,7 +242,7 @@ export function createBot(deps: BotDeps) {
     const s = streamFor(symbol);
     const m = s?.latestMark(symbol) ?? null;
     if (s !== null && m !== null && !s.isMarkStale(symbol)) return m.price;
-    const raw = await deps.publicGet(`/fapi/v1/premiumIndex?symbol=${symbol}`);
+    const raw = await botGet(`/fapi/v1/premiumIndex?symbol=${symbol}`);
     const p = parsePremium(Array.isArray(raw) ? raw : [raw])[0];
     if (p === undefined || !(p.markPrice > 0)) throw new Error(`không lấy được giá mark ${symbol}`);
     if (p.nextFundingTime > 0 && !nextFunding.has(symbol)) nextFunding.set(symbol, p.nextFundingTime);
@@ -244,7 +252,7 @@ export function createBot(deps: BotDeps) {
   // Giờ chốt funding kế tiếp của mã (premiumIndex) — mốc cho chốt chặn funding
   async function loadNextFunding(symbol: string): Promise<void> {
     try {
-      const raw = await deps.publicGet(`/fapi/v1/premiumIndex?symbol=${symbol}`);
+      const raw = await botGet(`/fapi/v1/premiumIndex?symbol=${symbol}`);
       const p = parsePremium(Array.isArray(raw) ? raw : [raw])[0];
       if (p !== undefined && p.nextFundingTime > 0) nextFunding.set(symbol, p.nextFundingTime);
     } catch (e) {
@@ -305,10 +313,24 @@ export function createBot(deps: BotDeps) {
     }
     log(`Đối chiếu #${pass} (${label}): vị thế ${f.ex.positions.length}, lệnh theo dõi ${active.length}, hành động ${work}, đã làm ${rep.done}${rep.unprotected.length > 0 ? `, CHƯA BẢO VỆ: ${rep.unprotected.join(', ')}` : ''} | vốn ${f.equity.toFixed(2)} USDT`);
     for (const t of active) if (!nextFunding.has(t.symbol) && f.ex.positions.some((p) => p.symbol === t.symbol)) await loadNextFunding(t.symbol);
+    logStopLatency();
     await afterPass(f);
     await updateWatch();
     journal.maybeSnapshot();
     return rep;
+  }
+
+  // Độ trễ khớp vào → SL được sàn nhận (đo ở cuối lượt đối chiếu đã đặt SL; cận trên) — đo được ngân sách postFillStopBudgetMs
+  function logStopLatency(): void {
+    for (const t of activeTrades()) {
+      if (slLatencyLogged.has(t.signalId) || t.createdAt < startedAt || t.legs.SL?.status !== 'open') continue;
+      const first = t.fills.filter((x) => x.role === 'E1' || x.role === 'E2').reduce((m, x) => Math.min(m, x.time), Infinity);
+      if (!Number.isFinite(first)) continue;
+      slLatencyLogged.add(t.signalId);
+      const ms = Math.max(0, deps.now() - first);
+      log(`khớp→SL ${t.symbol}: ${ms} ms (ngân sách ${COMMON.bot.postFillStopBudgetMs} ms)`);
+      journal.append({ type: 'note', text: `khớp→SL ${t.symbol} ${t.signalId}: ${ms} ms` });
+    }
   }
 
   // Sau mỗi lượt: kết quả lệnh vừa đóng (userTrades/income), đỉnh vốn + vốn đầu ngày UTC, cầu chì, tóm tắt ngày
@@ -357,7 +379,13 @@ export function createBot(deps: BotDeps) {
   }
 
   // ---- Luồng theo dõi: mã có lệnh/vị thế/lệnh mở + ứng viên đang chờ vào ----
-  async function updateWatch(): Promise<void> {
+  let watchChain: Promise<void> = Promise.resolve();
+  function updateWatch(): Promise<void> {
+    const p = watchChain.then(updateWatchNow, updateWatchNow);
+    watchChain = p.catch((e: unknown) => log(`Luồng theo dõi lỗi: ${errText(e)}`));
+    return watchChain;
+  }
+  async function updateWatchNow(): Promise<void> {
     if (!started || stopping) return;
     const want = new Set<string>([...activeTrades().map((t) => t.symbol), ...pinned]);
     for (const p of lastFetched?.ex.positions ?? []) want.add(p.symbol);
@@ -379,7 +407,7 @@ export function createBot(deps: BotDeps) {
   }
 
   async function lastClosedRest(symbol: string, interval: string): Promise<Candle | null> {
-    const rows = parseKlines(await deps.publicGet(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=3`), deps.now());
+    const rows = parseKlines(await botGet(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=3`), deps.now());
     return rows[rows.length - 1] ?? null;
   }
   async function seedFromRest(s: MarketStreamLike, symbol: string, interval: string): Promise<number | null> {
@@ -416,7 +444,7 @@ export function createBot(deps: BotDeps) {
   async function backfill(source: 'trigger' | 'watch', symbol: string, interval: string, from: number): Promise<void> {
     log(`Luồng ${source} báo hụt nến ${symbol} ${interval} từ ${new Date(from).toISOString()} — nạp bù qua REST`);
     try {
-      const rows = parseKlines(await deps.publicGet(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&startTime=${from}&limit=1000`), deps.now());
+      const rows = parseKlines(await botGet(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&startTime=${from}&limit=1000`), deps.now());
       if (deps.paper !== null && source === 'watch') for (const c of rows) feedPaperKline(symbol, c);
     } catch (e) {
       log(`Nạp bù nến ${symbol} ${interval} lỗi: ${errText(e)}`);
@@ -425,11 +453,22 @@ export function createBot(deps: BotDeps) {
   }
 
   // ---- Quyết định mỗi nến khung vào lệnh ----
-  async function decide(interval: string, closeTime: number): Promise<void> {
+  // Quyết định chạy LẦN LƯỢT (mốc 4H: Lướt nhanh rồi Swing hoặc ngược lại, không quét đồng thời trên cùng ngân sách IP)
+  let decisionChain: Promise<void> = Promise.resolve();
+  function decide(interval: string, closeTime: number): Promise<void> {
     lastProcessed.set(interval, closeTime);
+    decisionChain = decisionChain.then(() => decideNow(interval, closeTime));
+    return decisionChain;
+  }
+  const fundingGuardHealthy = () => fundingBlocked.size === 0;
+  async function decideNow(interval: string, closeTime: number): Promise<void> {
     for (const m of intervals.get(interval) ?? []) {
       try {
-        await runDecision(m, closeTime);
+        // F1: đệm 'expected' chỉ an toàn khi chốt chặn funding đang chạy ĐƯỢC → chốt chặn hỏng thì lần quét/vào lệnh này dùng 'max'
+        if (COMMON.risk.fundingBufferHorizon === 'expected' && !fundingGuardHealthy()) {
+          log(`Chốt chặn funding đang lỗi (${[...fundingBlocked].join(', ')}) — quét ${m} dùng đệm funding "max" thay cho "expected"`);
+          await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'max' }, () => runDecision(m, closeTime));
+        } else await runDecision(m, closeTime);
       } catch (e) {
         lastError = `quét ${m}: ${errText(e)}`;
         log(`LỖI ${lastError}`);
@@ -478,14 +517,21 @@ export function createBot(deps: BotDeps) {
       if (p === null || a.signal === null) continue;
       const why = !a.signal.fresh ? 'không MỚI' : a.grade?.grade !== 'A' ? 'không phải Hạng A' : scan.entryBlocks.has(a.symbol) ? `luật vào lệnh: ${scan.entryBlocks.get(a.symbol)}`
         : journal.hasSignal(a.signal.id) ? 'tín hiệu đã nhận trước đó' : activeTrades().some((t) => t.symbol === a.symbol) || lastFetched?.ex.positions.some((x) => x.symbol === a.symbol) ? 'mã đang có lệnh/vị thế'
-          : blocked.has(a.symbol) ? 'mã đang bị khóa (vị thế lạ)' : null;
+          : blocked.has(a.symbol) ? 'mã đang bị khóa (vị thế lạ)' : fundingBlocked.has(a.symbol) ? 'chốt chặn funding của mã đang lỗi' : null;
       if (why !== null) { log(`${a.symbol} ${mode}: bỏ qua — ${why}`); continue; }
       picks.push({ a, plan: p });
     }
     if (picks.length === 0 || stopping) return;
-    await serial(`vào lệnh ${mode}`, async () => {
-      for (const pk of picks) await tryEntry(mode, pk.a, pk.plan, scan, capital);
-    });
+    // Chuẩn bị (chờ dữ liệu mới, REST, planner) NGOÀI hàng đợi đối chiếu; chỉ đoạn gửi lệnh nằm trong hàng đợi (tryEntry)
+    for (const pk of picks) {
+      try {
+        await tryEntry(mode, pk.a, pk.plan, scan, capital);
+      } catch (e) {
+        lastError = `vào lệnh ${pk.a.symbol}: ${errText(e)}`;
+        log(`LỖI ${lastError}`);
+        if (BAN_RE.test(errText(e))) setBanned(lastError);
+      }
+    }
   }
 
   async function fundingHistory(symbol: string, now: number): Promise<Array<{ fundingTime: number; fundingRate: number; markPrice: number }>> {
@@ -573,6 +619,23 @@ export function createBot(deps: BotDeps) {
         ...(breakout !== undefined ? { breakout } : {}),
       });
       if (!pr.allowed || pr.sizing === null) { trace(`entry:planner ${sym}`); log(`${sym} ${mode}: planner từ chối — ${pr.reasons.join('; ')}`); return; }
+      await serial(`vào lệnh ${sym}`, () => placeEntry(mode, a, p, pr, capital, tier, vol1m));
+    } finally {
+      pinned.delete(sym);
+    }
+  }
+
+  // Đoạn gửi lệnh (trong hàng đợi tuần tự): kiểm lại → ISOLATED + đòn bẩy → nhận tín hiệu → lệnh vào → đối chiếu ngay
+  async function placeEntry(mode: Mode, a: Analysis, p: PlannerPlan, pr: ReturnType<typeof planOrders>, capital: number, tier: keyof typeof COMMON.costRoundTripPct, vol1m: number): Promise<void> {
+    const sym = a.symbol;
+    const sid = a.signal!.id;
+    const now = deps.now();
+    if (pr.sizing === null) return;
+    // /dung có thể tới trong lúc chờ dữ liệu mới / REST → kiểm lại NGAY trước khi gửi
+    if (stopping) { log(`${sym} ${mode}: bot đang tắt — không vào lệnh`); return; }
+    if (tg.isPaused()) { trace(`entry:paused-late ${sym}`); log(`${sym} ${mode}: KHÔNG vào lệnh — người dùng vừa tạm dừng (/dung)`); return; }
+    if (journal.hasSignal(sid) || activeTrades().some((t) => t.symbol === sym) || fundingBlocked.has(sym)) { log(`${sym} ${mode}: mã vừa có lệnh/bị chặn — không vào lệnh`); return; }
+    {
       // R12: ISOLATED + đòn bẩy cho cặp trước khi vào lệnh
       const mt = await orders.setMarginTypeIsolated(sym);
       if (mt.kind !== 'ok') { notify({ level: 'warn', symbol: sym, text: `${sym}: không đặt được ISOLATED (${mt.kind} ${mt.msg}) — bỏ lệnh` }); return; }
@@ -601,27 +664,50 @@ export function createBot(deps: BotDeps) {
       const msg = tgAlerts.entryPlaced({ symbol: sym, side: p.side, entry: s.worstEntry, stop: trade.plan.stop, tp1: trade.plan.tp1, qty: s.qty, riskUsdt: s.riskAmount });
       notify({ level: msg.level, symbol: sym, text: msg.text });
       await reconcileLoop(['sau vào lệnh']); // R2: khớp → SL lên sàn NGAY
-    } finally {
-      pinned.delete(sym);
     }
   }
 
   // ---- Funding: chốt chặn khi chạy sau mỗi kỳ chốt (nghĩa vụ B8b) ----
   async function fundingChecks(force: boolean): Promise<void> {
     const now = deps.now();
+    const live = new Set(activeTrades().map((t) => t.symbol));
+    for (const sym of [...fundingBlocked]) if (!live.has(sym)) { fundingBlocked.delete(sym); fundingFail.delete(sym); } // lệnh đã đóng
     for (const t of activeTrades()) {
       const nft = nextFunding.get(t.symbol);
       if (!force && (nft === undefined || now < nft + FUNDING_SETTLE_DELAY_MS)) continue;
       if (!(lastFetched?.ex.positions.some((p) => p.symbol === t.symbol) ?? false)) continue;
-      await serial(`funding ${t.symbol}`, () => fundingCheck(t.signalId));
-      nextFunding.delete(t.symbol);
-      await loadNextFunding(t.symbol); // giờ chốt kế tiếp
+      let ok = false;
+      const errBefore = lastError;
+      await serial(`funding ${t.symbol}`, async () => { ok = await fundingCheck(t.signalId); }); // ném lỗi → serial ghi lastError, ok = false
+      if (ok) {
+        // Chỉ khi kiểm XONG mới bỏ mốc kỳ chốt này và nạp kỳ kế tiếp
+        fundingFail.delete(t.symbol);
+        if (fundingBlocked.delete(t.symbol)) notify({ level: 'info', symbol: t.symbol, text: `${t.symbol}: chốt chặn funding chạy lại được — bỏ chặn vào lệnh mới` });
+        nextFunding.delete(t.symbol);
+        await loadNextFunding(t.symbol);
+        continue;
+      }
+      const why = lastError !== errBefore && lastError !== null ? lastError : 'không đọc được trạng thái sàn';
+      const settlement = nft ?? now;
+      const rec = fundingFail.get(t.symbol) ?? { settlement, attempts: 0, alerted: false };
+      rec.attempts++;
+      fundingFail.set(t.symbol, rec);
+      if (nft === undefined) nextFunding.set(t.symbol, now - FUNDING_SETTLE_DELAY_MS); // kiểm lúc khởi động lỗi → thử lại ở lượt định kỳ sau
+      trace(`funding:${t.symbol} failed`);
+      log(`Chốt chặn funding ${t.symbol} lỗi lần ${rec.attempts} (kỳ chốt ${new Date(rec.settlement).toISOString()}): ${why} — giữ kỳ chốt, thử lại ở lượt định kỳ sau`);
+      const late = now - rec.settlement > COMMON.bot.fundingGuardMaxDelayMs;
+      if (!rec.alerted && (rec.attempts > COMMON.bot.fundingGuardMaxAttempts || late)) {
+        rec.alerted = true;
+        fundingBlocked.add(t.symbol);
+        notify({ level: 'urgent', symbol: t.symbol, text: `KHẨN chốt chặn funding ${t.symbol} không chạy được: ${why} (${rec.attempts} lần, ${Math.round((now - rec.settlement) / 60_000)} phút sau giờ chốt) — chặn vào lệnh mới mã này; đệm "expected" tạm thay bằng "max"; lệnh dừng trên sàn vẫn giữ` });
+      }
     }
   }
 
-  async function fundingCheck(signalId: string): Promise<void> {
+  // true = đã kiểm xong (kể cả không còn vị thế); false = không kiểm được (giữ kỳ chốt, thử lại)
+  async function fundingCheck(signalId: string): Promise<boolean> {
     const t = journal.state().trades[signalId];
-    if (t === undefined || t.status === 'closed') return;
+    if (t === undefined || t.status === 'closed') return true;
     const sym = t.symbol;
     const now = deps.now();
     trace(`funding:${sym} check`);
@@ -630,11 +716,11 @@ export function createBot(deps: BotDeps) {
       for (const r of await fundingHistory(sym, now)) if (r.fundingTime >= t.createdAt && r.fundingTime <= now) deps.paper.feedFunding({ symbol: sym, ...r });
     }
     const f = await fetchState([sym]);
-    if (f === null) return;
+    if (f === null) return false;
     lastFetched = f;
     const pos = f.ex.positions.find((p) => p.symbol === sym);
     const contract = contracts.get(sym);
-    if (pos === undefined || contract === undefined) return;
+    if (pos === undefined || contract === undefined) return true;
     const rows = await fetchTradeHistory(deps.api, sym, t.createdAt, now);
     const income = parseIncome(await getOk(deps.api, '/fapi/v1/income', { symbol: sym, incomeType: 'FUNDING_FEE', startTime: t.createdAt, endTime: now, limit: 1000 }))
       .filter((r) => r.symbol === sym && r.time >= t.createdAt).reduce((s, r) => s + r.income, 0);
@@ -646,10 +732,11 @@ export function createBot(deps: BotDeps) {
     trace(`funding:${sym} ${run.result.action}`);
     log(`Chốt chặn funding ${sym}: đã mất ${run.lockedLoss.toFixed(2)} USDT (phí + funding ${income.toFixed(2)}), lỗ nếu chạm dừng ${Number.isFinite(run.stopUsed) ? run.stopUsed : '(trailing)'} = ${run.lossBefore.toFixed(2)} / ngân sách ${run.budget.toFixed(2)} → ${run.result.action}${run.result.action === 'tighten' ? ` SL ${run.result.stop}` : ''}`);
     for (const ev of run.journal) journal.append(ev);
-    if (run.actions.length === 0) return;
+    if (run.actions.length === 0) return true;
     const rep = await executeActions(run.actions, execCtx(f.ex.positions));
     if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
     await reconcileLoop(['sau chốt chặn funding']);
+    return true;
   }
 
   // Nến quyết định chưa tới qua luồng (luồng chết im lặng) → lấy bằng REST
@@ -701,6 +788,7 @@ export function createBot(deps: BotDeps) {
   // ---- Khởi động ----
   async function start(): Promise<void> {
     const step = (s: string) => trace(`step:${s}`);
+    startedAt = deps.now();
     step('clock');
     const off = await deps.syncClock();
     if (Math.abs(off) > MAX_SKEW_MS) {
@@ -814,8 +902,23 @@ export function createBot(deps: BotDeps) {
           }
         }
         if (actions.length > 0) await executeActions(actions, execCtx(f.ex.positions));
-        const pos = f.ex.positions.map((p) => `${p.symbol} ${p.positionAmt}`).join(', ');
-        notify({ level: 'info', symbol: null, text: `Bot tắt — đã hủy ${actions.length} lệnh vào còn treo; vị thế còn mở: ${pos || 'không'}${pos ? ' (đều có lệnh dừng trên sàn)' : ''}` });
+        // Kiểm THẬT từng vị thế: lệnh dừng trên sàn (STOP_MARKET closePosition, hoặc tổng dừng reduce-only + trailing ĐÃ kích hoạt ≥ vị thế)
+        // và dấu "chưa bảo vệ" trong nhật ký — không bao giờ báo "đều có SL" khi chưa kiểm
+        const lines: string[] = [];
+        let bad = 0;
+        for (const p of f.ex.positions) {
+          const qty = Math.abs(p.positionAmt);
+          const algos = f.ex.openAlgoOrders.filter((o) => o.symbol === p.symbol);
+          const trActive = Object.values(st.trades).some((t) => t.symbol === p.symbol && t.status !== 'closed' && t.trailingActivated);
+          const cover = algos.reduce((sum, o) => sum + (o.orderType === 'STOP_MARKET' || (o.orderType === 'TRAILING_STOP_MARKET' && trActive) ? o.quantity : 0), 0);
+          const ok = st.unprotected[p.symbol] === undefined && (algos.some((o) => o.orderType === 'STOP_MARKET' && o.closePosition) || cover >= qty * (1 - 1e-9));
+          if (!ok) bad++;
+          lines.push(`${p.symbol} ${p.positionAmt}: ${ok ? 'có SL' : 'KHÔNG có SL'}`);
+        }
+        notify({
+          level: bad > 0 ? 'urgent' : 'info', symbol: null,
+          text: `${bad > 0 ? 'KHẨN ' : ''}Bot tắt — đã hủy ${actions.length} lệnh vào còn treo; vị thế còn mở: ${lines.length > 0 ? lines.join('; ') : 'không'}${bad > 0 ? ` — ${bad} vị thế KHÔNG có lệnh dừng trên sàn, xử lý tay NGAY` : ''}`,
+        });
       }
     } finally {
       trigger?.stop();
@@ -834,18 +937,22 @@ export function createBot(deps: BotDeps) {
     notify: (a: { level: AlertLevel; symbol: string | null; text: string }) => notify(a),
     trace: () => [...traceLog],
     status,
+    fundingGuardHealthy,
+    entryBlockedSymbols: () => [...fundingBlocked].sort(),
   };
 }
 
 // =================================================================================================================
 // CLI: `node packages/bot/main.ts` (systemd: deploy/coin-radar-bot.service). Cấu hình trong .env (quyền 600) — docs/runbook-bot.md.
 // =================================================================================================================
+let cliSecrets: string[] = []; // secret đọc từ .env (không nằm trong process.env khi chạy tay) — che cả trong thông báo lỗi dừng bot
 async function cli(): Promise<void> {
   const root = fileURLToPath(new URL('../..', import.meta.url));
   const envPath = process.env.BOT_ENV_FILE ?? join(root, '.env');
   const file = readEnvFile(envPath);
   const env: Record<string, string | undefined> = { ...file.vars, ...process.env };
   const secrets = [env.BINANCE_API_KEY, env.BINANCE_API_SECRET, env.TELEGRAM_BOT_TOKEN].filter((x): x is string => typeof x === 'string' && x !== '');
+  cliSecrets = secrets;
   const log = (m: string) => console.log(`${new Date().toISOString()} ${scrubText(m, secrets)}`);
   const settings = botSettings(env);
   log(`Coin Radar bot — ${describeSettings(settings, env)}${file.exists ? '' : ' | không có tệp .env (dùng biến môi trường)'}`);
@@ -902,6 +1009,12 @@ async function cli(): Promise<void> {
     mode: rm.mode, liveCaps: rm.mode === 'live' ? rm.caps : null, runId, now: Date.now,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)), log,
     publicGet: (p) => client.get(p), api, syncClock, paper,
+    // Đối chiếu/mốc nến/giá mark: ngân sách ưu tiên 'bot' của client (trần 2200 thay vì 1800 của máy quét)
+    publicGetBot: async (p) => {
+      const res = await client.send(p, undefined, 'bot');
+      if (res.status !== 200) throw new Error(`Binance HTTP ${res.status} tại ${p}`);
+      return res.json();
+    },
     setPaperCost: (s, c) => paperCosts.set(s, c),
     createUserStream: createUser,
     createMarketStream: (o) => createMarketStream({ ...o, log, base: wsBase }),
@@ -933,7 +1046,7 @@ async function cli(): Promise<void> {
 
 if (process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   cli().catch((e: unknown) => {
-    console.error(`${new Date().toISOString()} Bot dừng vì lỗi: ${scrubText(errText(e), [process.env.BINANCE_API_KEY ?? '', process.env.BINANCE_API_SECRET ?? '', process.env.TELEGRAM_BOT_TOKEN ?? ''].filter((x) => x !== ''))}`);
+    console.error(`${new Date().toISOString()} Bot dừng vì lỗi: ${scrubText(errText(e), [...cliSecrets, process.env.BINANCE_API_KEY ?? '', process.env.BINANCE_API_SECRET ?? '', process.env.TELEGRAM_BOT_TOKEN ?? ''].filter((x) => x !== ''))}`);
     process.exit(1);
   });
 }

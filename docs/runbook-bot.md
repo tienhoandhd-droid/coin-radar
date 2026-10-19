@@ -35,7 +35,12 @@ npm test && npm run typecheck
 cp .env.example .env && chmod 600 .env   # BẮT BUỘC quyền 600
 ```
 
-Nội dung `.env` (mọi biến):
+Bot tự đọc `~/coin-radar/.env` (kể cả khi chạy bằng systemd — dịch vụ không dùng `EnvironmentFile`). Cú pháp được hỗ trợ (tập con,
+cố ý đơn giản): mỗi dòng `KEY=VALUE`; dòng trống và dòng bắt đầu bằng `#` bị bỏ qua; được phép tiền tố `export `; giá trị bỏ khoảng
+trắng hai đầu và bỏ một cặp nháy bao ngoài (`'…'` hoặc `"…"`). **Không** hỗ trợ: chú thích cuối dòng (`A=1 # x` → giá trị `1 # x`),
+giá trị nhiều dòng, `${BIẾN}`, ký tự thoát. Biến môi trường của tiến trình (nếu có) được ưu tiên hơn `.env`.
+
+Nội dung `.env` (mọi biến, có sẵn trong `.env.example`):
 
 | Biến | Ý nghĩa | Mặc định |
 |---|---|---|
@@ -112,7 +117,8 @@ systemctl --user disable coin-radar-bot           # bỏ tự chạy
 
 - Muốn bot chạy cả khi chưa đăng nhập (máy vừa bật): `loginctl enable-linger $USER` (một lần; có thể hỏi mật khẩu).
 - **Tắt có kế hoạch** (stop / Ctrl+C / SIGTERM): bot hủy mọi lệnh VÀO còn treo (máy nhà không bao giờ để lệnh limit nằm trên sàn khi bot
-  không chạy), giữ nguyên SL/TP/trailing của vị thế đang mở, ghi ảnh chụp nhật ký, báo "Bot tắt — vị thế còn mở: …".
+  không chạy), giữ nguyên SL/TP/trailing của vị thế đang mở, ghi ảnh chụp nhật ký, báo "Bot tắt — vị thế còn mở: <mã> <khối lượng>: có SL"
+  — bot kiểm THẬT từng vị thế với lệnh dừng trên sàn; vị thế nào thiếu → tin KHẨN "KHÔNG có SL".
 - Bot dừng vì lỗi (mã thoát ≠ 0) → systemd chạy lại sau 30 giây; lỗi 5 lần trong 10 phút → ngừng, xem `journalctl`.
 
 Log khởi động bình thường (thứ tự cố định):
@@ -133,7 +139,9 @@ quyết định `Quét swing (nến …): … mã chấm, Đạt …, Hạng A M
 
 | Cảnh báo | Ý nghĩa | Việc làm |
 |---|---|---|
-| `KHẨN …: vị thế … KHÔNG có lệnh dừng` / `CHƯA BẢO VỆ` | đặt SL hỏng hoặc chưa xác nhận được | Bot tự thử lại/đóng market. Mở Binance kiểm vị thế mã đó **ngay**: có SL chưa? Không có → tự đặt SL hoặc đóng tay. Bot xử lý mã này TRƯỚC ở lượt sau (dấu bền qua khởi động lại) |
+| `…: đặt SL sau khi khớp vào — SL … (khớp cách đây … ms)` (mức thường, không KHẨN) | bình thường: lệnh vào vừa khớp, bot đặt SL lần đầu trong `COMMON.bot.postFillStopBudgetMs` (10 s). Log có dòng `khớp→SL <mã>: … ms` đo độ trễ | Không cần làm gì |
+| `KHẨN …: vị thế … THIẾU lệnh dừng …` | SL đã từng nằm trên sàn rồi biến mất, hoặc khớp vào quá 10 s mà chưa có SL | Như dòng dưới |
+| `KHẨN …: vị thế … KHÔNG có lệnh dừng` / `CHƯA BẢO VỆ` / đặt SL bị từ chối hoặc không rõ | đặt SL hỏng hoặc chưa xác nhận được | Bot tự thử lại/đóng market. Mở Binance kiểm vị thế mã đó **ngay**: có SL chưa? Không có → tự đặt SL hoặc đóng tay. Bot xử lý mã này TRƯỚC ở lượt sau (dấu bền qua khởi động lại) |
 | `KHẨN đã đóng khẩn … bằng lệnh thị trường` | không giữ được lệnh dừng → đóng để bảo vệ tiền | Kiểm vị thế đã về 0; đọc lý do trong log |
 | `KHẨN cầu chì … nhảy` (5 lệnh thua/24h, lỗ ngày > 10%) | ngừng mở lệnh mới, lệnh đang mở giữ nguyên | Xem lại lệnh thua (`/trangthai`, log). Chỉ khi chắc chắn: `/tieptuc` rồi `/tieptuc XACNHAN` |
 | `Cảnh báo: vốn sụt 30% từ đỉnh` | chỉ cảnh báo (theo lựa chọn của anh), bot vẫn chạy | Cân nhắc `/dung` |
@@ -141,6 +149,8 @@ quyết định `Quét swing (nến …): … mã chấm, Đạt …, Hạng A M
 | `KHẨN lệch giờ` / bot không khởi động vì lệch > 500 ms | đồng hồ máy sai | `timedatectl status`; bật `sudo timedatectl set-ntp true` |
 | `Không xác định được lệnh sở hữu vị thế` / vị thế lạ | có vị thế không do bot mở (hoặc mơ hồ) | Bot khóa mã đó, không đụng vào. Anh tự xử lý trên Binance |
 | `Chốt chặn funding: … siết SL` / `đóng market` | funding đã trả + lỗ tại SL vượt 2% vốn lúc vào | Không cần làm gì (đúng ràng buộc 2%); theo dõi |
+| `KHẨN chốt chặn funding <mã> không chạy được: …` | sau giờ chốt funding bot không đọc được dữ liệu để kiểm (quá 2 lần hoặc quá 10 phút; bot vẫn thử lại mỗi phút) | Bot chặn vào lệnh mới mã đó và tạm dùng đệm funding "max". Kiểm mạng / Binance; tự kiểm lỗ của vị thế đó trên Binance. Chạy lại được → bot báo "bỏ chặn" |
+| `KHẨN Bot tắt — … <mã>: KHÔNG có SL` | lúc tắt, vị thế đó không có lệnh dừng trên sàn (bot kiểm thật từng mã) | Đặt SL tay hoặc bật lại bot NGAY |
 | `-2015` trong log | key sai/mất quyền/IP không trong whitelist | Sửa danh sách IP hoặc quyền key trên Binance |
 
 ## 7. Dữ liệu bot lưu ở đâu

@@ -244,7 +244,10 @@ export const COMMON = {
   },
   // Chế độ bot được phép giao dịch (planner từ chối chế độ không có trong danh sách). Mặc định cả hai = hành vi hiện tại. Task 8: Lướt nhanh âm
   // ở mọi cấu hình trên kỳ D → muốn tắt cho bot thì đặt ['swing'] (người dùng quyết định).
-  bot: { modes: ['swing', 'fast'] as Mode[] },
+  // postFillStopBudgetMs (B8b vòng 1): lần đặt SL ĐẦU TIÊN trong khoảng này sau lần khớp vào sớm nhất (chân SL chưa từng gửi) là bình thường →
+  // cảnh báo mức info; quá khoảng này / SL đã từng có rồi mất / bị từ chối → KHẨN. Đề xuất, chưa kiểm trên Demo.
+  // fundingGuardMaxAttempts / fundingGuardMaxDelayMs: chốt chặn funding của một kỳ chốt lỗi quá số lần này HOẶC quá lâu sau giờ chốt → KHẨN + chặn vào lệnh mới mã đó.
+  bot: { modes: ['swing', 'fast'] as Mode[], postFillStopBudgetMs: 10_000, fundingGuardMaxAttempts: 2, fundingGuardMaxDelayMs: 10 * 60_000 },
   // Luật vào lệnh MỚI thử ở Task 8 (kế hoạch 2) — reports/Nghiên cứu cải thiện lợi nhuận.md. Mặc định = hành vi hiện tại (tắt). Áp sau khi quét
   // (packages/core/entry-filters.ts → ScanResult.entryBlocks): máy quét in lý do, bot/mô phỏng không vào lệnh mới bị chặn. Đề xuất, chưa backtest.
   entryRules: {

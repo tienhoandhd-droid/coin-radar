@@ -1,7 +1,7 @@
 # Coin Radar bot — dịch vụ systemd của NGƯỜI DÙNG (không cần root). Hướng dẫn đầy đủ: docs/runbook-bot.md
 # Cài:   mkdir -p ~/.config/systemd/user && cp deploy/coin-radar-bot.service ~/.config/systemd/user/
 #        systemctl --user daemon-reload && systemctl --user enable --now coin-radar-bot
-# Tệp này KHÔNG chứa secret. Key Binance / token Telegram chỉ nằm trong .env (chmod 600, đã git-ignore).
+# Tệp này KHÔNG chứa secret. Key Binance / token Telegram chỉ nằm trong .env (chmod 600, đã git-ignore) — bot tự đọc.
 [Unit]
 Description=Coin Radar bot (Binance USDⓈ-M Futures) — chế độ paper/demo/live theo .env
 After=network-online.target
@@ -13,8 +13,9 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=%h/coin-radar
-# .env phải có quyền 600 (chmod 600 ~/coin-radar/.env); demo/live từ chối chạy nếu quyền rộng hơn
-EnvironmentFile=%h/coin-radar/.env
+# KHÔNG dùng EnvironmentFile: cú pháp .env của systemd khác bộ đọc của bot (export, nháy, chú thích) → hai nơi hiểu khác nhau.
+# Bot tự đọc ~/coin-radar/.env (packages/bot/env.ts; cú pháp hỗ trợ: docs/runbook-bot.md mục 1). .env phải có quyền 600
+# (chmod 600 ~/coin-radar/.env); demo/live từ chối chạy nếu quyền rộng hơn. Không có .env → chạy paper với mặc định.
 # Đường dẫn node tuyệt đối (systemd không đọc PATH của nvm). Kiểm bằng: which node — sửa dòng dưới nếu khác
 ExecStart=%h/.nvm/versions/node/v24.21.0/bin/node packages/bot/main.ts
 # Chỉ tự chạy lại khi bot dừng vì lỗi (mã thoát ≠ 0); tắt bằng systemctl stop thì KHÔNG chạy lại

@@ -751,3 +751,34 @@ test('29. thiếu bộ lọc sàn của mã → không dựng được lệnh d�
   assert.equal(ofType(acts, 'market_close').length, 1);
   assert.equal(ofType(acts, 'place_stop').length, 0);
 });
+
+// ---- B8b vòng 1 #3: lần đặt SL ĐẦU TIÊN ngay sau khi khớp vào là bình thường (info), không phải KHẨN ----------------------------
+const missingSlAlerts = (acts: Action[]) => ofType(acts, 'alert').filter((a) => /lệnh dừng|SL/.test(a.text));
+for (const side of SIDES) {
+  test(`B8b #3 ${side}: vừa khớp vào (< ngân sách thời gian), chân SL CHƯA từng gửi → đặt SL, cảnh báo mức info (không KHẨN)`, () => {
+    const t = mkTrade(side);
+    t.legs.SL = { ...t.legs.SL!, status: 'planned' };
+    t.fills = [{ ...t.fills[0]!, time: NOW - 2_000 }];
+    const acts = reconcile([t], { positions: [pos(side, 60)], openOrders: [], openAlgoOrders: [], recentFills: [] }, ctx(side));
+    assert.equal(ofType(acts, 'place_stop').length, 1);
+    const al = missingSlAlerts(acts);
+    assert.equal(al.length, 1);
+    assert.equal(al[0]!.level, 'info');
+    assert.match(al[0]!.text, /đặt SL sau khi khớp vào/);
+  });
+
+  test(`B8b #3 ${side}: SL ĐÃ từng nằm trên sàn rồi biến mất → KHẨN`, () => {
+    const t = mkTrade(side); // SL status 'open' (đã gửi, sàn nhận)
+    t.fills = [{ ...t.fills[0]!, time: NOW - 2_000 }];
+    const acts = reconcile([t], { positions: [pos(side, 60)], openOrders: [], openAlgoOrders: [algo(t, 'TP1'), algo(t, 'TR')], recentFills: [] }, ctx(side));
+    assert.ok(missingSlAlerts(acts).some((a) => a.level === 'urgent'));
+  });
+
+  test(`B8b #3 ${side}: khớp vào đã quá ngân sách thời gian mà chưa có SL → KHẨN`, () => {
+    const t = mkTrade(side);
+    t.legs.SL = { ...t.legs.SL!, status: 'planned' };
+    t.fills = [{ ...t.fills[0]!, time: NOW - 60_000 }];
+    const acts = reconcile([t], { positions: [pos(side, 60)], openOrders: [], openAlgoOrders: [], recentFills: [] }, ctx(side));
+    assert.ok(missingSlAlerts(acts).some((a) => a.level === 'urgent'));
+  });
+}

@@ -496,7 +496,17 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
         if (queryUnknownStop('SL')) return;
         const id = placeStop('SL', 'initial', t.plan.stop, 'Vị thế thiếu lệnh dừng phủ cả vị thế', null, []);
         if (id === null) return;
-        alert(1, 'urgent', sym, sid, `${sym}: vị thế ${posQty} THIẾU lệnh dừng phủ cả vị thế trên sàn — đặt lại SL ${t.plan.stop}`);
+        // Lần đặt SL ĐẦU TIÊN ngay sau khi khớp vào (chân SL chưa từng gửi, khớp sớm nhất trong COMMON.bot.postFillStopBudgetMs) là bình thường
+        // → info. SL đã từng gửi rồi mất / khớp đã lâu mà chưa có SL → KHẨN. Từ chối/không rõ khi đặt: executor báo KHẨN.
+        const slLeg = t.legs.SL;
+        const firstFill = entryFills.reduce((m, f) => Math.min(m, f.time), Infinity);
+        const neverSent = slLeg === undefined || (slLeg.status === 'planned' && slLeg.orderIds.length === 0);
+        const age = ctx.now - firstFill;
+        if (neverSent && Number.isFinite(firstFill) && age <= COMMON.bot.postFillStopBudgetMs) {
+          alert(1, 'info', sym, sid, `${sym}: đặt SL sau khi khớp vào — SL ${t.plan.stop} cho vị thế ${posQty} (khớp cách đây ${Math.max(0, age)} ms)`);
+        } else {
+          alert(1, 'urgent', sym, sid, `${sym}: vị thế ${posQty} THIẾU lệnh dừng phủ cả vị thế trên sàn — đặt lại SL ${t.plan.stop}${neverSent && Number.isFinite(firstFill) ? ` (khớp vào đã ${Math.round(age / 1000)} s)` : ''}`);
+        }
       } else {
         const keep = latest(covering.filter((o) => bes.includes(o))) ?? latest(covering)!;
         stopPx = keep.triggerPrice > 0 ? keep.triggerPrice : t.plan.stop;

@@ -10,6 +10,7 @@ import { USER_PAUSE } from './telegram.ts';
 import type { PlannerPlan } from './planner.ts';
 import { trailingFor } from '../core/exit.ts';
 import { withConfigOverride } from '../core/config-override.ts';
+import { COMMON } from '../core/config.ts';
 import type { MarketEvent, UserEvent } from '../binance/stream.ts';
 import type { ScanInput, ScanResult } from '../../scanner/run-scan.ts';
 import type { Analysis } from '../core/analyze.ts';
@@ -56,6 +57,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     feedFunding: (r: { symbol: string; fundingTime: number; fundingRate: number; markPrice: number }) => { order.push(`feedFunding ${r.symbol}`); paperRaw.feedFunding(r); },
   };
   const gets: string[] = [];
+  const botGets: string[] = []; // REST công khai đi bằng ngân sách ưu tiên của bot (đối chiếu)
   const publicGet = async (path: string): Promise<unknown> => {
     gets.push(path);
     if (path === '/fapi/v1/time') return { serverTime: clock.t };
@@ -92,6 +94,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     sleep: async (ms: number) => { clock.t += ms; await new Promise((r) => setImmediate(r)); },
     log: (m) => logs.push(m),
     publicGet,
+    publicGetBot: (path: string) => { botGets.push(path); return deps.publicGet(path); },
     api: paper.api,
     syncClock: async () => 0,
     paper,
@@ -137,7 +140,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     if (err !== undefined) throw err;
     return out as T;
   }
-  return { bot, deps, dir, clock, streams, order, paper: paperRaw, journal, logs, notes, gets, drive, setMark: (p: number) => { mark = p; } };
+  return { bot, deps, dir, clock, streams, order, paper: paperRaw, journal, logs, notes, gets, botGets, drive, setMark: (p: number) => { mark = p; } };
 }
 
 function emptyScan(i: ScanInput): ScanResult {
@@ -306,4 +309,147 @@ test('B8b đối chiếu được kích hoạt bởi: resync_required, cảnh b�
   h.bot.notify({ level: 'urgent', symbol: 'AAAUSDT', text: 'KHẨN thử' });
   await h.drive(h.bot.idle());
   assert.equal(count('sau cảnh báo khẩn'), 1);
+});
+
+// ======================= B8b vòng 1 (rà soát) =======================
+const FT = Date.UTC(2026, 9, 20, 8, 0, 0); // kỳ funding 08:00 UTC
+function breakFunding(h: ReturnType<typeof harness>) {
+  const orig = h.deps.publicGet;
+  let broken = true;
+  h.deps.publicGet = async (p: string) => {
+    if (broken && p.startsWith('/fapi/v1/fundingRate')) throw new Error('mạng lỗi giả');
+    return p.startsWith('/fapi/v1/fundingRate') ? [{ symbol: 'AAAUSDT', fundingTime: FT, fundingRate: '0.02', markPrice: '100' }] : orig(p);
+  };
+  return { heal: () => { broken = false; } };
+}
+
+test('R1 #1 chốt chặn funding lỗi → KHÔNG bỏ kỳ chốt: thử lại ở lượt định kỳ sau; lỗi kéo dài → KHẨN + chặn vào lệnh mã đó; thành công → hết chặn', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  const f = breakFunding(h);
+  h.clock.t = FT + 2 * 60_000;
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  const checks = () => h.bot.trace().filter((x) => x === 'funding:AAAUSDT check').length;
+  assert.equal(checks(), 1);
+  assert.ok(h.bot.trace().includes('funding:AAAUSDT failed'));
+  assert.equal(h.bot.fundingGuardHealthy(), true, 'một lần lỗi chưa quá ngưỡng');
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  assert.equal(checks(), 2, 'thử lại ở lượt định kỳ kế tiếp (kỳ chốt chưa bị bỏ)');
+  assert.ok(!h.notes.some((n) => n.level === 'urgent' && /chốt chặn funding/.test(n.text)));
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  assert.equal(checks(), 3);
+  assert.ok(h.notes.some((n) => n.level === 'urgent' && /chốt chặn funding AAAUSDT không chạy được/.test(n.text)), 'quá 2 lần → KHẨN');
+  assert.equal(h.bot.fundingGuardHealthy(), false);
+  assert.deepEqual(h.bot.entryBlockedSymbols(), ['AAAUSDT']);
+  f.heal();
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  assert.ok(h.bot.trace().includes('funding:AAAUSDT tighten'));
+  assert.equal(h.bot.fundingGuardHealthy(), true);
+  assert.deepEqual(h.bot.entryBlockedSymbols(), []);
+  // đã kiểm xong kỳ này → lượt sau không kiểm lại
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  assert.equal(checks(), 4);
+});
+
+test('R1 #1 chốt chặn funding hỏng + cấu hình "expected" → lần quét/vào lệnh mới dùng đệm "max" (fundingGuardActive phản ánh sức khỏe thật)', async () => {
+  await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true }, async () => {
+    const seen: string[] = [];
+    const base = signalScan();
+    const h = harness({ scan: async (i) => { seen.push(String(COMMON.risk.fundingBufferHorizon)); return base(i); } });
+    await openTrade(h);
+    assert.deepEqual(seen, ['expected']);
+    breakFunding(h);
+    h.clock.t = FT + 2 * 60_000;
+    for (let i = 0; i < 3; i++) await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(h.bot.fundingGuardHealthy(), false);
+    h.clock.t = Date.UTC(2026, 9, 20, 12, 0, 1);
+    await h.drive(h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 12, 0, 0) - 1)).then(() => h.bot.idle()));
+    assert.equal(seen[seen.length - 1], 'max');
+    assert.equal(COMMON.risk.fundingBufferHorizon, 'expected', 'trả lại cấu hình sau lần quét');
+  });
+});
+
+test('R1 #2 tắt bot: báo ĐÚNG từng vị thế có/không có SL trên sàn; thiếu SL → KHẨN', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  // Sàn (nhìn qua REST lúc tắt) không còn lệnh dừng của mã — giả lập SL đã mất mà bot chưa kịp đối chiếu lại
+  const orig = h.deps.api;
+  h.deps.api = { request: async (o) => {
+    const r = await orig.request(o);
+    return o.path === '/fapi/v1/openAlgoOrders' ? { ...r, body: (r.body as Array<{ orderType: string }>).filter((x) => x.orderType !== 'STOP_MARKET') } : r;
+  } };
+  await h.drive(h.bot.stop());
+  const last = h.notes[h.notes.length - 1]!;
+  assert.equal(last.level, 'urgent');
+  assert.match(last.text, /AAAUSDT .*KHÔNG có SL/);
+});
+
+test('R1 #2 tắt bot: vị thế có SL → báo "có SL" theo mã, mức info', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  await h.drive(h.bot.stop());
+  const last = h.notes[h.notes.length - 1]!;
+  assert.equal(last.level, 'info');
+  assert.match(last.text, /AAAUSDT .*có SL/);
+  assert.doesNotMatch(last.text, /KHÔNG có SL/);
+});
+
+test('R1 #3 vào lệnh bình thường: KHÔNG có cảnh báo KHẨN; ghi độ trễ khớp→SL', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  assert.deepEqual(h.notes.filter((n) => n.level === 'urgent').map((n) => n.text), []);
+  assert.ok(h.logs.some((l) => /khớp→SL AAAUSDT: \d+ ms/.test(l)), h.logs.join('\n'));
+});
+
+test('R1 #4a /dung tới TRONG lúc chờ dữ liệu mới → kiểm lại isPaused ngay trước khi gửi lệnh vào', async () => {
+  const h = harness({ scan: signalScan() });
+  await h.drive(h.bot.start());
+  const orig = h.deps.createMarketStream;
+  const made: FakeStream[] = [];
+  h.deps.createMarketStream = (o) => { const s = orig(o) as FakeStream; s.stale = true; made.push(s); return s; };
+  const sleep = h.deps.sleep;
+  let paused = false;
+  h.deps.sleep = async (ms) => {
+    if (!paused && made.length > 0) {
+      paused = true;
+      h.journal.append({ type: 'protection_tripped', name: USER_PAUSE, reason: 'người dùng gõ /dung' });
+      for (const s of made) s.stale = false;
+    }
+    await sleep(ms);
+  };
+  h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
+  await h.drive(h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1)).then(() => h.bot.idle()));
+  assert.ok(paused);
+  assert.equal(h.journal.state().trades[SIGNAL_ID], undefined);
+  assert.ok(h.bot.trace().includes('entry:paused-late AAAUSDT'));
+});
+
+test('R1 #4b đối chiếu KHÔNG xếp hàng sau việc vào lệnh (lúc lệnh đang chờ dữ liệu mới, đối chiếu vẫn chạy xong)', async () => {
+  const h = harness({ scan: signalScan() });
+  await h.drive(h.bot.start());
+  const orig = h.deps.createMarketStream;
+  h.deps.createMarketStream = (o) => { const s = orig(o) as FakeStream; s.stale = true; return s; };
+  h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
+  let entryDone = false;
+  const p = h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1)).then(() => { entryDone = true; });
+  for (let i = 0; i < 50 && !h.bot.trace().includes('entry:checkEntry AAAUSDT'); i++) await new Promise((r) => setImmediate(r));
+  assert.ok(h.bot.trace().includes('entry:checkEntry AAAUSDT'));
+  let recDoneBeforeEntry = false;
+  const r = h.bot.onUserEvent({ type: 'resync_required', reason: 'reconnect' } as UserEvent).then(() => { recDoneBeforeEntry = !entryDone && !h.bot.trace().includes('entry:stale AAAUSDT'); });
+  await h.drive(Promise.all([p, r]));
+  assert.ok(recDoneBeforeEntry, 'đối chiếu phải xong khi lệnh vào còn đang chờ');
+});
+
+test('R1 #4c mốc 4H: quét Swing và Lướt nhanh chạy LẦN LƯỢT (không đồng thời trên cùng ngân sách IP); đối chiếu dùng ngân sách ưu tiên bot', async () => {
+  const log: string[] = [];
+  let h: ReturnType<typeof harness>;
+  h = harness({ scan: async (i) => { log.push(`start ${i.mode}`); await h.deps.sleep(5_000); log.push(`end ${i.mode}`); return emptyScan(i); } });
+  await h.drive(h.bot.start());
+  h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
+  const a = h.bot.onMarketEvent('trigger', closeOf('15m', Date.UTC(2026, 9, 20, 4, 0, 0) - 1));
+  const b = h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1));
+  await h.drive(Promise.all([a, b]).then(() => h.bot.idle()));
+  assert.equal(log.length, 4);
+  assert.ok(log[0]!.startsWith('start') && log[1]!.startsWith('end') && log[2]!.startsWith('start'), log.join(' | '));
+  assert.ok(h.botGets.some((g) => g.startsWith('/fapi/v1/klines?symbol=BTCUSDT')), 'mốc nến REST của đối chiếu/khởi động đi bằng ngân sách bot');
 });

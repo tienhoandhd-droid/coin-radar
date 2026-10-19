@@ -2,7 +2,11 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 
 // Cấu hình bot từ biến môi trường / tệp .env (B8b). Không thư viện ngoài: đọc KEY=VALUE đơn giản.
 // Secret (BINANCE_API_KEY/SECRET, TELEGRAM_BOT_TOKEN) chỉ nằm trong .env quyền 600 — KHÔNG bao giờ in/log; describeSettings chỉ nêu bật/tắt.
-// Biến môi trường thật của tiến trình (systemd EnvironmentFile) được ưu tiên hơn giá trị trong .env.
+// Biến môi trường thật của tiến trình được ưu tiên hơn giá trị trong .env. Dịch vụ systemd KHÔNG dùng EnvironmentFile (cú pháp khác) —
+// main.ts tự đọc .env ở thư mục repo bằng hàm dưới đây.
+// Cú pháp .env được hỗ trợ (tập con, cố ý đơn giản): mỗi dòng `KEY=VALUE` (KEY: chữ/số/_ , không bắt đầu bằng số); có thể có tiền tố
+// `export `; dòng trống và dòng bắt đầu bằng `#` bị bỏ; VALUE bỏ khoảng trắng hai đầu và bỏ MỘT cặp nháy bao ngoài ('…' hoặc "…").
+// KHÔNG hỗ trợ: chú thích cuối dòng (`A=1 # x` → giá trị là `1 # x`), giá trị nhiều dòng, thay biến `${X}`, ký tự thoát `\n`.
 
 export function parseDotEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
