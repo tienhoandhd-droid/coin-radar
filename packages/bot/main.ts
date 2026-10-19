@@ -140,7 +140,10 @@ export function createBot(deps: BotDeps) {
   const lastProcessed = new Map<string, number>(); // khoảng nến → closeTime nến quyết định đã xử lý
   const nextFunding = new Map<string, number>();
   // Chốt chặn funding: kỳ chốt chưa kiểm xong (lỗi) → giữ, thử lại lượt sau; lỗi kéo dài → KHẨN + chặn vào lệnh mới mã đó
-  const fundingFail = new Map<string, { settlement: number; attempts: number; alerted: boolean }>();
+  const fundingFail = new Map<string, { settlement: number; attempts: number; alerted: boolean; alertedMissed: number }>();
+  const worstRate = new Map<string, number>(); // |funding| xấu nhất đã biết theo mã (lịch sử 30 ngày, premiumIndex)
+  const lastGood = new Map<string, { at: number; lockedLoss: number }>(); // lần chốt chặn funding chạy được gần nhất
+  const noteRate = (sym: string, r: number) => { if (Number.isFinite(r)) worstRate.set(sym, Math.max(worstRate.get(sym) ?? 0, Math.abs(r))); };
   const fundingBlocked = new Set<string>();
   const slLatencyLogged = new Set<string>();
   let startedAt = 0;
@@ -246,6 +249,7 @@ export function createBot(deps: BotDeps) {
     const p = parsePremium(Array.isArray(raw) ? raw : [raw])[0];
     if (p === undefined || !(p.markPrice > 0)) throw new Error(`không lấy được giá mark ${symbol}`);
     if (p.nextFundingTime > 0 && !nextFunding.has(symbol)) nextFunding.set(symbol, p.nextFundingTime);
+    noteRate(symbol, p.lastFundingRate);
     return p.markPrice;
   }
 
@@ -255,6 +259,7 @@ export function createBot(deps: BotDeps) {
       const raw = await botGet(`/fapi/v1/premiumIndex?symbol=${symbol}`);
       const p = parsePremium(Array.isArray(raw) ? raw : [raw])[0];
       if (p !== undefined && p.nextFundingTime > 0) nextFunding.set(symbol, p.nextFundingTime);
+      if (p !== undefined) noteRate(symbol, p.lastFundingRate);
     } catch (e) {
       log(`premiumIndex ${symbol}: ${errText(e)}`);
     }
@@ -560,6 +565,17 @@ export function createBot(deps: BotDeps) {
     }
   }
 
+  // protections.checkEntry với trạng thái HIỆN TẠI (cầu chì, lệnh vừa đóng, danh mục) — gọi lúc chuẩn bị VÀ ngay trước khi gửi lệnh
+  function protectionGate(mode: Mode, a: Analysis, p: PlannerPlan, contract: Contract, maxNotional: number, capital: number) {
+    const sym = a.symbol;
+    return checkEntry({
+      now: deps.now(), barMs: intervalMs(CONFIG[mode].entryInterval), signal: { symbol: sym, side: p.side, grade: a.grade?.grade ?? null, fresh: a.signal!.fresh },
+      protections: journal.state().protections, recentCloses: journal.state().outcomes,
+      newTrade: { symbol: sym, side: p.side, entry: p.entry, stop: p.stop, qty: p.qty, leverage: p.suggestedLeverage, costPct: p.costPct, entryType: p.entryType === 'limit' ? 'limit' : 'market', filters: contract, maxNotional },
+      openTrades: portfolio(), capital, ...(deps.liveCaps !== null ? { liveCaps: deps.liveCaps } : {}),
+    });
+  }
+
   async function tryEntry(mode: Mode, a: Analysis, p: PlannerPlan, scan: ScanResult, capital: number): Promise<void> {
     const sym = a.symbol;
     const sid = a.signal!.id;
@@ -573,12 +589,7 @@ export function createBot(deps: BotDeps) {
     if (!(vol1m > 0)) { log(`${sym}: không ước được khối lượng 1 phút — bỏ`); return; }
     const maxNotional = COMMON.slippage.maxParticipation * vol1m;
     trace(`entry:checkEntry ${sym}`);
-    const ce = checkEntry({
-      now: deps.now(), barMs: intervalMs(CONFIG[mode].entryInterval), signal: { symbol: sym, side: p.side, grade: a.grade?.grade ?? null, fresh: a.signal!.fresh },
-      protections: journal.state().protections, recentCloses: journal.state().outcomes,
-      newTrade: { symbol: sym, side: p.side, entry: p.entry, stop: p.stop, qty: p.qty, leverage: p.suggestedLeverage, costPct: p.costPct, entryType: p.entryType === 'limit' ? 'limit' : 'market', filters: contract, maxNotional },
-      openTrades: portfolio(), capital, ...(deps.liveCaps !== null ? { liveCaps: deps.liveCaps } : {}),
-    });
+    const ce = protectionGate(mode, a, p, contract, maxNotional, capital);
     if (!ce.allowed) { trace(`entry:protections ${sym}`); log(`${sym} ${mode}: KHÔNG vào lệnh (protections) — ${ce.reasons.join('; ')}`); return; }
     // Nghĩa vụ B8a: cổng vào lệnh cần CẢ !isMarkStale và !isKlineStale (khung vào lệnh)
     const iv = CONFIG[mode].entryInterval;
@@ -597,6 +608,7 @@ export function createBot(deps: BotDeps) {
       try {
         rows = await fundingHistory(sym, now);
         const m = maxAbsFundingRate(rows, now);
+        noteRate(sym, m);
         maxAbsRate = m > 0 ? m : fundingFallbackRate(intervalHours);
         if (!(m > 0)) log(`${sym}: lịch sử funding ${COMMON.risk.fundingBufferLookbackDays} ngày rỗng/toàn 0 → đệm thận trọng ${maxAbsRate}`);
       } catch (e) {
@@ -619,14 +631,15 @@ export function createBot(deps: BotDeps) {
         ...(breakout !== undefined ? { breakout } : {}),
       });
       if (!pr.allowed || pr.sizing === null) { trace(`entry:planner ${sym}`); log(`${sym} ${mode}: planner từ chối — ${pr.reasons.join('; ')}`); return; }
-      await serial(`vào lệnh ${sym}`, () => placeEntry(mode, a, p, pr, capital, tier, vol1m));
+      await serial(`vào lệnh ${sym}`, () => placeEntry(mode, a, p, pr, capital, tier, vol1m, contract, maxNotional));
     } finally {
       pinned.delete(sym);
     }
   }
 
   // Đoạn gửi lệnh (trong hàng đợi tuần tự): kiểm lại → ISOLATED + đòn bẩy → nhận tín hiệu → lệnh vào → đối chiếu ngay
-  async function placeEntry(mode: Mode, a: Analysis, p: PlannerPlan, pr: ReturnType<typeof planOrders>, capital: number, tier: keyof typeof COMMON.costRoundTripPct, vol1m: number): Promise<void> {
+  async function placeEntry(mode: Mode, a: Analysis, p: PlannerPlan, pr: ReturnType<typeof planOrders>, capital: number, tier: keyof typeof COMMON.costRoundTripPct, vol1m: number,
+    contract: Contract, maxNotional: number): Promise<void> {
     const sym = a.symbol;
     const sid = a.signal!.id;
     const now = deps.now();
@@ -634,7 +647,16 @@ export function createBot(deps: BotDeps) {
     // /dung có thể tới trong lúc chờ dữ liệu mới / REST → kiểm lại NGAY trước khi gửi
     if (stopping) { log(`${sym} ${mode}: bot đang tắt — không vào lệnh`); return; }
     if (tg.isPaused()) { trace(`entry:paused-late ${sym}`); log(`${sym} ${mode}: KHÔNG vào lệnh — người dùng vừa tạm dừng (/dung)`); return; }
-    if (journal.hasSignal(sid) || activeTrades().some((t) => t.symbol === sym) || fundingBlocked.has(sym)) { log(`${sym} ${mode}: mã vừa có lệnh/bị chặn — không vào lệnh`); return; }
+    // TOÀN BỘ cổng lại một lần nữa (rà soát lại vòng 1): lượt đối chiếu chạy song song lúc chuẩn bị có thể đã nhảy cầu chì / đổi danh mục
+    const late: string[] = [];
+    if (journal.hasSignal(sid) || activeTrades().some((t) => t.symbol === sym)) late.push('mã vừa có lệnh');
+    if (fundingBlocked.has(sym)) late.push('chốt chặn funding của mã đang lỗi');
+    const s = streamFor(sym);
+    const iv = CONFIG[mode].entryInterval;
+    if (s === null || s.isMarkStale(sym) || s.isKlineStale(sym, iv)) late.push(`dữ liệu cũ (giá mark hoặc nến ${iv})`);
+    const ce = protectionGate(mode, a, p, contract, maxNotional, capital);
+    if (!ce.allowed) late.push(...ce.reasons);
+    if (late.length > 0) { trace(`entry:gate-late ${sym}`); log(`${sym} ${mode}: KHÔNG vào lệnh (kiểm lại ngay trước khi gửi) — ${late.join('; ')}`); return; }
     {
       // R12: ISOLATED + đòn bẩy cho cặp trước khi vào lệnh
       const mt = await orders.setMarginTypeIsolated(sym);
@@ -688,19 +710,31 @@ export function createBot(deps: BotDeps) {
         continue;
       }
       const why = lastError !== errBefore && lastError !== null ? lastError : 'không đọc được trạng thái sàn';
-      const settlement = nft ?? now;
-      const rec = fundingFail.get(t.symbol) ?? { settlement, attempts: 0, alerted: false };
+      // Kiểm lúc khởi động (funding trả khi máy tắt) hoặc kỳ chốt chưa biết: mốc = bây giờ. Mọi lần lỗi: đặt mốc về quá khứ để lượt
+      // định kỳ KẾ TIẾP thử lại (không chờ kỳ chốt sau — nextFunding có thể đã là giờ chốt tương lai)
+      const settlement = force || nft === undefined || nft > now ? now : nft;
+      const rec = fundingFail.get(t.symbol) ?? { settlement, attempts: 0, alerted: false, alertedMissed: 0 };
       rec.attempts++;
       fundingFail.set(t.symbol, rec);
-      if (nft === undefined) nextFunding.set(t.symbol, now - FUNDING_SETTLE_DELAY_MS); // kiểm lúc khởi động lỗi → thử lại ở lượt định kỳ sau
+      nextFunding.set(t.symbol, Math.min(nft ?? Infinity, now - FUNDING_SETTLE_DELAY_MS));
       trace(`funding:${t.symbol} failed`);
       log(`Chốt chặn funding ${t.symbol} lỗi lần ${rec.attempts} (kỳ chốt ${new Date(rec.settlement).toISOString()}): ${why} — giữ kỳ chốt, thử lại ở lượt định kỳ sau`);
       const late = now - rec.settlement > COMMON.bot.fundingGuardMaxDelayMs;
+      const iMs = (fundingIntervals.get(t.symbol) ?? COMMON.defaultFundingIntervalHours) * H;
+      const missed = Math.floor(now / iMs) - Math.floor(rec.settlement / iMs); // số kỳ chốt MỚI đã qua kể từ kỳ đang lỗi
+      let alert = false;
       if (!rec.alerted && (rec.attempts > COMMON.bot.fundingGuardMaxAttempts || late)) {
         rec.alerted = true;
+        rec.alertedMissed = missed;
         fundingBlocked.add(t.symbol);
-        notify({ level: 'urgent', symbol: t.symbol, text: `KHẨN chốt chặn funding ${t.symbol} không chạy được: ${why} (${rec.attempts} lần, ${Math.round((now - rec.settlement) / 60_000)} phút sau giờ chốt) — chặn vào lệnh mới mã này; đệm "expected" tạm thay bằng "max"; lệnh dừng trên sàn vẫn giữ` });
+        alert = true;
+        notify({ level: 'urgent', symbol: t.symbol, text: `KHẨN chốt chặn funding ${t.symbol} không chạy được: ${why} (${rec.attempts} lần, ${Math.round((now - rec.settlement) / 60_000)} phút sau giờ chốt) — chặn vào lệnh mới mã này; đệm "expected" tạm thay bằng "max"; siết SL phòng trước theo funding xấu nhất đã biết` });
+      } else if (rec.alerted && missed > rec.alertedMissed) {
+        rec.alertedMissed = missed;
+        alert = true;
+        notify({ level: 'urgent', symbol: t.symbol, text: `KHẨN chốt chặn funding ${t.symbol} vẫn không chạy được — lỡ thêm kỳ chốt (${missed} kỳ kể từ ${new Date(rec.settlement).toISOString()}): ${why}` });
       }
+      if (alert) await serial(`funding phòng trước ${t.symbol}`, () => preemptiveTighten(t.signalId));
     }
   }
 
@@ -730,6 +764,7 @@ export function createBot(deps: BotDeps) {
       riskPct: deps.liveCaps?.riskPerTradePct ?? COMMON.risk.perTradePct, capitalFallback: capitalOf(f.equity),
     });
     trace(`funding:${sym} ${run.result.action}`);
+    lastGood.set(sym, { at: now, lockedLoss: run.lockedLoss });
     log(`Chốt chặn funding ${sym}: đã mất ${run.lockedLoss.toFixed(2)} USDT (phí + funding ${income.toFixed(2)}), lỗ nếu chạm dừng ${Number.isFinite(run.stopUsed) ? run.stopUsed : '(trailing)'} = ${run.lossBefore.toFixed(2)} / ngân sách ${run.budget.toFixed(2)} → ${run.result.action}${run.result.action === 'tighten' ? ` SL ${run.result.stop}` : ''}`);
     for (const ev of run.journal) journal.append(ev);
     if (run.actions.length === 0) return true;
@@ -737,6 +772,60 @@ export function createBot(deps: BotDeps) {
     if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
     await reconcileLoop(['sau chốt chặn funding']);
     return true;
+  }
+
+  // Chốt chặn hỏng (không đọc được funding/income) mà sàn vẫn nhận lệnh: siết SL PHÒNG TRƯỚC bằng CÙNG hàm chốt chặn, giả định funding xấu
+  // nhất đã biết (|rate| lớn nhất: lịch sử 30 ngày lúc vào lệnh, premiumIndex) cho các kỳ đã lỡ VÀ mọi kỳ còn lại tới maxHoldHours:
+  //   lỗ nếu chạm SL + funding ước đã trả + funding dự kiến còn lại ≤ 2% vốn lúc vào.
+  async function preemptiveTighten(signalId: string): Promise<void> {
+    const t = journal.state().trades[signalId];
+    if (t === undefined || t.status === 'closed') return;
+    const sym = t.symbol;
+    const now = deps.now();
+    const f = await fetchState([sym]);
+    const pos = f?.ex.positions.find((p) => p.symbol === sym);
+    const contract = contracts.get(sym);
+    if (f === null || pos === undefined || contract === undefined) { log(`Siết SL phòng trước ${sym}: không đọc được vị thế/lệnh — bỏ qua (kiểm tay)`); return; }
+    await refreshPremium(sym);
+    const mark = await markOf(sym);
+    const qty = Math.abs(pos.positionAmt);
+    const intervalHours = fundingIntervals.get(sym) ?? COMMON.defaultFundingIntervalHours;
+    const iMs = intervalHours * H;
+    const known = worstRate.get(sym) ?? 0;
+    const rate = known > 0 ? known : fundingFallbackRate(intervalHours); // không biết gì → mức thận trọng, không bao giờ 0
+    const notional = qty * mark;
+    const good = lastGood.get(sym);
+    const from = good?.at ?? t.createdAt;
+    const accrued = (Math.floor(now / iMs) - Math.floor(from / iMs)) * rate * notional;
+    const firstFill = t.fills.filter((x) => x.role === 'E1' || x.role === 'E2').reduce((m, x) => Math.min(m, x.time), t.createdAt);
+    const mode = t.mode ?? 'swing';
+    const remainingMs = Math.max(0, CONFIG[mode].maxHoldHours * H - (now - firstFill));
+    const projected = Math.ceil(remainingMs / iMs) * rate * notional;
+    let rows: Awaited<ReturnType<typeof fetchTradeHistory>> = [];
+    let base = good?.lockedLoss ?? 0;
+    if (good === undefined) {
+      try { rows = await fetchTradeHistory(deps.api, sym, t.createdAt, now); } catch (e) { base = (notional * t.plan.costPct) / 200; log(`userTrades ${sym}: ${errText(e)} — ước phí vào ${base.toFixed(2)}`); }
+    }
+    const run = fundingGuardActions({
+      trade: t, positionQty: qty, avgEntry: pos.entryPrice, mark, contract, algos: f.ex.openAlgoOrders, trades: rows, fundingIncome: -(base + accrued + projected),
+      riskPct: deps.liveCaps?.riskPerTradePct ?? COMMON.risk.perTradePct, capitalFallback: capitalOf(f.equity),
+    });
+    trace(`funding:${sym} preempt-${run.result.action}`);
+    log(`Siết SL phòng trước ${sym}: |funding| xấu nhất ${rate}, ước đã trả ${accrued.toFixed(2)} + còn lại ${projected.toFixed(2)} USDT → ${run.result.action}${run.result.action === 'tighten' ? ` SL ${run.result.stop}` : ''}`);
+    for (const ev of run.journal) journal.append(ev);
+    if (run.actions.length === 0) return;
+    const rep = await executeActions(run.actions, execCtx(f.ex.positions));
+    if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
+    await reconcileLoop(['sau siết SL phòng trước']);
+  }
+  async function refreshPremium(symbol: string): Promise<void> {
+    try {
+      const raw = await botGet(`/fapi/v1/premiumIndex?symbol=${symbol}`);
+      const p = parsePremium(Array.isArray(raw) ? raw : [raw])[0];
+      if (p !== undefined) noteRate(symbol, p.lastFundingRate);
+    } catch (e) {
+      log(`premiumIndex ${symbol}: ${errText(e)}`);
+    }
   }
 
   // Nến quyết định chưa tới qua luồng (luồng chết im lặng) → lấy bằng REST
@@ -863,7 +952,12 @@ export function createBot(deps: BotDeps) {
         if (rows.length < 1000) break;
         from = rows[rows.length - 1]!.closeTime + 1;
       }
-      for (const r of await fundingHistory(sym, now)) if (r.fundingTime > last && r.fundingTime <= now) p.feedFunding({ symbol: sym, ...r });
+      try {
+        for (const r of await fundingHistory(sym, now)) if (r.fundingTime > last && r.fundingTime <= now) p.feedFunding({ symbol: sym, ...r });
+      } catch (e) {
+        // Không dừng khởi động: chốt chặn funding (fundingCheck) nạp lại funding từ lúc vào lệnh và thử lại tới khi được
+        log(`paper ${sym}: không tải được funding khoảng tắt máy (${errText(e)}) — chốt chặn funding sẽ nạp lại khi đọc được`);
+      }
       log(`paper ${sym}: nạp ${n} nến 1m khoảng tắt máy (từ ${new Date(last).toISOString()}) trước khi nạp mark`);
     }
   }
@@ -892,6 +986,7 @@ export function createBot(deps: BotDeps) {
     stopping = true;
     try {
       const f = await fetchState();
+      if (f === null) notify({ level: 'urgent', symbol: null, text: `KHẨN Bot tắt — KHÔNG đọc được trạng thái sàn, kiểm tay ngay (lệnh vào còn treo / lệnh dừng của vị thế chưa được kiểm): ${lastError ?? ''}` });
       if (f !== null) {
         const st = journal.state();
         const actions: Action[] = [];

@@ -49,6 +49,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
   const streams: FakeStream[] = [];
   const order: string[] = []; // thứ tự sự kiện quan trọng xuyên các thành phần
   let mark = o.mark ?? 100;
+  let premiumRate = '0.0001'; // funding kỳ gần nhất trong premiumIndex
   const paperRaw = createPaperExchange({ contracts: { AAAUSDT: C, BTCUSDT: BTC }, cost: () => ({ tierPct: 0.1, impactPct: 0.5, vol1m: Infinity }), startBalance: o.balance ?? 10_000, statePath: join(dir, 'paper-state.json'), now, defaultLeverage: 5 });
   const paper = {
     ...paperRaw,
@@ -66,7 +67,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     if (path === '/fapi/v1/ticker/24hr') return [{ symbol: 'AAAUSDT', quoteVolume: '1e9', priceChangePercent: '1' }, { symbol: 'BTCUSDT', quoteVolume: '1e10', priceChangePercent: '1' }];
     if (path === '/fapi/v1/ticker/bookTicker') return [{ symbol: 'AAAUSDT', bidPrice: String(mark - 0.01), askPrice: String(mark + 0.01) }];
     if (path.startsWith('/fapi/v1/premiumIndex')) {
-      const row = (s: string) => ({ symbol: s, markPrice: String(s === 'BTCUSDT' ? 60_000 : mark), lastFundingRate: '0.0001', nextFundingTime: Math.ceil((clock.t + 1) / (8 * H)) * 8 * H });
+      const row = (s: string) => ({ symbol: s, markPrice: String(s === 'BTCUSDT' ? 60_000 : mark), lastFundingRate: premiumRate, nextFundingTime: Math.ceil((clock.t + 1) / (8 * H)) * 8 * H });
       const m = /symbol=([A-Z]+)/.exec(path);
       return m ? row(m[1]!) : [row('AAAUSDT'), row('BTCUSDT')];
     }
@@ -140,7 +141,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     if (err !== undefined) throw err;
     return out as T;
   }
-  return { bot, deps, dir, clock, streams, order, paper: paperRaw, journal, logs, notes, gets, botGets, drive, setMark: (p: number) => { mark = p; } };
+  return { bot, deps, dir, clock, streams, order, paper: paperRaw, journal, logs, notes, gets, botGets, drive, setMark: (p: number) => { mark = p; }, setPremiumRate: (r: string) => { premiumRate = r; } };
 }
 
 function emptyScan(i: ScanInput): ScanResult {
@@ -452,4 +453,94 @@ test('R1 #4c mốc 4H: quét Swing và Lướt nhanh chạy LẦN LƯỢT (khôn
   assert.equal(log.length, 4);
   assert.ok(log[0]!.startsWith('start') && log[1]!.startsWith('end') && log[2]!.startsWith('start'), log.join(' | '));
   assert.ok(h.botGets.some((g) => g.startsWith('/fapi/v1/klines?symbol=BTCUSDT')), 'mốc nến REST của đối chiếu/khởi động đi bằng ngân sách bot');
+});
+
+// ======================= B8b vòng 2 (rà soát lại 1) =======================
+test('R2 #1 cầu chì nhảy (do lượt đối chiếu chạy song song) TRONG lúc chuẩn bị vào lệnh → kiểm lại TOÀN BỘ cổng ngay trước khi gửi, không vào lệnh', async () => {
+  const h = harness({ scan: signalScan() });
+  await h.drive(h.bot.start());
+  const orig = h.deps.createMarketStream;
+  const made: FakeStream[] = [];
+  h.deps.createMarketStream = (o) => { const s = orig(o) as FakeStream; s.stale = true; made.push(s); return s; };
+  const sleep = h.deps.sleep;
+  let tripped = false;
+  h.deps.sleep = async (ms) => {
+    if (!tripped && made.length > 0) {
+      tripped = true;
+      h.journal.append({ type: 'protection_tripped', name: 'loss_streak', reason: '5 lệnh thua trong 24 giờ (trần 5)' });
+      for (const s of made) s.stale = false;
+    }
+    await sleep(ms);
+  };
+  h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
+  await h.drive(h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1)).then(() => h.bot.idle()));
+  assert.ok(tripped);
+  assert.equal(h.journal.state().trades[SIGNAL_ID], undefined);
+  assert.ok(h.bot.trace().includes('entry:gate-late AAAUSDT'));
+  assert.ok(h.logs.some((l) => /loss_streak/.test(l)));
+});
+
+test('R2 #1 dữ liệu thành cũ trong lúc chuẩn bị → kiểm lại cổng stale ngay trước khi gửi', async () => {
+  const h = harness({ scan: signalScan() });
+  await h.drive(h.bot.start());
+  const orig = h.deps.createMarketStream;
+  const made: FakeStream[] = [];
+  h.deps.createMarketStream = (o) => { const s = orig(o) as FakeStream; made.push(s); return s; };
+  // planner gọi lịch sử funding SAU khi dữ liệu đã mới → lúc đó làm luồng cũ đi
+  const get = h.deps.publicGet;
+  h.deps.publicGet = async (p: string) => { if (p.startsWith('/fapi/v1/fundingRate')) for (const s of made) s.stale = true; return get(p); };
+  h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
+  await h.drive(h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1)).then(() => h.bot.idle()));
+  assert.equal(h.journal.state().trades[SIGNAL_ID], undefined);
+  assert.ok(h.bot.trace().includes('entry:gate-late AAAUSDT'));
+});
+
+test('R2 #2 kiểm funding LÚC KHỞI ĐỘNG lỗi (funding trả lúc tắt máy) → thử lại ở lượt định kỳ kế tiếp (không chờ kỳ chốt sau); lỗi kéo dài → KHẨN', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  await h.drive(h.bot.stop());
+  const h2 = harness({ dir: h.dir, scan: signalScan() });
+  h2.clock.t = FT + 30 * 60_000; // máy tắt qua kỳ chốt 08:00
+  breakFunding(h2);
+  await h2.drive(h2.bot.start());
+  const checks = () => h2.bot.trace().filter((x) => x === 'funding:AAAUSDT check').length;
+  assert.equal(checks(), 1);
+  assert.ok(h2.bot.trace().includes('funding:AAAUSDT failed'));
+  await h2.drive(h2.bot.periodic().then(() => h2.bot.idle()));
+  assert.equal(checks(), 2, 'thử lại ngay lượt định kỳ sau, dù giờ chốt kế tiếp còn ở tương lai');
+  await h2.drive(h2.bot.periodic().then(() => h2.bot.idle()));
+  assert.equal(checks(), 3);
+  assert.ok(h2.notes.some((n) => n.level === 'urgent' && /chốt chặn funding AAAUSDT không chạy được/.test(n.text)));
+  assert.equal(h2.bot.fundingGuardHealthy(), false);
+});
+
+test('R2 #3 chốt chặn hỏng: siết SL phòng trước theo |funding| xấu nhất đã biết cho phần thời gian giữ còn lại (hàm chốt chặn dùng chung); báo KHẨN lại mỗi kỳ chốt bị lỡ', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  const oldStop = h.journal.state().trades[SIGNAL_ID]!.plan.stop;
+  h.setPremiumRate('0.0003'); // kỳ gần nhất 0,03% — tệ hơn lịch sử 30 ngày lúc vào lệnh
+  breakFunding(h);
+  h.clock.t = FT + 2 * 60_000;
+  for (let i = 0; i < 3; i++) await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  const urgent = () => h.notes.filter((n) => n.level === 'urgent' && /chốt chặn funding AAAUSDT/.test(n.text)).length;
+  assert.equal(urgent(), 1);
+  assert.ok(h.bot.trace().includes('funding:AAAUSDT preempt-tighten'), h.bot.trace().filter((x) => x.startsWith('funding')).join(' | '));
+  const st = h.journal.state().trades[SIGNAL_ID]!.plan.stop;
+  assert.ok(st > oldStop, `SL phải được siết phòng trước: ${oldStop} → ${st}`);
+  const algos = (await h.paper.api.request({ method: 'GET', path: '/fapi/v1/openAlgoOrders', params: { symbol: 'AAAUSDT' }, createsOrder: false })).body as Array<{ orderType: string; triggerPrice: string }>;
+  assert.deepEqual(algos.filter((a) => a.orderType === 'STOP_MARKET').map((a) => Number(a.triggerPrice)), [st]);
+  // kỳ chốt 16:00 cũng bị lỡ → KHẨN lại
+  h.clock.t = FT + 8 * H + 2 * 60_000;
+  await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+  assert.equal(urgent(), 2);
+});
+
+test('R2 #3 tắt bot mà KHÔNG đọc được trạng thái sàn → vẫn báo KHẨN "kiểm tay ngay"', async () => {
+  const h = harness({ scan: signalScan() });
+  await openTrade(h);
+  h.deps.api = { request: async () => ({ kind: 'retryable', code: -1001, msg: 'mạng lỗi giả', status: 503, body: null, orderCount: { tenSec: null, oneMin: null } }) };
+  await h.drive(h.bot.stop());
+  const last = h.notes[h.notes.length - 1]!;
+  assert.equal(last.level, 'urgent');
+  assert.match(last.text, /Bot tắt — KHÔNG đọc được trạng thái sàn, kiểm tay ngay/);
 });
