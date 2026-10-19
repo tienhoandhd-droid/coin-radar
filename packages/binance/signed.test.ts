@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac, generateKeyPairSync, verify } from 'node:crypto';
 import { createClient, type FetchInit, type FetchLike } from './client.ts';
-import { classify, createSigned, hmacSigner, loadCredentials, rsaSigner } from './signed.ts';
+import { classify, createSigned, hmacSigner, loadCredentials, markForwardsInit, nodeFetch, rsaSigner } from './signed.ts';
 import { redact } from './redact.ts';
 
 const KEY = 'test-api-key-AAAA';
@@ -12,12 +12,12 @@ type Call = { url: string; init?: FetchInit };
 type Reply = { status?: number; headers?: Record<string, string>; body?: unknown; raw?: string; throws?: boolean };
 
 // Fetch giả: trả lần lượt các reply; /fapi/v1/time trả theo serverTime của tests
-function harness(replies: Reply[], opts: { serverTime?: number; localNow?: number; maxSkewMs?: number } = {}) {
+function harness(replies: Reply[], opts: { serverTime?: number; localNow?: number; maxSkewMs?: number; clientOpts?: Record<string, unknown> } = {}) {
   const calls: Call[] = [];
   const sleeps: number[] = [];
   let q = [...replies];
   const clock = { t: opts.localNow ?? 1_000_000 };
-  const fetch: FetchLike = async (url, init) => {
+  const fetch: FetchLike = markForwardsInit(async (url, init) => {
     calls.push({ url, init });
     if (url.includes('/fapi/v1/time')) {
       return { status: 200, headers: { get: () => null }, json: async () => ({ serverTime: opts.serverTime ?? clock.t }) };
@@ -29,10 +29,10 @@ function harness(replies: Reply[], opts: { serverTime?: number; localNow?: numbe
       headers: { get: (n: string) => r.headers?.[n.toLowerCase()] ?? null },
       json: async () => { if (r.raw !== undefined) return JSON.parse(r.raw); return r.body ?? {}; },
     };
-  };
+  });
   const now = () => clock.t;
   const sleep = async (ms: number) => { sleeps.push(ms); };
-  const client = createClient({ fetch, now, sleep });
+  const client = createClient({ fetch, now, sleep, ...opts.clientOpts });
   const api = createSigned({ client, apiKey: KEY, signer: hmacSigner(SECRET), now, sleep, maxSkewMs: opts.maxSkewMs ?? 500 });
   return { api, calls, sleeps, clock, client };
 }
@@ -225,4 +225,76 @@ test('log và thông điệp lỗi của lớp ký không chứa secret/signatur
   await api.request({ method: 'POST', path: '/fapi/v1/order', params: { symbol: 'BTCUSDT' }, createsOrder: true });
   assert.ok(logs.length > 0);
   for (const l of logs) assert.ok(!l.includes(KEY) && !l.includes(SECRET) && !/signature=[0-9a-f]{16}/.test(l), l);
+});
+
+test('adapter làm rơi init (kiểu (url) => fetch(url)) bị từ chối TRƯỚC khi gửi', async () => {
+  let sent = 0;
+  const dropping: FetchLike = async (url) => { sent++; return { status: 200, headers: { get: () => null }, json: async () => ({ serverTime: 1 }) }; };
+  const client = createClient({ fetch: dropping, now: () => 1, sleep: async () => {} });
+  const api = createSigned({ client, apiKey: KEY, signer: hmacSigner(SECRET), now: () => 1, sleep: async () => {} });
+  const r = await api.request({ method: 'POST', path: '/fapi/v1/order', createsOrder: true });
+  assert.notEqual(r.kind, 'ok');
+  assert.equal(sent, 0);
+});
+
+test('nodeFetch thật chuyển đủ method, X-MBX-APIKEY và body', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => { seen.push({ url, init }); return new Response('{}', { status: 200 }); }) as typeof fetch;
+  try {
+    await nodeFetch('https://x/y?a=1', { method: 'POST', headers: { 'X-MBX-APIKEY': KEY }, body: 'b=2' });
+  } finally {
+    globalThis.fetch = orig;
+  }
+  assert.equal(seen[0]!.init?.method, 'POST');
+  assert.deepEqual(seen[0]!.init?.headers, { 'X-MBX-APIKEY': KEY });
+  assert.equal(seen[0]!.init?.body, 'b=2');
+  assert.equal(nodeFetch.forwardsInit, true);
+});
+
+test('tham số dành riêng → rejected cục bộ, không gửi, không phải unknown_status', async () => {
+  const h = harness([{}]);
+  const r = await h.api.request({ method: 'POST', path: '/fapi/v1/order', params: { timestamp: 5 }, createsOrder: true });
+  assert.equal(r.kind, 'rejected');
+  assert.equal(h.calls.filter((c) => !c.url.includes('/time')).length, 0);
+});
+
+test('secret từ signer luôn được che dù caller không truyền secrets', async () => {
+  const logs: string[] = [];
+  const base = harness([]);
+  const fetch: FetchLike = markForwardsInit(async (url) => {
+    if (url.includes('/time')) return { status: 200, headers: { get: () => null }, json: async () => ({ serverTime: 1_000_000 }) };
+    throw new Error(`boom ${SECRET} ${KEY}`);
+  });
+  const client = createClient({ fetch, now: () => 1_000_000, sleep: async () => {} });
+  const api = createSigned({ client, apiKey: KEY, signer: hmacSigner(SECRET), now: () => 1_000_000, sleep: async () => {}, log: (m) => logs.push(m) });
+  const r = await api.request({ method: 'GET', path: '/a', createsOrder: false });
+  assert.ok(!r.msg.includes(SECRET) && !r.msg.includes(KEY));
+  assert.ok(logs.some((l) => l.includes('boom')));
+  for (const l of logs) assert.ok(!l.includes(SECRET) && !l.includes(KEY), l);
+  void base;
+});
+
+test('403 bật khóa chung ngắn; -1003 ở status 400 cũng bật khóa', async () => {
+  const h = harness([{ status: 403, body: {} }, { body: {} }], { clientOpts: { forbiddenCooldownMs: 5000 } });
+  assert.equal((await h.api.request({ method: 'GET', path: '/a', createsOrder: false })).kind, 'rejected');
+  const n = h.calls.length;
+  assert.equal((await h.api.request({ method: 'GET', path: '/a', createsOrder: false })).kind, 'banned');
+  assert.equal(h.calls.length, n);
+  h.clock.t += 6000;
+  assert.equal((await h.api.request({ method: 'GET', path: '/a', createsOrder: false })).kind, 'ok');
+  const h2 = harness([{ status: 400, body: { code: -1003, msg: 'x' } }, { body: {} }]);
+  assert.equal((await h2.api.request({ method: 'GET', path: '/a', createsOrder: false })).kind, 'banned');
+  const n2 = h2.calls.length;
+  await h2.api.request({ method: 'GET', path: '/a', createsOrder: false });
+  assert.equal(h2.calls.length, n2);
+});
+
+test('trần weight mặc định của bot < 2400', async () => {
+  const waits: number[] = [];
+  const fetch: FetchLike = async () => ({ status: 200, headers: { get: (n) => (n === 'x-mbx-used-weight-1m' ? '2300' : null) }, json: async () => ({}) });
+  const client = createClient({ fetch, sleep: async (ms) => { waits.push(ms); }, now: () => 5_000 });
+  await client.send('/a', undefined, 'bot');
+  await client.send('/a', undefined, 'bot');
+  assert.equal(waits.length, 1);
 });

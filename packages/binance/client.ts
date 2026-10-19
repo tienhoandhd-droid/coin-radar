@@ -4,9 +4,11 @@ export type FetchResponse = {
   json(): Promise<unknown>;
 };
 
-export type FetchInit = { method?: string; headers?: Record<string, string> };
+export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string };
 
-export type FetchLike = (url: string, init?: FetchInit) => Promise<FetchResponse>;
+// `forwardsInit` = adapter đã được khai báo là chuyển nguyên method/headers/body (xem nodeFetch trong signed.ts).
+// Request ký bắt buộc đi qua adapter có dấu này, tránh adapter kiểu `(url) => fetch(url)` làm rơi method/header.
+export type FetchLike = ((url: string, init?: FetchInit) => Promise<FetchResponse>) & { forwardsInit?: true };
 
 // Ai gọi: máy quét công khai (trần thấp) hay bot giao dịch (được dùng toàn bộ ngân sách IP)
 export type Priority = 'scanner' | 'bot';
@@ -27,13 +29,16 @@ export function createClient(opts: {
   fetch: FetchLike;
   base?: string;
   weightCeiling?: number; // trần cho máy quét (priority 'scanner')
-  botCeiling?: number; // trần cho bot (priority 'bot'); mặc định = toàn bộ 2400/phút
+  // Trần cho bot (priority 'bot'). Mặc định 2200 < giới hạn sàn 2400: cổng chỉ kiểm weight ĐÃ dùng,
+  // chưa tính request sắp gửi (có thể nặng tới ~30+) nên cần chừa đệm để không chạm 429.
+  botCeiling?: number;
+  forbiddenCooldownMs?: number; // sau HTTP 403 (WAF) tạm dừng gọi trong khoảng này (mặc định 10 s)
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }) {
   const base = opts.base ?? 'https://fapi.binance.com';
   const ceiling = opts.weightCeiling ?? 1800; // trần futures là 2400/phút; chừa khoảng an toàn
-  const botCeiling = opts.botCeiling ?? 2400;
+  const botCeiling = opts.botCeiling ?? 2200;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   let used = 0;
@@ -47,6 +52,9 @@ export function createClient(opts: {
       const msToNextMinute = 60_000 - (now() % 60_000) + 1_000;
       await sleep(msToNextMinute);
       used = 0;
+    }
+    if (init && !opts.fetch.forwardsInit) {
+      throw new Error('Adapter fetch không khai báo chuyển init (method/headers) — từ chối gửi request ký');
     }
     const res = await opts.fetch(base + path, init);
 
@@ -64,7 +72,17 @@ export function createClient(opts: {
       bannedUntil = now() + banMs;
       bannedCode = res.status;
     }
+    if (res.status === 403) {
+      // WAF chặn: dừng gọi một lúc thay vì tiếp tục dội vào
+      armBan(opts.forbiddenCooldownMs ?? 10_000, 403);
+    }
     return res;
+  }
+
+  // Bật khóa chung (dùng khi mã -1003 đến với HTTP status khác 418/429)
+  function armBan(ms: number, code: number): void {
+    const until = now() + ms;
+    if (until > bannedUntil) { bannedUntil = until; bannedCode = code; }
   }
 
   async function get(path: string): Promise<unknown> {
@@ -73,5 +91,5 @@ export function createClient(opts: {
     return res.json();
   }
 
-  return { get, send, base, usedWeight: () => used };
+  return { get, send, armBan, base, usedWeight: () => used };
 }

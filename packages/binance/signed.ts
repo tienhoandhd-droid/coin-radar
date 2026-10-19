@@ -1,5 +1,5 @@
 import { createHmac, createSign } from 'node:crypto';
-import { BanActiveError, type Priority } from './client.ts';
+import { BanActiveError, type FetchInit, type FetchLike, type FetchResponse, type Priority } from './client.ts';
 import { redact } from './redact.ts';
 
 // ---- Khóa & môi trường -------------------------------------------------------------------------
@@ -23,16 +23,33 @@ export function loadCredentials(env: Record<string, string | undefined>): Creden
 }
 
 // ---- Bộ ký (cắm được) --------------------------------------------------------------------------
-export type Signer = { sign(payload: string): string };
+export type Signer = { sign(payload: string): string; secrets: readonly string[] }; // secrets: luôn được che trong log
+
+// Fetch cho request ký: init BẮT BUỘC (khác FetchLike công khai, nơi init tùy chọn)
+export type SignedFetch = (url: string, init: Required<Pick<FetchInit, 'method' | 'headers'>> & Pick<FetchInit, 'body'>) => Promise<FetchResponse>;
+
+// Đánh dấu adapter đã chuyển đủ init; createClient/send từ chối request ký nếu thiếu dấu này
+export function markForwardsInit(f: SignedFetch): FetchLike {
+  const wrapped: FetchLike = (url, init) => {
+    if (!init || !init.method || !init.headers) throw new Error('Thiếu init (method/headers) cho request ký');
+    return f(url, { method: init.method, headers: init.headers, body: init.body });
+  };
+  wrapped.forwardsInit = true;
+  return wrapped;
+}
+
+// Adapter thật dùng fetch của Node, chuyển nguyên method, headers (X-MBX-APIKEY) và body
+export const nodeFetch: FetchLike = markForwardsInit((url, init) =>
+  globalThis.fetch(url, { method: init.method, headers: init.headers, body: init.body }));
 
 // HMAC SHA256, trả hex (tài liệu: khóa là secretKey, giá trị là totalParams)
 export function hmacSigner(secret: string): Signer {
-  return { sign: (payload) => createHmac('sha256', secret).update(payload).digest('hex') };
+  return { secrets: [secret], sign: (payload) => createHmac('sha256', secret).update(payload).digest('hex') };
 }
 
 // RSA (tài liệu futures: PKCS#8, RSASSA-PKCS1-v1_5 SHA-256, base64, bỏ xuống dòng; URL-encode khi gắn vào query)
 export function rsaSigner(privateKeyPem: string): Signer {
-  return { sign: (payload) => createSign('RSA-SHA256').update(payload).sign(privateKeyPem, 'base64').replace(/[\r\n]/g, '') };
+  return { secrets: [privateKeyPem], sign: (payload) => createSign('RSA-SHA256').update(payload).sign(privateKeyPem, 'base64').replace(/[\r\n]/g, '') };
 }
 // Ed25519: tài liệu KHÔNG xác nhận cho REST futures → chưa cài đặt.
 
@@ -64,11 +81,8 @@ export function classify(status: number, body: unknown): Classified {
 
 // ---- REST có ký ---------------------------------------------------------------------------------
 type ClientLike = {
-  send(path: string, init?: { method?: string; headers?: Record<string, string> }, priority?: Priority): Promise<{
-    status: number;
-    headers: { get(name: string): string | null };
-    json(): Promise<unknown>;
-  }>;
+  send(path: string, init?: FetchInit, priority?: Priority): Promise<FetchResponse>;
+  armBan(ms: number, code: number): void;
 };
 
 export type SignedResult = Classified & {
@@ -113,7 +127,7 @@ export function createSigned(opts: {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const maxSkew = opts.maxSkewMs ?? 500;
   const syncEvery = opts.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS;
-  const secrets = [opts.apiKey, ...(opts.secrets ?? [])];
+  const secrets = [opts.apiKey, ...opts.signer.secrets, ...(opts.secrets ?? [])]; // key + secret luôn được che
   let offset = 0;
   let lastSync: number | null = null;
 
@@ -122,7 +136,7 @@ export function createSigned(opts: {
   // Đo lệch giờ: offset = giờ server - giờ máy (lấy điểm giữa lúc gửi và nhận để bù độ trễ mạng)
   async function syncClock(): Promise<number> {
     const t0 = now();
-    const res = await opts.client.send('/fapi/v1/time', undefined, 'bot');
+    const res = await opts.client.send('/fapi/v1/time', { method: 'GET', headers: {} }, 'bot');
     const t1 = now();
     const body = (await res.json()) as { serverTime?: unknown };
     if (res.status !== 200 || typeof body?.serverTime !== 'number') {
@@ -150,9 +164,16 @@ export function createSigned(opts: {
   const empty = { tenSec: null, oneMin: null };
 
   async function once(o: RequestOpts): Promise<SignedResult> {
+    let url: string;
+    try {
+      url = build(o);
+    } catch (e) {
+      // Lỗi cục bộ (tham số sai): request CHƯA hề được gửi
+      return { kind: 'rejected', code: null, msg: redact(e instanceof Error ? e.message : String(e), secrets), status: 0, body: null, orderCount: empty };
+    }
     let res;
     try {
-      res = await opts.client.send(build(o), { method: o.method, headers: { 'X-MBX-APIKEY': opts.apiKey } }, 'bot');
+      res = await opts.client.send(url, { method: o.method, headers: { 'X-MBX-APIKEY': opts.apiKey } }, 'bot');
     } catch (e) {
       if (e instanceof BanActiveError) {
         return { kind: 'banned', code: e.httpCode, msg: redact(e.message, secrets), status: e.httpCode, body: null, orderCount: empty };
@@ -172,6 +193,7 @@ export function createSigned(opts: {
       return { kind, code: null, msg: `Phản hồi không phải JSON hợp lệ (HTTP ${res.status})`, status: res.status, body: null, orderCount };
     }
     const c = classify(res.status, body);
+    if (c.code === -1003 && res.status !== 418 && res.status !== 429) opts.client.armBan(60_000, 429); // -1003 ở status khác vẫn khóa chung
     return { ...c, msg: redact(c.msg, secrets), status: res.status, body, orderCount };
   }
 
@@ -197,7 +219,7 @@ export function createSigned(opts: {
     if (bad) { log(bad.msg); return bad; }
 
     let r = await once(o);
-    log(`${o.method} ${o.path} -> HTTP ${r.status} ${r.kind}${r.code !== null ? ` (${r.code})` : ''}`);
+    log(`${o.method} ${o.path} -> HTTP ${r.status} ${r.kind}${r.code !== null ? ` (${r.code})` : ''}${r.kind === 'unknown_status' ? ` ${r.msg}` : ''}`);
 
     if (r.kind === 'clock' && r.code === -1021) {
       // Giờ lệch: đo lại. Chỉ thử lại (đúng 1 lần) khi KHÔNG tạo lệnh.
