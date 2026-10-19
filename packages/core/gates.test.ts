@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { quarterlyExpiry, eventWindow } from './events.ts';
-import { evaluateGates, type GateContext } from './gates.ts';
+import { evaluateGates, liquidationCheck, type GateContext } from './gates.ts';
 import { riskTier } from './risk.ts';
 
 test('đáo hạn quý kế tiếp sau 19/10/2026 là 25/12/2026 08:00 UTC', () => {
@@ -20,7 +20,7 @@ const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
   move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
-  btcHourly: null, rsZ: 0, riskTier: 'Vừa', liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200, planValid: true, planNote: 'SL sau vùng hỗ trợ',
+  btcHourly: null, rsZ: 0, riskTier: 'Vừa', liquidation: { ok: true, note: 'Thanh lý ước tính xa hơn cắt lỗ' }, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200, planValid: true, planNote: 'SL sau vùng hỗ trợ',
 };
 
 test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
@@ -42,7 +42,7 @@ test('từng cổng chặn đúng', () => {
   fail({ move1hPct: 20, volumeZ1h: 6 }, 'G-04');
   fail({ mode: 'fast', ageDays: 10 }, 'G-05');
   fail({ eventBlocked: true }, 'G-07');
-  fail({ liquidationOk: false }, 'G-08');
+  fail({ liquidation: { ok: false, note: 'vượt bậc' } }, 'G-08');
   fail({ fundingRate: 0.002 }, 'G-09');
   fail({ mode: 'fast', fundingRate: 0.0002, minutesToFunding: 10 }, 'G-10');
   fail({ planValid: false, planNote: 'Không có vùng hỗ trợ đủ mạnh' }, 'G-12');
@@ -217,4 +217,17 @@ test('P-C1: bối cảnh chặn đúng chiều; ngoài phạm vi thì qua kèm g
   const out = contextGate(null, 'long');
   assert.equal(out.pass, true);
   assert.match(out.note, /ngoài phạm vi/);
+});
+
+test('I4/I7 G-08 theo bậc ký quỹ: notional nhỏ qua; vượt bậc cao nhất → trượt; bậc thật (leverageBracket) được dùng khi truyền vào', () => {
+  const okSmall = liquidationCheck({ stopDistFrac: 0.02, notional: 5_000, leverageCap: 5 });
+  assert.equal(okSmall.ok, true);
+  assert.match(okSmall.note, /mặc định thận trọng/);
+  const huge = liquidationCheck({ stopDistFrac: 0.02, notional: 1e9, leverageCap: 5 });
+  assert.equal(huge.ok, false);
+  assert.match(huge.note, /vượt bậc ký quỹ cao nhất/);
+  // bậc thật: MMR 40% → thanh lý quá gần SL 35% ngay cả ở 1× → trượt
+  const real = liquidationCheck({ stopDistFrac: 0.35, notional: 1_000, leverageCap: 5, brackets: [{ notionalCap: 1e6, maintMarginRatio: 0.4, maxLeverage: 2 }] });
+  assert.equal(real.ok, false);
+  assert.match(real.note, /leverageBracket/);
 });

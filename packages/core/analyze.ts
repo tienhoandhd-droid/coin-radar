@@ -3,8 +3,8 @@ import { isClosed } from './candles.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
-import { buildPlan, tp1R, maxSafeLeverage, worstTp1NetR, type TradePlan, type CostTier } from './plan.ts';
-import { evaluateGates, ratePer8h, fundingNote, inPatternScope, dailyTrend, patternTrendGate, contextGate, type GateResult } from './gates.ts';
+import { buildPlan, tp1R, worstTp1NetR, type TradePlan, type CostTier } from './plan.ts';
+import { evaluateGates, liquidationCheck, ratePer8h, fundingNote, inPatternScope, dailyTrend, patternTrendGate, contextGate, type GateResult } from './gates.ts';
 import { eventWindow, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
 import { COMMON, CONFIG } from './config.ts';
@@ -180,7 +180,7 @@ export function analyze(i: AnalyzeInput): Analysis {
   const h = i.hourly;
   const move1hPct = h.length >= 2 ? (last(h.map((k) => k.close)) / h[h.length - 2]!.close - 1) * 100 : 0;
   // Cổng hiện có cho một chiều + một kế hoạch (vùng hoặc mô hình) — dùng chung để tín hiệu mô hình qua đủ các cổng như tín hiệu vùng.
-  const gatesFor = (s: SideScore, p: { riskPerUnit: number; entry: number; valid: boolean; note: string }): GateResult[] => {
+  const gatesFor = (s: SideScore, p: { riskPerUnit: number; entry: number; notional: number; valid: boolean; note: string }): GateResult[] => {
     const stopDistPct = p.riskPerUnit / p.entry;
     return evaluateGates({
       mode: i.mode, side: s.side, score: s.score, regime: i.regime, btcHourly: i.mode === 'fast' ? btcHourlySide(i.btcTrend) : null, rsZ: s.rsZ, riskTier: risk.tier, breakerTripped: i.breakerTripped, breakerNote: i.breakerNote,
@@ -190,7 +190,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
       eventBlocked: ev.blocked,
       stopDistPct: stopDistPct * 100, stopDistAtr: p.riskPerUnit / dailyAtr,
-      liquidationOk: maxSafeLeverage(stopDistPct, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops) >= 1,
+      liquidation: liquidationCheck({ stopDistFrac: stopDistPct, notional: p.notional, leverageCap: CONFIG[i.mode].maxLeverage }),
       fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
       minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,
       planValid: p.valid, planNote: p.note,
@@ -273,7 +273,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       }
       const sideScore = side === 'long' ? L : S;
       const gs = [
-        ...gatesFor(sideScore, { riskPerUnit: Math.max(pp.riskPerUnit, pp.riskAtr * pp.atr), entry: pp.entry, valid: pp.valid, note: pp.invalidReason ?? pp.stopReason }),
+        ...gatesFor(sideScore, { riskPerUnit: Math.max(pp.riskPerUnit, pp.riskAtr * pp.atr), entry: pp.entry, notional: pp.notional, valid: pp.valid, note: pp.invalidReason ?? pp.stopReason }),
         { code: 'P-G1', pass: true, note: patternScope.note }, pg2, contextGate(context, side),
       ];
       const failed = gs.filter((x) => !x.pass);
@@ -300,7 +300,7 @@ export function analyze(i: AnalyzeInput): Analysis {
 
   // ---- Tín hiệu theo vùng (như 1b) + bối cảnh P-C1 ----
   const zoneGates = [
-    ...gatesFor(best, { riskPerUnit: plan.riskPerUnit, entry: plan.entry, valid: plan.valid, note: plan.invalidReason ?? plan.stopReason }),
+    ...gatesFor(best, { riskPerUnit: plan.riskPerUnit, entry: plan.entry, notional: plan.notional, valid: plan.valid, note: plan.invalidReason ?? plan.stopReason }),
     contextGate(context, best.side),
   ];
   const zoneOk = zoneGates.every((g) => g.pass) && best.score >= COMMON.qualifyScore;

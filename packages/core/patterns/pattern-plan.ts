@@ -3,7 +3,7 @@ import { CONFIG, COMMON } from '../config.ts';
 import { roundStep } from '../indicators.ts';
 import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
-import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, type CostTier, type Target, type FillRow } from '../plan.ts';
+import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, tp1NetRAt, mmrFor, type CostTier, type Target, type FillRow } from '../plan.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from '../exit.ts';
 import type { MultiMonthContext } from './context.ts';
 import { patternStopLevel, breakoutLevel, patternTargets, type StateResult } from './state.ts';
@@ -523,9 +523,10 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   }
 
   // ---- Đòn bẩy, thanh lý, funding (như plan.ts) ----
-  const safe = maxSafeLeverage(riskPerUnit / entry, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops);
-  const suggested = Math.max(1, Math.min(cfg.maxLeverage, Math.floor(safe)));
   const notional = Math.round(row0.legs.reduce((sum, l) => sum + l.qty * l.price, 0) * 1e8) / 1e8;
+  const mmr = mmrFor(notional); // bậc ký quỹ theo notional (I7)
+  const safe = maxSafeLeverage(riskPerUnit / entry, mmr.mmr, COMMON.liquidationBufferStops);
+  const suggested = Math.max(1, Math.min(cfg.maxLeverage, mmr.maxLeverage, Math.floor(safe)));
   const fundingPerUnit = a.fundingRate * fundingEvents * entry;
 
   const plan: PatternPlan = {
@@ -580,7 +581,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     riskPct: a.riskPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,
-    liquidationEstimate: liquidationPrice(entry, suggested, side, COMMON.maintenanceMarginRate),
+    liquidationEstimate: liquidationPrice(entry, suggested, side, mmr.mmr),
     marginNeeded: notional / suggested,
     fundingCostR: (dir * fundingPerUnit) / riskPerUnit,
     timeStopHours: cfg.timeStopHours,

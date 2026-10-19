@@ -226,7 +226,26 @@ export const COMMON = {
   },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
-  maintenanceMarginRate: 0.01,
+  // Bậc ký quỹ duy trì (I7, đánh giá độc lập). Bậc THẬT của từng mã ở GET /fapi/v1/leverageBracket (CẦN API key: notionalCap,
+  // maintMarginRatio, initialLeverage — docs/reference/binance-usdm-api.md). Chưa có key → dùng bảng dưới đây:
+  // GIẢ ĐỊNH THẬN TRỌNG, KHÔNG phải số của Binance (MMR cao hơn và trần notional thấp hơn bậc thường gặp của BTC/ETH; altcoin nhỏ có thể còn chặt hơn).
+  // Bot có key PHẢI truyền bậc thật vào marginTier(notional, brackets). Vượt bậc cuối → G-08 trượt.
+  margin: {
+    defaultBrackets: [
+      { notionalCap: 10_000, maintMarginRatio: 0.025, maxLeverage: 20 },
+      { notionalCap: 50_000, maintMarginRatio: 0.05, maxLeverage: 10 },
+      { notionalCap: 250_000, maintMarginRatio: 0.1, maxLeverage: 5 },
+      { notionalCap: 1_000_000, maintMarginRatio: 0.125, maxLeverage: 4 },
+      { notionalCap: 5_000_000, maintMarginRatio: 0.25, maxLeverage: 2 },
+    ],
+  },
+  // Trượt giá thêm theo cỡ lệnh (I7) — ĐỀ XUẤT, CHƯA BACKTEST. Khối lượng 1 phút ước bằng TB quoteVolume các nến 1H gần nhất ÷ 60
+  // (máy quét không tải nến 1m; bot có thể truyền khối lượng 1m thật).
+  slippage: {
+    pctPerParticipation: 0.5, // + mức này (% khứ hồi) cho mỗi lần notional bằng khối lượng 1 phút — đề xuất, chưa backtest
+    maxParticipation: 0.25, // notional tối đa = mức này × khối lượng 1 phút (portfolio.canOpen giảm khối lượng) — đề xuất, chưa backtest
+    volumeBars1h: 24, // số nến 1H để ước khối lượng 1 phút — đề xuất, chưa backtest
+  },
   liquidationBufferStops: 1, // giá thanh lý phải xa hơn cắt lỗ ≥ 1 khoảng cắt lỗ
   roundNumberProximityAtr: 0.2, // cắt lỗ cách số tròn trong khoảng này (×ATR) thì đẩy qua số tròn — đề xuất, chưa backtest
   riskAtrPctTiers: [4, 6, 10],

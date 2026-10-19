@@ -4,6 +4,8 @@ import type { RiskTier } from './risk.ts';
 import type { Candle, Mode, Side } from './types.ts';
 import { sma } from './indicators.ts';
 import type { PatternKind } from './patterns/types.ts';
+import { marginTier, type MarginBracket } from './margin.ts';
+import { maxSafeLeverage } from './plan.ts';
 
 export type GateResult = { code: string; pass: boolean; note: string };
 export type GateContext = {
@@ -24,7 +26,7 @@ export type GateContext = {
   volumeZ1h: number;
   ageDays: number;
   eventBlocked: boolean;
-  liquidationOk: boolean;
+  liquidation: { ok: boolean; note: string }; // G-08 — từ liquidationCheck
   stopDistPct: number; // khoảng cắt lỗ theo % giá vào lệnh
   stopDistAtr: number; // khoảng cắt lỗ chia ATR(14) nến NGÀY; NaN nếu thiếu ATR ngày
   fundingRate: number; // mức MỖI KỲ funding của hợp đồng, dương = Long trả
@@ -48,6 +50,22 @@ export function fundingNote(rate: number, intervalHours: number, isDefault: bool
     ? `Funding ${pct4(rate)}%/8h`
     : `Funding ${pct4(rate)}%/${intervalHours}h ≈ ${pct4(ratePer8h(rate, intervalHours))}%/8h`;
   return isDefault ? `${base} (mặc định 8h: mã không có trong fundingInfo)` : base;
+}
+
+// G-08 (P-04) theo bậc ký quỹ của notional (I4/I7): giá thanh lý ở đòn bẩy sẽ dùng = min(trần chế độ, trần bậc, đòn bẩy an toàn)
+// phải cách giá vào ≥ (1 + liquidationBufferStops) × khoảng SL. brackets = bậc thật (leverageBracket, cần key); không có → mặc định thận trọng.
+export function liquidationCheck(a: { stopDistFrac: number; notional: number; leverageCap: number; brackets?: readonly MarginBracket[] }): { ok: boolean; note: string } {
+  const tier = marginTier(a.notional, a.brackets);
+  const usd = (x: number) => Math.round(x).toLocaleString('vi-VN');
+  if (tier === null) {
+    return { ok: false, note: `Notional ${usd(a.notional)} USDT vượt bậc ký quỹ cao nhất (${a.brackets ? 'leverageBracket' : 'mặc định thận trọng'}) — không mở được cỡ này` };
+  }
+  const safe = maxSafeLeverage(a.stopDistFrac, tier.mmr, COMMON.liquidationBufferStops);
+  const lev = Math.min(a.leverageCap, tier.maxLeverage, Math.floor(safe));
+  const head = `MMR ${(tier.mmr * 100).toFixed(1).replace('.', ',')}% (bậc ≤ ${usd(tier.notionalCap)} USDT, ${tier.source})`;
+  return lev >= 1
+    ? { ok: true, note: `${head}; ở ${lev}× thanh lý ước tính cách giá vào ≥ ${1 + COMMON.liquidationBufferStops} khoảng SL` }
+    : { ok: false, note: `${head}; thanh lý quá gần cắt lỗ ngay cả ở 1×` };
 }
 
 export function evaluateGates(c: GateContext): GateResult[] {
@@ -85,7 +103,7 @@ export function evaluateGates(c: GateContext): GateResult[] {
     },
     { code: 'G-06', pass: true, note: 'chưa đánh giá — chưa có nguồn hack/hủy niêm yết (kế hoạch sau)' },
     { code: 'G-07', pass: !c.eventBlocked, note: c.eventBlocked ? 'Trong cửa sổ sự kiện' : 'Ngoài cửa sổ sự kiện' },
-    { code: 'G-08', pass: c.liquidationOk, note: c.liquidationOk ? 'Thanh lý ước tính xa hơn cắt lỗ' : 'Thanh lý quá gần cắt lỗ' },
+    { code: 'G-08', pass: c.liquidation.ok, note: c.liquidation.note },
     {
       code: 'G-09',
       pass: adverseFunding <= COMMON.fundingExtremePer8h,

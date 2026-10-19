@@ -3,12 +3,23 @@ import { CONFIG, COMMON } from './config.ts';
 import { stopSideZones, targetSideZones, zoneContaining, describeZone, type Zone } from './zones.ts';
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from './exit.ts';
+import { marginTier } from './margin.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
 
 // roundStep nằm ở indicators.ts (để zones.ts dùng mà không tạo vòng import); re-export để import cũ vẫn chạy
 export { roundStep };
+
+// MMR + đòn bẩy tối đa theo bậc ký quỹ của notional (mặc định thận trọng khi chưa có leverageBracket). Notional vượt bậc cuối →
+// trả bậc cuối (chỉ để các số in ra hữu hạn); việc chặn do G-08 (analyze) làm.
+export function mmrFor(notional: number): { mmr: number; maxLeverage: number } {
+  const t = marginTier(notional);
+  if (t !== null) return t;
+  const list = COMMON.margin.defaultBrackets;
+  const lastB = list[list.length - 1]!;
+  return { mmr: lastB.maintMarginRatio, maxLeverage: lastB.maxLeverage };
+}
 
 // Công thức gần đúng cho ký quỹ isolated (bỏ qua bậc ký quỹ thật — cần API key). P-04.
 export function liquidationPrice(entry: number, leverage: number, side: Side, mmr: number): number {
@@ -326,8 +337,10 @@ export function buildPlan(a: PlanArgs): TradePlan {
       entryReason += `; giá tối đa ${a.side === 'long' ? 'hạ xuống' : 'nâng lên'} ${fp(maxEntry)} vì khối lượng không chia được ${c2 ? `TP1 ${zc.exitPcts[0]}% + trailing ${100 - zc.exitPcts[0]!}%` : zc.exitPcts.join('/')} ở giá khớp xấu hơn`;
     }
   }
-  const safe = maxSafeLeverage(riskPerUnit / entry, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops);
-  const suggested = Math.max(1, Math.min(cfg.maxLeverage, Math.floor(safe)));
+  // Bậc ký quỹ theo notional (I7): MMR và đòn bẩy tối đa của bậc; vượt bậc cuối → dùng bậc cuối để in số, G-08 sẽ trượt
+  const mmr = mmrFor(size.notional);
+  const safe = maxSafeLeverage(riskPerUnit / entry, mmr.mmr, COMMON.liquidationBufferStops);
+  const suggested = Math.max(1, Math.min(cfg.maxLeverage, mmr.maxLeverage, Math.floor(safe)));
   // Số kỳ funding thật trong thời gian giữ dự kiến: 4h/kỳ → gấp đôi 8h/kỳ
   const fundingEvents = cfg.fundingHoldHours / a.fundingIntervalHours;
   const fundingPerUnit = a.fundingRate * fundingEvents * entry; // dương = Long trả
@@ -357,7 +370,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     riskPct: a.riskPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,
-    liquidationEstimate: liquidationPrice(entry, suggested, a.side, COMMON.maintenanceMarginRate),
+    liquidationEstimate: liquidationPrice(entry, suggested, a.side, mmr.mmr),
     marginNeeded: size.notional / suggested,
     fundingCostR: (dir * fundingPerUnit) / riskPerUnit,
     timeStopHours: cfg.timeStopHours,
