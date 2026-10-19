@@ -1,6 +1,6 @@
 import { atr, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
-import { stopSideZones, targetSideZones, describeZone, type Zone } from './zones.ts';
+import { stopSideZones, targetSideZones, zoneContaining, describeZone, type Zone } from './zones.ts';
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
@@ -46,6 +46,9 @@ export function splitQuantity(qty: number, stepSize: number, pcts: readonly numb
 // qty = khối lượng của phần này; nếu price = null thì phần này nằm trong phần để trailing stop
 export type Target = { name: 'TP1' | 'TP2' | 'TP3'; price: number | null; pct: number; qty: number; r: number | null; reason: string };
 
+// Một dòng của bảng khối lượng theo giá khớp: cùng ngân sách rủi ro, khối lượng đổi theo giá khớp
+export type FillRow = { label: 'giá hiện tại' | 'giữa' | 'giá tối đa' | 'limit'; fill: number; qty: number; q: [number, number, number]; estLoss: number };
+
 export type TradePlan = {
   side: Side;
   entryType: 'market' | 'limit';
@@ -67,6 +70,7 @@ export type TradePlan = {
   notional: number;
   riskAmount: number; // NGÂN SÁCH rủi ro (vốn × %), không phải số tiền mất thật
   estLoss: number; // số tiền mất ước tính nếu chạm SL = qty × |vào − SL| + phí ước tính
+  fillTable: FillRow[]; // market: 3 dòng (giá hiện tại / giữa / giá tối đa); limit: 1 dòng (giá limit)
   riskPct: number; // % vốn rủi ro thực sự đã dùng để tính khối lượng (P-01)
   safeLeverage: number;
   suggestedLeverage: number;
@@ -128,12 +132,13 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const sideWord = a.side === 'long' ? 'hỗ trợ' : 'kháng cự';
   const dirWord = a.side === 'long' ? 'dưới' : 'trên';
 
-  // Vùng đặt SL: vùng đầu tiên (gần giá nhất) đủ mạnh, tính từ giá thị trường
+  // Vùng đặt SL: vùng đầu tiên (gần giá nhất) đủ mạnh và nằm hẳn một phía của giá thị trường
   const support = stopSideZones(a.zones, marketPrice, a.side).find((z) => z.strength >= zc.minSlStrength) ?? null;
   // Mép vùng phía giá: Long = mép trên vùng hỗ trợ; Short = mép dưới vùng kháng cản
   const nearEdge = support === null ? marketPrice : a.side === 'long' ? support.high : support.low;
   const distAtr = support === null ? 0 : (dir * (marketPrice - nearEdge)) / atrEntry;
 
+  const insideZone = zoneContaining(a.zones, marketPrice);
   let entryType: 'market' | 'limit' = 'market';
   let entry = marketPrice;
   if (support !== null && distAtr > zc.directEntryMaxAtr) {
@@ -201,7 +206,10 @@ export function buildPlan(a: PlanArgs): TradePlan {
 
   let valid = true;
   let invalidReason: string | null = null;
-  if (support === null) {
+  if (insideZone !== null) {
+    valid = false;
+    invalidReason = `Giá đang nằm trong vùng ${dz(insideZone)} — chờ giá thoát hẳn khỏi vùng`;
+  } else if (support === null) {
     valid = false;
     invalidReason = `Không có vùng ${sideWord} đủ mạnh phía ${dirWord} để đặt SL`;
   } else if (blockedBy !== null) {
@@ -212,8 +220,31 @@ export function buildPlan(a: PlanArgs): TradePlan {
     invalidReason = `Kháng cự đầu tiên quá gần: TP1 chỉ ${vn(targets[0]!.r, 2)}R < ${zc.minTp1R}R`;
   }
 
+  // Giá limit không được nằm trong một vùng
+  if (valid && entryType === 'limit') {
+    const limitZone = zoneContaining(a.zones, entry);
+    if (limitZone !== null) {
+      valid = false;
+      invalidReason = `Giá limit ${fp(entry)} nằm trong vùng ${dz(limitZone)} — chờ giá thoát hẳn khỏi vùng`;
+    }
+  }
+
   // Vùng vào lệnh + lý do
-  const maxEntry = snapToTick(marketPrice + dir * cfg.maxEntryAtr * atrEntry, tick, a.side === 'long' ? 'down' : 'up');
+  let maxEntry = snapToTick(marketPrice + dir * cfg.maxEntryAtr * atrEntry, tick, a.side === 'long' ? 'down' : 'up');
+  // Dòng xấu nhất (giá khớp tối đa) cũng phải còn TP1 ≥ minTp1R: R = |TP1 − f| / |f − SL| ≥ m ⇔ f ≤ (TP1 + m·SL)/(1+m) (Long); Short đảo chiều
+  let maxEntryNote = '';
+  const tp1Price = targets[0]!.price;
+  if (valid && entryType === 'market' && tp1Price !== null) {
+    const limitFill = (tp1Price + zc.minTp1R * stop) / (1 + zc.minTp1R);
+    const capped = snapToTick(limitFill, tick, a.side === 'long' ? 'down' : 'up');
+    const safeCap = a.side === 'long' ? Math.max(capped, marketPrice) : Math.min(capped, marketPrice);
+    if (dir * (maxEntry - safeCap) > 0) {
+      const verb = a.side === 'long' ? 'hạ' : 'nâng';
+      const prep = a.side === 'long' ? 'xuống' : 'lên';
+      maxEntryNote = `; giá tối đa ${verb} từ ${fp(maxEntry)} ${prep} ${fp(safeCap)} để TP1 vẫn ≥ ${zc.minTp1R}R ở giá khớp xấu nhất`;
+      maxEntry = safeCap;
+    }
+  }
   let entryZone: { low: number; high: number };
   let limitExpiryHours: number | null = null;
   let entryReason: string;
@@ -230,9 +261,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
     entryZone = a.side === 'long'
       ? { low: snapToTick(Math.min(inner, marketPrice), tick, 'down'), high: maxEntry }
       : { low: maxEntry, high: snapToTick(Math.max(inner, marketPrice), tick, 'up') };
-    entryReason = support === null
+    entryReason = support === null || insideZone !== null
       ? invalidReason!
-      : `Giá đang sát vùng ${sideWord} ${dz(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${fp(maxEntry)}`;
+      : `Giá đang sát vùng ${sideWord} ${dz(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${fp(maxEntry)}${maxEntryNote}`;
   }
 
   const costPct = COMMON.costRoundTripPct[a.costTier];
@@ -240,6 +271,15 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const estLoss = size.qty * riskPerUnit + (size.notional * costPct) / 100;
   const parts = splitQuantity(size.qty, a.stepSize, zc.exitPcts);
   targets.forEach((t, i) => { t.qty = parts[i]!; });
+  // Bảng khối lượng theo giá khớp: cùng ngân sách rủi ro, khối lượng = rủi ro ÷ (|khớp − SL| + phí)
+  const row = (label: FillRow['label'], fill: number): FillRow => {
+    const sz = positionSize(a.capital, a.riskPct, fill, stop, costPct, a.stepSize);
+    const q = splitQuantity(sz.qty, a.stepSize, zc.exitPcts) as [number, number, number];
+    return { label, fill, qty: sz.qty, q, estLoss: sz.qty * Math.abs(fill - stop) + (sz.notional * costPct) / 100 };
+  };
+  const fillTable: FillRow[] = entryType === 'limit'
+    ? [row('limit', entry)]
+    : [row('giá hiện tại', marketPrice), row('giữa', snapToTick((marketPrice + maxEntry) / 2, tick, 'nearest')), row('giá tối đa', maxEntry)];
   if (valid) {
     if (size.qty <= 0) {
       valid = false;
@@ -275,6 +315,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     notional: size.notional,
     riskAmount: size.riskAmount,
     estLoss,
+    fillTable,
     riskPct: a.riskPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,

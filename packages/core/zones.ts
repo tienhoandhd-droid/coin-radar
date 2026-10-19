@@ -89,11 +89,17 @@ export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: str
   return zones;
 }
 
-// Phía đặt SL: Long = vùng nằm dưới (gồm vùng đang chứa giá), gần giá nhất trước
+// Phía đặt SL: Long = vùng nằm HẲN dưới giá (zone.high < giá); Short = nằm hẳn trên giá (zone.low > giá).
+// Vùng đang chứa giá không thuộc phía nào (người dùng chốt 19/10/2026: giá trong vùng thì không vào lệnh).
 export function stopSideZones(zones: Zone[], price: number, side: Side): Zone[] {
   return side === 'long'
-    ? zones.filter((z) => z.low < price).sort((p, q) => q.high - p.high)
-    : zones.filter((z) => z.high > price).sort((p, q) => p.low - q.low);
+    ? zones.filter((z) => z.high < price).sort((p, q) => q.high - p.high)
+    : zones.filter((z) => z.low > price).sort((p, q) => p.low - q.low);
+}
+
+// Vùng đang chứa giá (kể cả đúng mép: low ≤ giá ≤ high); không có thì null
+export function zoneContaining(zones: Zone[], price: number): Zone | null {
+  return zones.find((z) => z.low <= price && price <= z.high) ?? null;
 }
 
 // Phía mục tiêu: Long = vùng nằm hẳn phía trên giá; Short = nằm hẳn phía dưới

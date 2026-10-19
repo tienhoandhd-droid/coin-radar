@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan, tp1R } from './plan.ts';
+import { COMMON } from './config.ts';
 import type { Zone } from './zones.ts';
 import type { Candle } from './types.ts';
 
@@ -354,4 +355,98 @@ test('1.3 estLoss = qty × |vào − SL| + phí ước tính', () => {
   assert.ok(p.estLoss > p.qty * p.riskPerUnit);
   assert.ok(p.estLoss <= p.riskAmount + 1e-9);
   void cost;
+});
+
+// ===== Đợt 2 — quyết định người dùng 19/10/2026 =====
+
+test('2.1 giá nằm trong một vùng → không hợp lệ, lý do nêu vùng và "chờ giá thoát hẳn" (cả Long lẫn Short)', () => {
+  for (const side of ['long', 'short'] as const) {
+    const zs = side === 'long' ? [...supports, zone(96, 97, 3), ...resistances] : [zone(104, 105, 3), zone(103, 104.2, 3), zone(100, 101), zone(97, 98)];
+    const p = buildPlan({ ...baseArgs, side, entry: flat(side === 'long' ? 96.3 : 103.7), zones: zs });
+    assert.equal(p.valid, false);
+    assert.match(p.invalidReason!, /^Giá đang nằm trong vùng \d+,\d+–\d+,\d+ .* — chờ giá thoát hẳn khỏi vùng$/);
+    for (const key of ['entry', 'stop', 'qty', 'maxEntry'] as const) assert.ok(Number.isFinite(p[key]));
+  }
+});
+
+test('2.1 vùng chứa giá không còn được dùng làm vùng đặt SL: SL lấy vùng nằm hẳn dưới giá', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [zone(94, 95, 3), zone(96, 97, 3), ...resistances] });
+  assert.match(p.stopReason, /94,000–95,000/);
+  assert.doesNotMatch(p.stopReason, /96,000–97,000/);
+  assert.equal(p.valid, false); // vẫn nằm trong vùng 96–97
+});
+
+test('2.1 giá đúng mép vùng cũng tính là nằm trong vùng', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96), zones: [...supports, ...resistances] });
+  assert.equal(p.valid, false);
+  assert.match(p.invalidReason!, /Giá đang nằm trong vùng/);
+});
+
+test('2.1 giá limit nằm trong một vùng khác → không hợp lệ, lý do nêu vùng', () => {
+  // hỗ trợ 95–96 → limit 96,1; vùng yếu 96,05–97 chứa giá limit; giá hiện tại 98,5 không nằm trong vùng nào
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(98.5), zones: [...supports, zone(96.05, 97, 1)] });
+  assert.equal(p.entryType, 'limit');
+  assert.equal(r6(p.entry), 96.1);
+  assert.equal(p.valid, false);
+  assert.match(p.invalidReason!, /^Giá limit 96,100 nằm trong vùng 96,050–97,000 .* — chờ giá thoát hẳn khỏi vùng$/);
+});
+
+test('2.2 lệnh market: bảng 3 dòng (giá hiện tại / giữa / tối đa), rủi ro giữ nguyên, chia 50/30/20 từng dòng', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.valid, true);
+  assert.equal(p.fillTable.length, 3);
+  assert.deepEqual(p.fillTable.map((f) => f.label), ['giá hiện tại', 'giữa', 'giá tối đa']);
+  assert.equal(r6(p.fillTable[0]!.fill), 96.3);
+  assert.equal(r6(p.fillTable[1]!.fill), 96.45);
+  assert.equal(r6(p.fillTable[2]!.fill), r6(p.maxEntry));
+  assert.equal(r6(p.maxEntry), 96.6);
+  for (const f of p.fillTable) {
+    const expected = positionSize(1000, 0.5, f.fill, p.stop, COMMON.costRoundTripPct.high, 0.001).qty;
+    assert.equal(r6(f.qty), r6(expected));
+    assert.equal(r6(f.q[0] + f.q[1] + f.q[2]), r6(f.qty));
+    assert.deepEqual(f.q.map((x) => r6(x)), splitQuantity(f.qty, 0.001, [50, 30, 20]).map((x) => r6(x)));
+    assert.ok(f.estLoss <= p.riskAmount + 1e-9 && f.estLoss > p.riskAmount * 0.99, `estLoss ${f.estLoss}`);
+  }
+  assert.ok(p.fillTable[0]!.qty > p.fillTable[1]!.qty && p.fillTable[1]!.qty > p.fillTable[2]!.qty);
+  assert.equal(p.fillTable[0]!.qty, p.qty);
+  assert.equal(p.fillTable[0]!.estLoss, p.estLoss);
+});
+
+test('2.2 lệnh limit: bảng chỉ một dòng ở giá limit', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(98.5), zones: [...supports, zone(99.5, 100.5)] });
+  assert.equal(p.entryType, 'limit');
+  assert.equal(p.fillTable.length, 1);
+  assert.equal(p.fillTable[0]!.fill, p.entry);
+  assert.equal(p.fillTable[0]!.label, 'limit');
+  assert.equal(p.fillTable[0]!.qty, p.qty);
+});
+
+test('2.2 Long: TP1 chỉ 1,06R ở giá hiện tại → giá tối đa bị hạ để dòng xấu nhất vẫn ≥ 1R, entryReason nói rõ', () => {
+  // TP1 = 98,0; SL = 94,7 → giá khớp tối đa để còn ≥ 1R: (98 + 94,7)/2 = 96,35
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, zone(98.2, 99), zone(102, 103)] });
+  assert.equal(p.valid, true);
+  assert.equal(r6(p.maxEntry), 96.35);
+  assert.equal(r6(p.fillTable[2]!.fill), 96.35);
+  assert.match(p.entryReason, /hạ.*96,350.*TP1.*1R/);
+  const worst = p.fillTable[2]!.fill;
+  assert.ok((p.targets[0]!.price! - worst) / (worst - p.stop) >= 1 - 1e-9);
+  assert.equal(r6(p.entryZone.high), 96.35);
+});
+
+test('2.2 Short: giá tối đa (thấp nhất) được nâng lên để TP1 vẫn ≥ 1R ở dòng xấu nhất', () => {
+  // SL = 105,3; TP1 = 102,0 → giá khớp thấp nhất để còn ≥ 1R: (102 + 105,3)/2 = 103,65
+  const zs = [zone(104, 105, 3), zone(101, 101.8), zone(97, 98), zone(93, 94)];
+  const p = buildPlan({ ...baseArgs, side: 'short', entry: flat(103.7), zones: zs });
+  assert.equal(p.valid, true);
+  assert.equal(r6(p.maxEntry), 103.65);
+  assert.equal(r6(p.fillTable[2]!.fill), 103.65);
+  assert.match(p.entryReason, /nâng.*103,650.*TP1.*1R/);
+  const worst = p.fillTable[2]!.fill;
+  assert.ok((worst - p.targets[0]!.price!) / (p.stop - worst) >= 1 - 1e-9);
+});
+
+test('2.2 TP1 đủ xa: không hạ giá tối đa, entryReason không nhắc hạ', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(r6(p.maxEntry), 96.6);
+  assert.doesNotMatch(p.entryReason, /hạ/);
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findZones, stopSideZones, targetSideZones, describeZone, type Zone } from './zones.ts';
+import { findZones, stopSideZones, targetSideZones, zoneContaining, describeZone, type Zone } from './zones.ts';
 import type { Candle } from './types.ts';
 
 const candle = (i: number, high: number, low: number): Candle => ({
@@ -71,12 +71,26 @@ test('khối lượng: vùng thuộc tứ phân vị trên được cộng volum
 const Z = (low: number, high: number): Zone => ({ low, high, strength: 2, touches: 1, sources: [] });
 const zones = [Z(90, 92), Z(98, 102), Z(108, 110), Z(120, 122)];
 
-test('stopSideZones / targetSideZones: vùng chứa giá thuộc phía SL, không thuộc phía mục tiêu', () => {
+test('stopSideZones / targetSideZones: chỉ vùng nằm hẳn một phía; vùng chứa giá không thuộc phía nào', () => {
   const lowsOf = (zs: Zone[]) => zs.map((z) => z.low);
-  assert.deepEqual(lowsOf(stopSideZones(zones, 100, 'long')), [98, 90]);
+  // giá 100 nằm trong vùng 98–102 → vùng đó bị loại khỏi cả hai phía
+  assert.deepEqual(lowsOf(stopSideZones(zones, 100, 'long')), [90]);
   assert.deepEqual(lowsOf(targetSideZones(zones, 100, 'long')), [108, 120]);
-  assert.deepEqual(lowsOf(stopSideZones(zones, 100, 'short')), [98, 108, 120]);
+  assert.deepEqual(lowsOf(stopSideZones(zones, 100, 'short')), [108, 120]);
   assert.deepEqual(lowsOf(targetSideZones(zones, 100, 'short')), [90]);
+  // giá 105 nằm giữa các vùng → như cũ
+  assert.deepEqual(lowsOf(stopSideZones(zones, 105, 'long')), [98, 90]);
+  assert.deepEqual(lowsOf(stopSideZones(zones, 105, 'short')), [108, 120]);
+  // giá chạm đúng mép vùng cũng không tính là nằm hẳn một phía
+  assert.deepEqual(lowsOf(stopSideZones(zones, 102, 'long')), [90]);
+  assert.deepEqual(lowsOf(stopSideZones(zones, 98, 'short')), [108, 120]);
+});
+
+test('zoneContaining: tìm vùng chứa giá (kể cả đúng mép), không có thì null', () => {
+  assert.equal(zoneContaining(zones, 100)?.low, 98);
+  assert.equal(zoneContaining(zones, 98)?.low, 98);
+  assert.equal(zoneContaining(zones, 102)?.low, 98);
+  assert.equal(zoneContaining(zones, 105), null);
 });
 
 test('describeZone: định dạng số kiểu Việt Nam', () => {

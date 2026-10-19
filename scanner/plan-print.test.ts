@@ -14,6 +14,11 @@ const base: TradePlan = {
   afterTp1Stop: 0.6143, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
   riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
   fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2,
+  fillTable: [
+    { label: 'giá hiện tại', fill: 0.6143, qty: 29, q: [14, 8, 7], estLoss: 2.43 },
+    { label: 'giữa', fill: 0.6203, qty: 27, q: [13, 8, 6], estLoss: 2.45 },
+    { label: 'giá tối đa', fill: 0.6262, qty: 26, q: [13, 7, 6], estLoss: 2.47 },
+  ],
 };
 const head = { symbol: 'TIAUSDT', score: 75.9, riskTier: 'Rất cao' };
 
@@ -22,7 +27,8 @@ test('in kế hoạch: dấu phẩy cho điểm và % rủi ro, trailing là kho
   assert.match(t, /điểm 75,9/);
   assert.match(t, /ngân sách rủi ro 0,25% vốn/);
   assert.match(t, /trailing stop: cách giá cao nhất 3×ATR = 0,1196 \(19,5%\)/);
-  assert.match(t, /Đạt TP1 → dời SL về giá vào 0,6143/);
+  assert.match(t, /Đạt TP1 → dời SL về đúng giá KHỚP THẬT của anh/);
+  assert.doesNotMatch(t, /dời SL về giá vào/);
   assert.doesNotMatch(t, /3×ATR = 0,1196 — /);
 });
 
@@ -74,4 +80,20 @@ test('1.3 in thua lỗ ước tính thật, không in ngân sách rủi ro', () 
   const t = planLines(head, base, 0.0001).join('\n');
   assert.match(t, /Tiền mất ước tính nếu chạm SL: 2,39 USDT/);
   assert.doesNotMatch(t, /Tiền mất nếu chạm SL: 2,50/);
+});
+
+test('2.2 lệnh market: in bảng khối lượng theo 3 giá khớp, mỗi dòng có chia 50/30/20 và tiền mất ước tính', () => {
+  const t = planLines(head, base, 0.0001).join('\n');
+  assert.match(t, /Bảng khối lượng theo giá khớp/);
+  assert.match(t, /Khớp 0,6143 \(giá hiện tại\): 29 coin = TP1 14 \/ TP2 8 \/ TP3 7 \| mất ước tính 2,43 USDT/);
+  assert.match(t, /Khớp 0,6203 \(giữa\): 27 coin = TP1 13 \/ TP2 8 \/ TP3 6 \| mất ước tính 2,45 USDT/);
+  assert.match(t, /Khớp 0,6262 \(giá tối đa\): 26 coin = TP1 13 \/ TP2 7 \/ TP3 6 \| mất ước tính 2,47 USDT/);
+});
+
+test('2.2 lệnh limit: bảng chỉ một dòng', () => {
+  const lim = { ...base, entryType: 'limit' as const, limitExpiryHours: 24, entry: 0.6, entryZone: { low: 0.59, high: 0.6 },
+    fillTable: [{ label: 'limit' as const, fill: 0.6, qty: 30, q: [15, 9, 6] as [number, number, number], estLoss: 2.4 }] };
+  const t = planLines(head, lim, 0.0001).join('\n');
+  assert.match(t, /Khớp 0,6000 \(limit\): 30 coin = TP1 15 \/ TP2 9 \/ TP3 6/);
+  assert.equal((t.match(/Khớp /g) ?? []).length, 1);
 });
