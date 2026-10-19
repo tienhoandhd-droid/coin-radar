@@ -5,7 +5,7 @@ import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
 import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, type CostTier, type Target, type FillRow } from '../plan.ts';
 import type { MultiMonthContext } from './context.ts';
-import { patternStopLevel, type StateResult } from './state.ts';
+import { patternStopLevel, breakoutLevel, type StateResult } from './state.ts';
 import type { PatternGeometry, PatternKind } from './types.ts';
 
 // Kế hoạch lệnh theo mô hình biểu đồ (báo cáo "Mô hình biểu đồ cho BTC", mục (2) đệm cắt lỗ, (3), (4)).
@@ -27,9 +27,7 @@ export type PatternPlan = {
   side: Side;
   entryType: 'market' | 'split' | 'limit'; // split = 50% market + 50% limit
   marketPrice: number; // giá đóng nến gần nhất
-  breakoutLine: number; // giá đường phá tại nến phá (chỉ để hiển thị)
-  lineNow: number; // giá đường phá tại nến đóng cuối — dùng cho d, giá limit, mục tiêu, SL sau TP1 (như state.ts)
-  lineSlope: number; // độ dốc đường phá (giá mỗi nến); 0 với mô hình ngang
+  breakoutLine: number; // MỨC PHÁ CỐ ĐỊNH = giá đường phá tại nến phá (breakoutLevel) — dùng cho d, giá limit, mục tiêu, SL sau TP1, như state.ts
   atr: number; // A = ATR khung nhận diện tại nến cuối
   distanceAtr: number; // d = (giá hiện tại − đường phá) / A, dương = ngoài mô hình
   entry: number; // giá DÙNG ĐỂ TÍNH: market = giá hiện tại; limit = giá limit; split = giá TB khi khớp cả hai chân
@@ -161,10 +159,12 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const toward = side === 'long' ? 'down' : 'up'; // TP vào gần giá vào; giá limit Long xuống / Short lên
   const pm = side === 'long' ? '+' : '−';
   const mp = side === 'long' ? '−' : '+';
-  // Đường phá tại nến đóng cuối (đường nghiêng thì kéo dài), giống cách state.ts xét failed — đề xuất, chưa backtest
-  const lineAt = (i: number) => (side === 'long' ? g.upper(i) : g.lower(i));
-  const line = lineAt(last);
-  const lineSlope = lineAt(last) - lineAt(last - 1);
+  // Mức phá CỐ ĐỊNH tại nến phá (cùng hàm breakoutLevel với state.ts — failed/retest/d không thể lệch kế hoạch).
+  // Đường nghiêng KHÔNG kéo dài sau nến phá (rà soát cuối 1c, M1: kéo dài đẩy limit Short lên trên đỉnh cờ).
+  const line = breakoutLevel(g, s.side, bi);
+  if (Math.abs(line - s.breakoutLine) > 1e-9 * Math.max(1, Math.abs(line))) {
+    throw new Error(`buildPatternPlan: mức phá của trạng thái (${s.breakoutLine}) khác breakoutLevel tại nến phá (${line})`);
+  }
   const marketPrice = c[last]!.close;
 
   // ---- Chờ thêm 1 nến khi nến phá quá dài (biên độ > 3×ATR 1H) ----
@@ -175,9 +175,8 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
       return { status: 'wait_confirm', plan: null,
         reason: `Chờ xác nhận: nến phá biên độ ${fp(range)} > ${P.waitRangeAtr1h}×ATR(1H) = ${fp(P.waitRangeAtr1h * a.atr1h)} — chờ thêm 1 nến đóng giữ được ${where} đường phá ${fp(line)} rồi mới vào` };
     }
-    const nextLine = side === 'long' ? g.upper(bi + 1) : g.lower(bi + 1);
-    if (dir * (c[bi + 1]!.close - nextLine) <= 0) {
-      return reject(`Nến phá biên độ lớn (${fp(range)} > ${P.waitRangeAtr1h}×ATR(1H)) và nến sau không giữ được ${where} đường phá ${fp(nextLine)} — bỏ`);
+    if (dir * (c[bi + 1]!.close - line) <= 0) {
+      return reject(`Nến phá biên độ lớn (${fp(range)} > ${P.waitRangeAtr1h}×ATR(1H)) và nến sau không giữ được ${where} mức phá ${fp(line)} — bỏ`);
     }
   }
 
@@ -200,7 +199,11 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const hasLimit = entryType !== 'market';
   const limitPrice = hasLimit ? snapToTick(line + dir * P.limitOffsetAtr * A, tick, toward) : null;
   if (limitPrice !== null && dir * (marketPrice - limitPrice) <= 0) {
-    return reject(`Giá limit ${fp(limitPrice)} (đường phá ${pm} ${num(P.limitOffsetAtr)}×A) không nằm ${side === 'long' ? 'dưới' : 'trên'} giá hiện tại ${fp(marketPrice)} — không đặt được limit${blockedMarket ? '; Short đảo chiều đang bị cấm vào trực tiếp' : ''}`);
+    return reject(`Giá limit ${fp(limitPrice)} (mức phá ${pm} ${num(P.limitOffsetAtr)}×A) không nằm ${side === 'long' ? 'dưới' : 'trên'} giá hiện tại ${fp(marketPrice)} — không đặt được limit${blockedMarket ? '; Short đảo chiều đang bị cấm vào trực tiếp' : ''}`);
+  }
+  // Limit phải nằm PHÍA NGOÀI mô hình so với mức phá cố định: Long ≥ mức phá, Short ≤ mức phá (làm tròn tick có thể đẩy qua)
+  if (limitPrice !== null && dir * (limitPrice - line) < 0) {
+    return reject(`Giá limit ${fp(limitPrice)} nằm ${side === 'long' ? 'dưới' : 'trên'} mức phá ${num(Number(line.toPrecision(12)))} (phía trong mô hình, do làm tròn tick) — không đặt được limit`);
   }
 
   // ---- Cắt lỗ: mức của mô hình ± đệm, đẩy qua số tròn ----
@@ -454,10 +457,6 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     } else {
       text = `Nếu giá khớp ${lt} ${fp(threshold)}: ${nearTxt}; nếu khớp ${ge} ${fp(threshold)}: dời SL về đúng giá khớp thật`;
     }
-    if (applies !== 'far' && Math.abs(lineSlope) > 1e-12) {
-      const slopeTxt = `${lineSlope < 0 ? '−' : '+'}${Math.abs(lineSlope).toFixed(tickDecimals(tick) + 2).replace('.', ',')}`;
-      text += `; đường phá nghiêng: dịch ${slopeTxt} mỗi nến — khi chạm TP1, SL = giá trị đường phá lúc đó ${mp} ${num(P.afterTp1StopAtr)}×A (ước tính hiện tại: ${fp(nearStop)})`;
-    }
     return { rule: { threshold, nearStop, applies }, stop: isNear(est) ? nearStop : fillStop(est), text };
   };
   let afterTp1Stop: number;
@@ -512,9 +511,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     side,
     entryType,
     marketPrice,
-    breakoutLine: s.breakoutLine,
-    lineNow: line,
-    lineSlope,
+    breakoutLine: line,
     atr: A,
     distanceAtr: d,
     entry,

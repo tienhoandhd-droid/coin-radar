@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateState, patternId, dedupePatterns, type StateResult } from './state.ts';
+import { evaluateState, patternId, dedupePatterns, breakoutLevel, type StateResult } from './state.ts';
 import { detectRectangles } from './detect-range.ts';
 import { detectDoubles } from './detect-double.ts';
 import { detectTriangles } from './detect-triangle.ts';
@@ -280,7 +280,8 @@ test('C2: cùng patternId nhiều hình học cờ → giữ trạng thái của
   const recs = same.map((g) => ({ id, geometry: g, result: evaluateState(g, c, a, TF, ASOF) }));
   const firstState = recs[0]!.result.state;
   assert.equal(firstState, 'failed');
-  assert.ok(recs.some((r) => r.result.state === 'breakout'), 'repro: bản phát lại cho thấy breakout mâu thuẫn');
+  // (từ M1 — mức phá cố định — bản phát lại tại ASOF là retested thay vì breakout; vẫn là trạng thái sống mâu thuẫn với failed)
+  assert.ok(recs.some((r) => r.result.state === 'breakout' || r.result.state === 'retested'), 'repro: bản phát lại cho thấy trạng thái sống mâu thuẫn');
   const kept = dedupePatterns(recs);
   assert.equal(kept.length, 1);
   assert.equal(kept[0]!.geometry.endIndex, same[0]!.endIndex);
@@ -432,4 +433,23 @@ test('failed: râu chạm mức dừng có đệm (chưa chạm thì vẫn break
   const g = rect({ stopRef: { up: 107, down: 106 } });
   assert.notEqual(run(g, [bar(111), bar(110.5, 112, 106.1)]).state, 'failed'); // 106,1 > 106
   assert.equal(run(g, [bar(111), bar(110.5, 112, 106)]).state, 'failed');
+});
+
+test('M1 sau phá, máy trạng thái dùng MỨC PHÁ CỐ ĐỊNH tại nến phá (cùng hàm breakoutLevel với kế hoạch), không kéo dài đường nghiêng', () => {
+  // cờ giảm tay: đường dưới dốc lên 0,2 mỗi nến (100 tại nến 23), phá xuống ở nến 24; A = 2 (failAtr×A = 1)
+  const g = rect({ kind: 'bear_flag', breakoutSide: 'down', endIndex: 23, pivots: [{ index: 10, price: 1, kind: 'low' }, { index: 15, price: 1, kind: 'high' }],
+    lower: (i: number) => 100 + 0.2 * (i - 23), upper: (i: number) => 104 + 0.2 * (i - 23), stopRef: { up: 0, down: 110 } });
+  const L = g.lower(24); // 100,2
+  assert.equal(breakoutLevel(g, 'down', 24), L);
+  // 5 nến sau phá, đường kéo dài = 101,2; đóng 101,3 = L + 1,1 → so với mức cố định: quay vào 1,1 > 1 → failed
+  const far = (n: number) => Array.from({ length: n }, () => bar(97, 97.5, 96.5));
+  const inside = Array.from({ length: 24 }, () => bar(102, 102.5, 101.5)); // trong cờ ở nến 23 (100–104)
+  const run = (g: PatternGeometry, extra: Candle[]) => { const c = [...inside, ...extra]; return evaluateState(g, c, A(c.length, 2), '1d'); };
+  const failed = run(g, [bar(99), ...far(4), bar(L + 1.1, L + 1.2, L + 0.9)]);
+  assert.equal(failed.state, 'failed');
+  // đóng L + 0,9 (< 1 = failAtr×A) → chưa failed; breakoutLine = L; d đo từ L
+  const alive = run(g, [bar(99), ...far(4), bar(L + 0.9, L + 0.95, L + 0.85)]);
+  assert.notEqual(alive.state, 'failed');
+  assert.equal(alive.breakoutLine, L);
+  assert.ok(Math.abs(alive.distanceAtr! - (L - (L + 0.9)) / 2) < 1e-9);
 });

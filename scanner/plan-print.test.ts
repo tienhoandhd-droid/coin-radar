@@ -173,13 +173,13 @@ test('kế hoạch mô hình chỉ limit: nói rõ chỉ 50% khối lượng, kh
   assert.doesNotMatch(t, /MARKET/);
 });
 
-test('đường phá nghiêng: in độ dốc trong luật sau TP1', () => {
+test('M1 đường phá nghiêng: in mức phá CỐ ĐỊNH tại nến phá (kèm thời điểm), không in độ dốc / "hiện tại"', () => {
   const p = patternPlan(110.5, { kind: 'bull_flag', breakoutSide: 'up', height: 30, stopRef: { up: 108, down: 110 },
     upper: (i: number) => 110 - 0.1 * (i - 30), lower: (i: number) => 108 - 0.1 * (i - 30) },
-  [pk(31, 110.1, 109.6, 109.85), pk(32, 110.1, 109.6, 109.85), pk(33, 110.1, 109.6, 109.85)]);
+  [pk(31, 110.6, 110.1, 110.3), pk(32, 110.6, 110.1, 110.3), pk(33, 110.6, 110.1, 110.3)]);
   const t = patternPlanLines(ph, p, 0.01).join('\n');
-  assert.match(t, /đường phá nghiêng/);
-  assert.match(t, /Đường phá: 110,00 tại nến phá; hiện tại 109,70/);
+  assert.doesNotMatch(t, /nghiêng/);
+  assert.match(t, /Mức phá \(cố định tại nến phá 1970-01-06 00:00 UTC\): 110,00/);
 });
 
 test('khối "Mô hình đang theo dõi": loại, khung, trạng thái, đường phá, chiều cao; ẩn ghi rõ', () => {

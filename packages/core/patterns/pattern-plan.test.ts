@@ -6,6 +6,9 @@ import { COMMON } from '../config.ts';
 import type { Zone } from '../zones.ts';
 import type { Candle } from '../types.ts';
 import type { PatternGeometry } from './types.ts';
+import { readFileSync } from 'node:fs';
+import { parseKlines } from '../../binance/parse.ts';
+import { trackPatterns, isTracked } from './track.ts';
 
 const r6 = (x: number) => Math.round(x * 1e6) / 1e6;
 const H4 = 4 * 3600_000;
@@ -144,22 +147,27 @@ test('Short: dải giá khớp 109,40–109,70 vắt qua ngưỡng 109,50 → in
   assert.match(p.afterTp1Reason, /Nếu giá khớp > 109,50: sau TP1 dời SL về đường phá 110,00 \+ 0,5×A = 110,50; nếu khớp ≤ 109,50: dời SL về đúng giá khớp thật/);
 });
 
-test('cờ có đường phá nghiêng: d và SL sau TP1 dùng giá trị đường tại nến cuối, in độ dốc', () => {
-  // đường trên của cờ: 110 tại nến phá 30, giảm 0,1 mỗi nến → 109,7 tại nến cuối 33
+test('M1 cờ có đường phá nghiêng: sau phá, d / limit / SL sau TP1 dùng MỨC PHÁ CỐ ĐỊNH tại nến phá (không kéo dài đường)', () => {
+  // đường trên của cờ: 110 tại nến phá 30, giảm 0,1 mỗi nến → 109,7 tại nến cuối 33; mức phá cố định = 110
   const g = geom({ kind: 'bull_flag', breakoutSide: 'up', height: 30, stopRef: { up: 108, down: 110 },
     upper: (i: number) => 110 - 0.1 * (i - 30), lower: (i: number) => 108 - 0.1 * (i - 30) });
-  const c = [...candles(110.5), k(31, 110.1, 109.6, 109.85), k(32, 110.1, 109.6, 109.85), k(33, 110.1, 109.6, 109.85)];
+  const c = [...candles(110.5), k(31, 110.6, 110.1, 110.3), k(32, 110.6, 110.1, 110.3), k(33, 110.6, 110.1, 110.3)];
   const p = ready(args({ candles: c, geometry: g, zones: [] }));
   assert.equal(p.breakoutLine, 110);
-  assert.equal(r6(p.lineNow), 109.7);
-  assert.equal(r6(p.lineSlope), -0.1);
-  assert.equal(r6(p.distanceAtr), 0.15);
-  assert.equal(p.afterTp1Stop, 109.2);
-  assert.equal(p.afterTp1Rule.applies, 'near');
-  assert.match(p.afterTp1Reason, /đường phá nghiêng: dịch −0,1000 mỗi nến/);
-  assert.match(p.afterTp1Reason, /ước tính hiện tại: 109,20/);
-  // đường ngang: không in câu nghiêng
-  assert.doesNotMatch(ready(args({ close: 110.3 })).afterTp1Reason, /nghiêng/);
+  assert.equal(r6(p.distanceAtr), 0.3); // (110,3 − 110) / A, không phải từ 109,7
+  assert.equal(p.afterTp1Stop, 109.5); // 110 − 0,5×A (giá hiện tại 110,3 < ngưỡng 110,5)
+  assert.deepEqual(p.afterTp1Rule, { threshold: 110.5, nearStop: 109.5, applies: 'both' }); // dải khớp 110,3–110,6 vắt qua 110,5
+  assert.doesNotMatch(p.afterTp1Reason, /nghiêng/);
+  assert.equal('lineNow' in p, false);
+  assert.equal('lineSlope' in p, false);
+});
+
+test('M1 giá limit phải nằm giữa mức phá cố định và giá hiện tại; lệch (do làm tròn tick) → không hợp lệ, nêu rõ lý do', () => {
+  // Long, mức phá 110,5, A = 1, tick 1: limit = sàn(110,75) = 110 < mức phá 110,5 → bỏ
+  const g = geom({ upper: () => 110.5, stopRef: { up: 105, down: 101 } });
+  const r = buildPatternPlan(args({ close: 112, geometry: g, state: st({ breakoutLine: 110.5 }), tickSize: 1, zones: [] }));
+  assert.equal(r.status, 'rejected');
+  assert.match(r.reason!, /Giá limit 110 nằm dưới mức phá 110,5/);
 });
 
 // ---------- d trong (1, 2]×A: 50% market + 50% limit ----------
@@ -452,4 +460,26 @@ test('B2: kế hoạch mang id mô hình, thời điểm nến phá (openTime) v
   assert.equal(p.patternId, 'BTCUSDT|4h|rectangle|1|2');
   assert.equal(p.breakoutTime, T0 + 30 * H4);
   assert.equal(p.signalTime, T0 + 32 * H4 - 1);
+});
+
+test('M1 dữ liệu thật SOLUSDT 4H (rà soát cuối 1c): cờ giảm 3 nến sau phá — limit Short không được nằm trên mức phá / trên đỉnh cờ', () => {
+  // 500 nến 4H Binance tới 2026-09-01 20:00 UTC. Trước khi sửa: đường dưới (dốc lên) kéo dài 104,04 → 105,43, limit Short 104,92
+  // nằm TRÊN đỉnh cờ 104,11, sát SL 105,42, vẫn "ready". ATR(1H) tại nến phá lấy từ dữ liệu 1H thật lúc đó.
+  const c = parseKlines(JSON.parse(readFileSync(new URL('./fixtures/solusdt-4h.json', import.meta.url), 'utf8')), Number.MAX_SAFE_INTEGER);
+  const flag = trackPatterns('SOLUSDT', c, '4h', ['flag']).find((t) => t.geometry.kind === 'bear_flag' && isTracked(t.result) && t.result.state === 'breakout');
+  assert.ok(flag, 'fixture phải có cờ giảm đã phá');
+  const bi = flag.result.breakoutIndex!;
+  assert.equal(r6(flag.result.breakoutLine!), 104.044);
+  const r = buildPatternPlan({ ...args(), patternId: flag.id, geometry: flag.geometry, state: flag.result, candles: c, atr: flag.atr,
+    atr1h: 0.9969957896813947, zones: [], capital: 1000, stepSize: 0.001 });
+  // Tính từ mức phá cố định 104,044: giá 99,93 đã qua T_ngắn 102,32 (cờ: mức phá + ½ quãng tới T_đủ) → bỏ, không còn "ready"
+  assert.equal(r.status, 'rejected');
+  assert.match(r.reason!, /Giá vào 99,93 đã vượt mục tiêu rút gọn T_ngắn 102,32/);
+  const p = r.plan;
+  if (p !== null && p.limitPrice !== null) {
+    assert.ok(p.limitPrice <= p.breakoutLine, `limit ${p.limitPrice} > mức phá ${p.breakoutLine}`);
+    assert.ok(p.limitPrice <= flag.geometry.stopRef.down, `limit ${p.limitPrice} > đỉnh cờ ${flag.geometry.stopRef.down}`);
+    assert.ok(p.limitPrice >= p.marketPrice);
+  }
+  assert.ok(c.length - 1 - bi >= 3);
 });

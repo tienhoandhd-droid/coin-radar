@@ -39,6 +39,15 @@ export function patternStopLevel(g: PatternGeometry, c: Candle[], atr: number[],
   return { ref: r.price, level: r.price - dir * COMMON.patterns.plan.stopBufferAtr * a, atr: a, note: r.note };
 }
 
+// MỘT hàm "mức phá" sau phá vỡ cho cả máy trạng thái (failed / retest / d) và kế hoạch lệnh (d, giá limit, SL sau TP1):
+// giá trị đường phá TẠI NẾN PHÁ, cố định từ đó về sau. Đường nghiêng (cờ, tam giác) KHÔNG kéo dài sau nến phá — kéo dài làm
+// "đường" trôi ngược chiều lệnh (cờ giảm: đường dưới dốc lên) và đẩy giá limit vào phía vô hiệu của mô hình (rà soát cuối 1c, M1).
+export function breakoutLevel(g: PatternGeometry, side: 'up' | 'down', breakoutIndex: number): number {
+  const v = side === 'up' ? g.upper(breakoutIndex) : g.lower(breakoutIndex);
+  if (!Number.isFinite(v)) throw new Error(`breakoutLevel: mức phá không hợp lệ tại nến ${breakoutIndex}: ${v}`);
+  return v;
+}
+
 const EPS = 1e-9; // sai số làm tròn khi so với apex tính bằng số thực
 const isFlag = (g: PatternGeometry) => g.kind === 'bull_flag' || g.kind === 'bear_flag';
 const isTriangle = (g: PatternGeometry) => g.kind === 'asc_triangle' || g.kind === 'desc_triangle' || g.kind === 'sym_triangle';
@@ -79,8 +88,7 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
   const tipIndex = flag ? g.pivots[1]!.index : -1;
   const canUp = g.breakoutSide !== 'down';
   const canDown = g.breakoutSide !== 'up';
-  const lineOf = (side: 'up' | 'down', i: number) => (side === 'up' ? g.upper(i) : g.lower(i));
-  // Khoảng cách đóng cửa ngoài đường phá (×đơn vị giá), dương = ngoài mô hình.
+  // Trước phá: khoảng cách đóng cửa ngoài đường phá tại CHÍNH nến đang xét (đường nghiêng thì theo nến đó), dương = ngoài mô hình.
   const outside = (side: 'up' | 'down', i: number) => (side === 'up' ? c[i]!.close - g.upper(i) : g.lower(i) - c[i]!.close);
   const atrAt = (i: number) => {
     const a = atr[i]!;
@@ -93,6 +101,9 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
   let side: 'up' | 'down' | null = null;
   let bi = -1;
   let stopLevel = NaN; // mức dừng (cùng hàm với kế hoạch lệnh), tính một lần tại nến phá
+  let level = NaN; // mức phá cố định (breakoutLevel), tính một lần tại nến phá
+  // Sau phá: khoảng cách đóng cửa ngoài MỨC PHÁ CỐ ĐỊNH (×đơn vị giá), dương = ngoài mô hình.
+  const outsideLevel = (sd: 'up' | 'down', i: number) => (sd === 'up' ? c[i]!.close - level : level - c[i]!.close);
   let retested = false;
   const notes: string[] = [];
 
@@ -113,6 +124,7 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
           side = hit;
           bi = i;
           stopLevel = patternStopLevel(g, c, atr, hit, i).level;
+          level = breakoutLevel(g, hit, i);
           pending = null;
           continue;
         }
@@ -127,15 +139,14 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
     }
     // --- giai đoạn sau phá vỡ ---
     // Thất bại (đóng quay vào > failAtr×A hoặc chạm cắt lỗ) được kiểm ở MỌI nến sau phá; chỉ retest bị giới hạn retestBars nến.
-    const line = lineOf(side, i);
-    const inside = -outside(side, i); // dương = đóng quay vào trong
+    const inside = -outsideLevel(side, i); // dương = đóng quay vào trong (so với mức phá cố định)
     const hitStop = side === 'up' ? c[i]!.low <= stopLevel : c[i]!.high >= stopLevel;
     if (inside > cfg.failAtr * a || hitStop) {
-      return out('failed', { breakoutIndex: bi, side, breakoutLine: lineOf(side, bi), notes: breakoutNotes(), inBreakoutWindow: windowOk() });
+      return out('failed', { breakoutIndex: bi, side, breakoutLine: level, notes: breakoutNotes(), inBreakoutWindow: windowOk() });
     }
     if (!retested && i - bi <= cfg.retestBars) {
-      const wickDist = side === 'up' ? c[i]!.low - line : line - c[i]!.high; // râu chạm lại: <= retestAtr×A
-      if (wickDist <= cfg.retestAtr * a && outside(side, i) > 0) retested = true;
+      const wickDist = side === 'up' ? c[i]!.low - level : level - c[i]!.high; // râu chạm lại mức phá: <= retestAtr×A
+      if (wickDist <= cfg.retestAtr * a && outsideLevel(side, i) > 0) retested = true;
     }
   }
 
@@ -147,8 +158,8 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
     inBreakoutWindow: windowOk(),
     breakoutIndex: bi,
     side,
-    breakoutLine: lineOf(side, bi),
-    distanceAtr: outside(side, last) / atrAt(last),
+    breakoutLine: level,
+    distanceAtr: outsideLevel(side, last) / atrAt(last),
     retest: retested ? 'yes' : done ? 'none' : null,
     notes: breakoutNotes(),
   });

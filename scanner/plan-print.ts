@@ -9,6 +9,8 @@ import type { GradeResult } from '../packages/core/grade.ts';
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
 const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
 const dec = (x: number): string => String(x).replace('.', ',');
+// Thời điểm (ms) → "YYYY-MM-DD HH:MM UTC" (giờ UTC như biểu đồ Binance mặc định)
+export const utc = (t: number): string => `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
 // Các dòng in ra cho một kế hoạch lệnh. Mọi giá in theo tickSize; khoảng cách trailing in kèm %.
 export function planLines(head: { symbol: string; score: number; riskTier: string }, p: TradePlan, tickSize: number): string[] {
@@ -85,8 +87,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   const P = COMMON.patterns.plan;
   const lines: string[] = [];
   lines.push(`${head.symbol} — ${long ? 'LONG' : 'SHORT'} theo mô hình ${KIND_NAME[p.kind]} ${tf} | điểm ${dec(head.score)} | rủi ro ${head.riskTier}`);
-  const slope = Math.abs(p.lineSlope) > 1e-12 ? `, đường nghiêng ${p.lineSlope < 0 ? '−' : '+'}${num(Math.abs(p.lineSlope), 6).replace(/0+$/, '').replace(/,$/, '')} mỗi nến` : '';
-  lines.push(`  Đường phá: ${px(p.breakoutLine)} tại nến phá; hiện tại ${px(p.lineNow)}${slope} | A = ATR(14) ${tf} = ${px(p.atr)} | d = ${num(p.distanceAtr, 2)}×A | T_ngắn ${px(p.targetShort)} / T_đủ ${px(p.targetFull)}`);
+  lines.push(`  Mức phá (cố định tại nến phá ${utc(p.breakoutTime)}): ${px(p.breakoutLine)} | A = ATR(14) ${tf} = ${px(p.atr)} | d = ${num(p.distanceAtr, 2)}×A | T_ngắn ${px(p.targetShort)} / T_đủ ${px(p.targetFull)}`);
 
   const row0 = p.fillTable[0]!;
   const legQ = (q: [number, number, number]) => q.map((x, i) => `TP${i + 1} ${x > 0 ? qty(x) : (p.targets[i]!.pct > 0 ? `gộp vào TP${q.length}` : '—')}`).join(' / ');
