@@ -576,3 +576,12 @@ test('B0: mô hình — khối lượng 0,003: A0 bị loại (TP2 không chia �
   assert.equal(r2.plan!.exit.tp1Qty, 0.001);
   assert.equal(r2.plan!.exit.trailQty, 0.002);
 });
+
+test('I2 bộ lọc sàn cho kế hoạch mô hình: hợp lệ với bộ lọc thật; dưới MIN_NOTIONAL / vượt MARKET_LOT_SIZE → nêu lý do', async () => {
+  const { patternPlanFilterProblems } = await import('../filters.ts');
+  const F = { stepSize: 0.001, minQty: 0.001, maxQty: 1000, marketMinQty: 0.001, marketMaxQty: 120, marketStepSize: 0.001, minNotional: 50, maxNumOrders: 200 };
+  const p = ready(args());
+  assert.deepEqual(patternPlanFilterProblems(p, F), []);
+  assert.match(patternPlanFilterProblems(p, { ...F, minNotional: 1e7 }).join(), /MIN_NOTIONAL/);
+  assert.match(patternPlanFilterProblems(p, { ...F, marketMaxQty: 0.002 }).join(), /MARKET_LOT_SIZE/);
+});

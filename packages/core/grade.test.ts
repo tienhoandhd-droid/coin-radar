@@ -222,7 +222,7 @@ const up = (n: number, step: number, share = 0.5) => Array.from({ length: n }, (
 const upWaves = (n: number, step: number, share = 0.5, amp = 1, period = 40) => Array.from({ length: n }, (_, i) => k(i, 100 + i * step + amp * Math.sin((2 * Math.PI * i) / period), share));
 const baseIn = {
   mode: 'swing' as const,
-  contract: { symbol: 'TESTUSDT', baseAsset: 'TEST', onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001 },
+  contract: { symbol: 'TESTUSDT', baseAsset: 'TEST', onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001, minQty: 0.001, maxQty: 1e9, marketMinQty: 0.001, marketMaxQty: 1e9, marketStepSize: 0.001, minNotional: 5, maxNumOrders: 200, deliveryDate: 4133404800000 },
   trend: up(300, 1), entry: upWaves(500, 0.2, 0.6, 2, 40), daily: up(300, 1), hourly: up(100, 0.05), btcTrend: up(300, 0.3),
   regime: 'up' as const, breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },

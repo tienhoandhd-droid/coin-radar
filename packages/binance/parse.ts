@@ -37,13 +37,16 @@ export function parseKlines(raw: unknown, now: number): Candle[] {
 
 type RawSymbol = {
   symbol: string; baseAsset: string; quoteAsset: string; contractType: string; status: string; underlyingType?: string; onboardDate: number;
-  filters: Array<{ filterType: string; tickSize?: string; stepSize?: string }>;
+  deliveryDate?: unknown;
+  filters: Array<Record<string, unknown> & { filterType: string }>;
 };
 
-// Đọc tickSize/stepSize của một bộ lọc; thiếu, không phải số, hoặc ≤ 0 đều ném lỗi nêu tên mã
-function filterNumber(s: RawSymbol, filterType: string, key: 'tickSize' | 'stepSize'): number {
+// Đọc một trường số của một bộ lọc; thiếu bộ lọc, thiếu trường, không phải số, hoặc ≤ 0 đều ném lỗi nêu tên mã (fail-closed)
+function filterNumber(s: RawSymbol, filterType: string, key: string): number {
   const filters = Array.isArray(s.filters) ? s.filters : [];
-  const v = filters.find((f) => f.filterType === filterType)?.[key];
+  const f = filters.find((x) => x.filterType === filterType);
+  if (f === undefined) throw new Error(`Binance exchangeInfo ${s.symbol}: thiếu bộ lọc ${filterType}`);
+  const v = f[key];
   const n = num(v, `exchangeInfo ${s.symbol} ${filterType}.${key}`);
   if (n <= 0) throw new Error(`Binance exchangeInfo ${s.symbol}: ${filterType}.${key} phải > 0, nhận ${show(v)}`);
   return n;
@@ -66,6 +69,14 @@ export function parseContracts(raw: unknown): Contract[] {
       onboardDate: num(s.onboardDate, `exchangeInfo ${s.symbol} onboardDate`),
       tickSize: filterNumber(s, 'PRICE_FILTER', 'tickSize'),
       stepSize: filterNumber(s, 'LOT_SIZE', 'stepSize'),
+      minQty: filterNumber(s, 'LOT_SIZE', 'minQty'),
+      maxQty: filterNumber(s, 'LOT_SIZE', 'maxQty'),
+      marketMinQty: filterNumber(s, 'MARKET_LOT_SIZE', 'minQty'),
+      marketMaxQty: filterNumber(s, 'MARKET_LOT_SIZE', 'maxQty'),
+      marketStepSize: filterNumber(s, 'MARKET_LOT_SIZE', 'stepSize'),
+      minNotional: filterNumber(s, 'MIN_NOTIONAL', 'notional'), // khóa "notional" (đã kiểm exchangeInfo thật 19/10/2026)
+      maxNumOrders: filterNumber(s, 'MAX_NUM_ORDERS', 'limit'),
+      deliveryDate: num(s.deliveryDate, `exchangeInfo ${s.symbol} deliveryDate`),
     }));
 }
 

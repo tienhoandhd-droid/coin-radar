@@ -18,7 +18,7 @@ const upWaves = (n: number, step: number, share = 0.5, amp = 1, period = 40) =>
 
 const base: AnalyzeInput = {
   mode: 'swing',
-  contract: { symbol: 'TESTUSDT', baseAsset: 'TEST', onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001 },
+  contract: { symbol: 'TESTUSDT', baseAsset: 'TEST', onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001, minQty: 0.001, maxQty: 1e9, marketMinQty: 0.001, marketMaxQty: 1e9, marketStepSize: 0.001, minNotional: 5, maxNumOrders: 200, deliveryDate: 4133404800000 },
   trend: up(300, 1), entry: upWaves(500, 0.2, 0.6, 2, 40), daily: up(300, 1), hourly: up(100, 0.05), btcTrend: up(300, 0.3),
   regime: 'up', breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
@@ -386,4 +386,19 @@ test('M2 chấm hạng lệnh vùng: grading.tp1NetR = TP1 sau phí ở giá kh�
   const costFrac = COMMON.costRoundTripPct.high / 100 + Math.max(0, base.premium.lastFundingRate * (CONFIG.swing.fundingHoldHours / base.fundingIntervalHours));
   // (dữ liệu này cho lệnh limit nên giá xấu nhất = giá limit; nhánh market kiểm ở plan.test.ts — worstTp1NetR)
   assert.ok(Math.abs(a.grading.tp1NetR! - worstTp1NetR(a.plan, costFrac)!) < 1e-12);
+});
+
+test('I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL) → không hợp lệ, G-12 trượt nêu MIN_NOTIONAL, không Đạt', () => {
+  const a = analyze({ ...base, contract: { ...base.contract, minNotional: 1e6 } });
+  const g12 = a.gates.find((g) => g.code === 'G-12')!;
+  assert.equal(g12.pass, false);
+  assert.match(g12.note, /MIN_NOTIONAL/);
+  assert.ok(!a.label.startsWith('Đạt'), a.label);
+});
+
+test('I2: lệnh market vượt MARKET_LOT_SIZE.maxQty → không hợp lệ, G-12 nêu MARKET_LOT_SIZE', () => {
+  const a = analyze({ ...base, contract: { ...base.contract, marketMaxQty: 0.001, maxQty: 0.001 } });
+  const g12 = a.gates.find((g) => g.code === 'G-12')!;
+  assert.equal(g12.pass, false);
+  assert.match(g12.note, /LOT_SIZE/);
 });

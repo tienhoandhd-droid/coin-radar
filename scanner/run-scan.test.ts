@@ -7,7 +7,7 @@ import type { Candle, Contract } from '../packages/core/types.ts';
 const k = (i: number, close: number): Candle => ({ openTime: i * 1000, closeTime: i * 1000 + 999, open: close * 0.999, high: close * 1.004, low: close * 0.996,
   close, volume: 100, quoteVolume: 100 * close, takerBuyQuote: 50 * close });
 const series = (n: number, step: number) => Array.from({ length: n }, (_, i) => k(i, 100 + i * step + 2 * Math.sin(i / 6)));
-const contract = (symbol: string): Contract => ({ symbol, baseAsset: symbol.replace('USDT', ''), onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001 });
+const contract = (symbol: string): Contract => ({ symbol, baseAsset: symbol.replace('USDT', ''), onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001, minQty: 0.001, maxQty: 1e9, marketMinQty: 0.001, marketMaxQty: 1e9, marketStepSize: 0.001, minNotional: 5, maxNumOrders: 200, deliveryDate: 4133404800000 });
 const NOW = Date.parse('2026-10-19T12:00:00Z');
 
 function input(over: Partial<ScanInput> = {}, fail: Record<string, string> = {}): ScanInput {

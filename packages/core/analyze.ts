@@ -16,6 +16,7 @@ import { buildPatternPlan, type PatternPlan } from './patterns/pattern-plan.ts';
 import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
 import { gradeSignal, coilReleasedAt, type GradeInput, type GradeResult } from './grade.ts';
+import { zonePlanFilterProblems, patternPlanFilterProblems, invalidateZonePlan } from './filters.ts';
 
 // Nến cho phần mô hình biểu đồ (kế hoạch 1c), chỉ bắt buộc với hợp đồng trong phạm vi P-G1.
 // c4h / c1d: bối cảnh (vai-đầu-vai, vùng nhiều tháng, coil) và nhận diện Swing; c1h: ATR(1H) tại nến phá.
@@ -142,11 +143,16 @@ export function analyze(i: AnalyzeInput): Analysis {
   // P-01: rủi ro mỗi lệnh = i.riskPct (mặc định COMMON.risk.perTradePct = 2%, người dùng chốt 19/10/2026). Không còn hạ xuống 0,25% theo chế độ/mức rủi ro; mức rủi ro chỉ để hiển thị và lọc Hạng A.
   const riskPct = i.riskPct;
 
-  const planFor = (side: Side) => buildPlan({
-    mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
-    costTier: costTier(i.liquidityRankPct), tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
-    fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
-  });
+  // I2: kế hoạch vi phạm bộ lọc sàn (MIN_NOTIONAL, LOT_SIZE/MARKET_LOT_SIZE, MAX_NUM_ORDERS) → không hợp lệ kèm lý do
+  const planFor = (side: Side) => {
+    const p = buildPlan({
+      mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
+      costTier: costTier(i.liquidityRankPct), tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
+      fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
+    });
+    const problems = p.valid ? zonePlanFilterProblems(p, i.contract) : [];
+    return problems.length > 0 ? invalidateZonePlan(p, `Bộ lọc sàn: ${problems.join('; ')}`) : p;
+  };
   const planLong = planFor('long');
   const planShort = planFor('short');
   const liquid = i.liquidityRankPct <= COMMON.liquidRankForRs;
@@ -260,6 +266,11 @@ export function analyze(i: AnalyzeInput): Analysis {
         continue;
       }
       const pp = res.plan;
+      const filterProblems = patternPlanFilterProblems(pp, i.contract);
+      if (filterProblems.length > 0) {
+        info.notes.push(`Kế hoạch mô hình: bỏ — bộ lọc sàn: ${filterProblems.join('; ')}`);
+        continue;
+      }
       const sideScore = side === 'long' ? L : S;
       const gs = [
         ...gatesFor(sideScore, { riskPerUnit: Math.max(pp.riskPerUnit, pp.riskAtr * pp.atr), entry: pp.entry, valid: pp.valid, note: pp.invalidReason ?? pp.stopReason }),
