@@ -49,6 +49,7 @@ export const COMMON = {
   minCoverage: 0.7,
   minWarmupBars: 250,
   topRankPct: 0.1,
+  fastUniverseSize: 150, // Lướt nhanh chỉ quét N hợp đồng thanh khoản cao nhất — đề xuất, chưa backtest
   liquidityExcludeBottomPct: 0.3, // G-03: loại 30% hợp đồng khối lượng 24h thấp nhất
   maxSpreadPct: 0.15, // G-03: spread tối đa (%)
   pumpMovePct: 15, // G-04
