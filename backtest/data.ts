@@ -13,6 +13,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Candle } from '../packages/core/types.ts';
 import { parseKlines } from '../packages/binance/parse.ts';
+import { isClosed } from '../packages/core/candles.ts';
 
 export type Interval = '1d' | '4h' | '1h' | '15m' | '5m' | '1m';
 export const MINUTE = 60_000;
@@ -137,13 +138,21 @@ function parseChunk(raw: unknown, symbol: string, interval: Interval): ChunkFile
 export function loadCandles(dir: string, symbol: string, interval: Interval, from: number, to: number): { candles: Candle[]; gaps: Gap[] } {
   const out: Candle[] = [];
   for (let t = chunkKey(interval, from).start; t < to; t = chunkKey(interval, t).end) {
-    const { key } = chunkKey(interval, t);
+    const { key, start, end } = chunkKey(interval, t);
     const raw = readJson(chunkPath(dir, symbol, interval, key));
     if (raw === null) throw new Error(`thiếu tệp đệm ${symbol} ${interval} ${key}`);
     const chunk = parseChunk(raw, symbol, interval);
+    // Tệp phải phủ phần cửa sổ nằm trong tháng/ngày này; thiếu → ném lỗi (không trả ít nến âm thầm).
+    // Dùng from/to của tệp (không dùng nến đầu/cuối) để niêm yết muộn/ngừng giao dịch không bị báo nhầm.
+    const iv = INTERVAL_MS[interval];
+    const need0 = Math.ceil(Math.max(from, start) / iv) * iv;
+    const need1 = Math.floor(Math.min(to, end) / iv) * iv;
+    if (need0 < need1 && (chunk.from > need0 || chunk.to < need1)) {
+      throw new Error(`${symbol} ${interval} ${key}: tệp đệm không phủ cửa sổ cần [${new Date(need0).toISOString()}, ${new Date(need1).toISOString()}) — đã tải [${new Date(chunk.from).toISOString()}, ${new Date(chunk.to).toISOString()}), phần còn lại chưa được tải`);
+    }
     for (const r of chunk.candles) {
       const c = fromRow(r);
-      if (c.openTime >= from && c.openTime < to) out.push(c);
+      if (c.openTime >= from && isClosed(c, to)) out.push(c); // cùng ranh giới nến đóng với máy quét
     }
   }
   return { candles: out, gaps: findGaps(symbol, interval, out) };
@@ -272,26 +281,35 @@ export function createFetcher(deps: {
     } catch (e) {
       log(`tệp OI hỏng, sẽ tải lại: ${path} (${(e as Error).message})`);
     }
-    const rows: { timestamp: number; sumOpenInterest: number; sumOpenInterestValue: number }[] = [];
-    let cursor = from;
-    while (cursor < to) {
+    // Binance trả `limit` hàng CUỐI của [startTime, endTime] (neo theo endTime) → phân trang LÙI từ `to`:
+    // mỗi trang đặt endTime = timestamp đầu của trang trước − 1, dừng khi trang ngắn (hết dữ liệu) hoặc chạm `from`.
+    const byTs = new Map<number, { timestamp: number; sumOpenInterest: number; sumOpenInterestValue: number }>();
+    let endTime = to - 1;
+    while (endTime >= from) {
       await oiPace();
-      const raw = await call(`/futures/data/openInterestHist?symbol=${symbol}&period=1h&startTime=${cursor}&endTime=${to - 1}&limit=${oiLimit}`, 0);
+      const raw = await call(`/futures/data/openInterestHist?symbol=${symbol}&period=1h&startTime=${from}&endTime=${endTime}&limit=${oiLimit}`, 0);
       if (!Array.isArray(raw)) throw new Error(`openInterestHist ${symbol}: kỳ vọng mảng`);
       if (raw.length === 0) break;
+      let minTs = Infinity;
       for (const r of raw as Record<string, unknown>[]) {
         const timestamp = Number(r.timestamp), sumOpenInterest = Number(r.sumOpenInterest), sumOpenInterestValue = Number(r.sumOpenInterestValue);
         if (!Number.isFinite(timestamp) || !Number.isFinite(sumOpenInterest) || !Number.isFinite(sumOpenInterestValue)) {
           throw new Error(`openInterestHist ${symbol}: hàng không hợp lệ ${JSON.stringify(r).slice(0, 120)}`);
         }
-        const last = rows[rows.length - 1];
-        if (last && timestamp <= last.timestamp) continue;
-        rows.push({ timestamp, sumOpenInterest, sumOpenInterestValue });
+        byTs.set(timestamp, { timestamp, sumOpenInterest, sumOpenInterestValue });
+        if (timestamp < minTs) minTs = timestamp;
       }
-      if (raw.length < oiLimit) break;
-      cursor = rows[rows.length - 1]!.timestamp + HOUR;
+      if (raw.length < oiLimit) break; // trang ngắn: đã tới hàng đầu tiên có thật
+      if (minTs - 1 >= endTime) throw new Error(`openInterestHist ${symbol}: phân trang lùi không tiến được`);
+      endTime = minTs - 1;
     }
-    write(path, { symbol, period: '1h', availableDays: OI_AVAILABLE_DAYS, from, to, rows });
+    const rows = [...byTs.values()].sort((x, y) => x.timestamp - y.timestamp);
+    {
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i]!.timestamp - rows[i - 1]!.timestamp > HOUR) log(`OI ${symbol}: thiếu dữ liệu sau ${new Date(rows[i - 1]!.timestamp).toISOString()} (sàn bỏ kỳ không có giao dịch)`);
+      }
+    }
+    write(path, { symbol, period: '1h', availableDays: OI_AVAILABLE_DAYS, from, to, firstTimestamp: rows[0]?.timestamp ?? null, rows });
   }
 
   return { fetchCandles, fetchFunding, fetchOpenInterest, stats, write, call, now };

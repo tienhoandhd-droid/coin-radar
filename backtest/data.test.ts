@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, type FetchLike } from '../packages/binance/client.ts';
 import {
-  DAY, HOUR, INTERVAL_MS, klineWeight, planRange, needFrom, createPacer, createFetcher, loadCandles, fetchAll,
+  DAY, HOUR, MINUTE, INTERVAL_MS, klineWeight, planRange, needFrom, createPacer, createFetcher, loadCandles, fetchAll,
   type Interval,
 } from './data.ts';
 
@@ -49,7 +49,8 @@ function server(opts: { listed?: number; missing?: number[]; funding?: number[];
     if (u.pathname === '/futures/data/openInterestHist') {
       const start = Number(q.get('startTime'));
       const limit = Number(q.get('limit'));
-      return ok((opts.oi ?? []).filter((t) => t >= start && t <= Number(q.get('endTime'))).slice(0, limit)
+      // Giống Binance thật: khi vượt limit, trả `limit` hàng CUỐI của khoảng [startTime, endTime] (neo theo endTime)
+      return ok((opts.oi ?? []).filter((t) => t >= start && t <= Number(q.get('endTime'))).slice(-limit)
         .map((t) => ({ symbol: q.get('symbol'), sumOpenInterest: '5', sumOpenInterestValue: '500', timestamp: t })));
     }
     throw new Error('url lạ ' + url);
@@ -103,7 +104,7 @@ test('không bao giờ lưu nến đang chạy; to bị cắt tại thời đi�
   const s = server();
   const t = setup(s);
   await t.fetcher.fetchCandles('AAAUSDT', '1h', END - 2 * DAY, END + DAY); // đòi cả tương lai
-  const { candles } = loadCandles(t.dir, 'AAAUSDT', '1h', END - 2 * DAY, END + DAY);
+  const { candles } = loadCandles(t.dir, 'AAAUSDT', '1h', END - 2 * DAY, NOW);
   assert.equal(candles.at(-1)!.openTime, END + 8 * HOUR); // nến 08:00-09:00 đóng 08:59:59.999 < NOW=09:00
   assert.ok(candles.every((c) => c.closeTime < NOW));
   t.done();
@@ -268,4 +269,37 @@ test('OI: mốc startTime tính lại theo giờ hiện tại ở từng mã (l�
   assert.equal(starts[0], NOW - 30 * DAY);
   assert.equal(starts[1], NOW + 2 * HOUR - 30 * DAY);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('OI: 720 giờ > limit 500 → vẫn đủ từ đầu tới cuối (phân trang lùi), không trùng', async () => {
+  const times = Array.from({ length: 720 }, (_, i) => END - 30 * DAY + i * HOUR);
+  const s = server({ oi: times });
+  const t = setup(s);
+  await t.fetcher.fetchOpenInterest('AAAUSDT', END - 30 * DAY, END);
+  const j = JSON.parse(readFileSync(join(t.dir, 'oi', 'AAAUSDT.json'), 'utf8'));
+  const ts = j.rows.map((r: { timestamp: number }) => r.timestamp);
+  assert.equal(ts[0], END - 30 * DAY);
+  assert.equal(ts.at(-1), END - HOUR);
+  assert.equal(new Set(ts).size, ts.length);
+  assert.deepEqual(ts, times);
+  t.done();
+});
+
+test('loadCandles: cửa sổ vượt phần đã tải (cuối hoặc đầu) → ném lỗi nêu rõ, không cắt cụt âm thầm', async () => {
+  const s = server();
+  const t = setup(s);
+  await t.fetcher.fetchCandles('AAAUSDT', '1h', END - 5 * DAY, END);
+  assert.throws(() => loadCandles(t.dir, 'AAAUSDT', '1h', END - 5 * DAY, END + 2 * HOUR), /chưa được tải|không phủ/);
+  assert.throws(() => loadCandles(t.dir, 'AAAUSDT', '1h', END - 6 * DAY, END), /chưa được tải|không phủ/);
+  t.done();
+});
+
+test('loadCandles: `to` lệch lưới → lọc theo isClosed(candle, to), nến chưa đóng không lọt', async () => {
+  const s = server();
+  const t = setup(s);
+  await t.fetcher.fetchCandles('AAAUSDT', '1h', END - 5 * DAY, END);
+  const { candles } = loadCandles(t.dir, 'AAAUSDT', '1h', END - 5 * DAY, END - 30 * MINUTE);
+  assert.equal(candles.at(-1)!.openTime, END - 2 * HOUR); // nến END-1h đóng 23:59:59.999 > to=23:30 → loại
+  assert.ok(candles.every((c) => c.closeTime < END - 30 * MINUTE));
+  t.done();
 });
