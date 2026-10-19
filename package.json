@@ -4,7 +4,7 @@
   "type": "module",
   "engines": { "node": ">=24.0.0" },
   "scripts": {
-    "test": "node --test \"packages/**/*.test.ts\" \"scanner/**/*.test.ts\"",
+    "test": "node --test \"packages/**/*.test.ts\" \"scanner/**/*.test.ts\" \"backtest/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json",
     "probe": "node scripts/probe-sources.ts",
     "scan": "node scanner/scan.ts"

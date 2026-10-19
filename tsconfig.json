@@ -11,5 +11,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node"]
   },
-  "include": ["packages", "scanner", "scripts"]
+  "include": ["packages", "scanner", "scripts", "backtest"]
 }

@@ -3,3 +3,4 @@ output/
 .env
 .env.*
 *.log
+data/cache/
