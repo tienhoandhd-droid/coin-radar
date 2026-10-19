@@ -107,3 +107,12 @@ test('rsZ = null khi coin kém thanh khoản (không đo RS)', () => {
   const inp = { ...input(rising(300, 1), rising(500, 0.2), rising(300, 0.1)), liquid: false };
   assert.equal(scoreSide(inp, 'long', 5).rsZ, null);
 });
+
+test('S-03: TP1 bị chặn (kế hoạch không hợp lệ) → 0 điểm và ghi lý do của kế hoạch, không ghi "không có vùng cản"', () => {
+  const base = input(rising(300, 1), rising(500, 0.2, 0.6), rising(300, 0.3));
+  const why = 'Kháng cự ngay sát trên giá vào 120–121 — không có chỗ đặt TP1';
+  const r = scoreSide(base, 'long', null, undefined, why).reasons.find((x) => x.code === 'S-03')!;
+  assert.equal(r.points, 0);
+  assert.match(r.text, /không có chỗ đặt TP1/);
+  assert.doesNotMatch(r.text, /Không có vùng cản/);
+});

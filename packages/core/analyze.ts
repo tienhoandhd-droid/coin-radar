@@ -54,6 +54,11 @@ function tp1Reason(p: TradePlan): string | undefined {
   return p.targets[0]?.price === null ? undefined : p.targets[0]?.reason;
 }
 
+// TP1 không đặt được (kế hoạch không hợp lệ và không có R) → trả lý do của kế hoạch để S-03 cho 0 điểm
+function tp1Blocked(p: TradePlan): string | undefined {
+  return !p.valid && tp1R(p) === null ? (p.invalidReason ?? 'kế hoạch không hợp lệ') : undefined;
+}
+
 function costTier(rankPct: number): CostTier {
   return rankPct <= COMMON.costTierRank.high ? 'high' : rankPct <= COMMON.costTierRank.mid ? 'mid' : 'low';
 }
@@ -92,8 +97,8 @@ export function analyze(i: AnalyzeInput): Analysis {
   const planShort = planFor('short');
   const liquid = i.liquidityRankPct <= COMMON.liquidRankForRs;
   const scoreIn = { mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid };
-  const long = scoreSide(scoreIn, 'long', tp1R(planLong), tp1Reason(planLong));
-  const short = scoreSide(scoreIn, 'short', tp1R(planShort), tp1Reason(planShort));
+  const long = scoreSide(scoreIn, 'long', tp1R(planLong), tp1Reason(planLong), tp1Blocked(planLong));
+  const short = scoreSide(scoreIn, 'short', tp1R(planShort), tp1Reason(planShort), tp1Blocked(planShort));
 
   // F-01: funding quá nhiệt cùng chiều lệnh → trừ điểm
   const flags: string[] = [];

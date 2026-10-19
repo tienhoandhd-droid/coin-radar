@@ -19,7 +19,8 @@ const S = COMMON.score;
 const clamp01 = (x: number) => (Number.isNaN(x) ? 0 : Math.min(1, Math.max(0, x)));
 
 // tp1R: TP1 lời bao nhiêu R (null = không có vùng cản phía trước); tp1Reason: mô tả vùng cản để ghi vào lý do S-03
-export function scoreSide(input: ScoreInput, side: Side, tp1R: number | null, tp1Reason?: string): SideScore {
+// tp1BlockedReason: có giá trị khi TP1 không đặt được (kế hoạch không hợp lệ) → S-03 cho 0 điểm, khác với "không có vùng cản" (đủ điểm)
+export function scoreSide(input: ScoreInput, side: Side, tp1R: number | null, tp1Reason?: string, tp1BlockedReason?: string): SideScore {
   const cfg = CONFIG[input.mode];
   const w = cfg.weights;
   const dir = side === 'long' ? 1 : -1;
@@ -89,11 +90,14 @@ export function scoreSide(input: ScoreInput, side: Side, tp1R: number | null, tp
   // S-03 Đường đi: TP1 càng xa so với rủi ro (R) càng tốt — 1R → 0 điểm, ≥ 2R → đủ; không có vùng cản → đủ
   const entryPrice = last(ec);
   if (Number.isFinite(entryPrice)) {
-    const pathRatio = tp1R === null ? 1 : clamp01(tp1R - 1);
+    const blocked = tp1R === null && tp1BlockedReason !== undefined;
+    const pathRatio = blocked ? 0 : tp1R === null ? 1 : clamp01(tp1R - 1);
     const pathPts = w.path * pathRatio;
     earned += pathPts;
     available += w.path;
-    const text = tp1R === null
+    const text = blocked
+      ? `TP1 bị chặn: ${tp1BlockedReason}`
+      : tp1R === null
       ? 'Không có vùng cản phía trước đường tới chốt lời'
       : `TP1 lời ${tp1R.toFixed(1).replace('.', ',')}R${tp1Reason ? ' — ' + tp1Reason : ''}`;
     reasons.push({ code: 'S-03', text, points: round(pathPts) });
