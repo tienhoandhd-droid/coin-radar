@@ -40,7 +40,7 @@ function args(over: Partial<PatternPlanArgs> & { close?: number; side?: 'long' |
   const { close = 110.5, side = 'long', ...rest } = over;
   const c = rest.candles ?? candles(close, side);
   return {
-    mode: 'swing', geometry: geom(), state: st(), candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
+    mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', geometry: geom(), state: st(), candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     zones: longZones, multiMonth: null, btcSma200ReclaimedAt: null,
     capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8,
     ...rest,
@@ -443,4 +443,13 @@ test('hai đỉnh/hai đáy: không lập kế hoạch lệnh (chỉ bối cản
     assert.match(r.reason!, /chỉ là bối cảnh/);
   }
   assert.equal((COMMON.patterns.plan as Record<string, unknown>).maxRiskAtrByKind, undefined, 'trần 4×A cho hai đỉnh/đáy đã bỏ');
+});
+
+test('B2: kế hoạch mang id mô hình, thời điểm nến phá (openTime) và thời điểm phát (closeTime nến cuối)', () => {
+  const extra = [k(0, 111, 110.2, 110.6)];
+  const a = args({ candles: candles(110.5, 'long', extra) });
+  const p = ready(a);
+  assert.equal(p.patternId, 'BTCUSDT|4h|rectangle|1|2');
+  assert.equal(p.breakoutTime, T0 + 30 * H4);
+  assert.equal(p.signalTime, T0 + 32 * H4 - 1);
 });

@@ -58,7 +58,7 @@ test('trackPatterns: mỗi id một bản — bản trước chỉ bị thay khi
   const ids = t.map((x) => x.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const x of t) {
-    const same = all.filter((g) => patternId('X', g) === x.id).sort((p, q) => p.endIndex - q.endIndex);
+    const same = all.filter((g) => patternId('X', g, c) === x.id).sort((p, q) => p.endIndex - q.endIndex);
     const pos = same.findIndex((g) => g.endIndex === x.geometry.endIndex);
     assert.ok(pos >= 0);
     // mọi bản trước bản được chọn đều còn armed/expired/forming tại nến bản kế tiếp được biết
@@ -164,4 +164,25 @@ test('B1 dữ liệu thật: ATR tính trên tiền tố == ATR cả chuỗi c�
     }
   }
   assert.ok(compared > 100, `quá ít phép so sánh: ${compared}`);
+});
+
+test('B2 dữ liệu thật: id mô hình ổn định khi cửa sổ 500 nến trượt 1 nến (id theo openTime pivot, không theo chỉ số mảng)', () => {
+  const c = realEth();
+  const all = ['rectangle', 'double', 'triangle', 'flag'] as const;
+  const key = (w: Candle[], t: ReturnType<typeof trackPatterns>[number]) => `${t.geometry.kind}|${t.geometry.pivots.slice(0, 2).map((p) => w[p.index]!.openTime).join('|')}`;
+  let same = 0;
+  const bad: string[] = [];
+  for (let T = 520; T < c.length - 1; T += 5) {
+    const w1 = c.slice(T - 499, T + 1);
+    const w2 = c.slice(T - 498, T + 2);
+    const m2 = new Map(trackPatterns('ETHUSDT', w2, '4h', all).map((t) => [key(w2, t), t.id]));
+    for (const t of trackPatterns('ETHUSDT', w1, '4h', all)) {
+      const id2 = m2.get(key(w1, t));
+      if (id2 === undefined) continue;
+      same++;
+      if (id2 !== t.id) bad.push(`T=${T} ${t.id} → ${id2}`);
+    }
+  }
+  assert.ok(same > 20, `quá ít mô hình xuất hiện ở cả hai cửa sổ: ${same}`);
+  assert.deepEqual(bad.slice(0, 3), [], `${bad.length}/${same} id đổi khi cửa sổ trượt`);
 });

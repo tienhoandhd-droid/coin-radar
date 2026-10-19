@@ -128,7 +128,7 @@ function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: 
   const g: PatternGeometry = { kind: 'rectangle', timeframe: '4h', pivots: [], startIndex: 0, endIndex: 20, upper: () => 110, lower: () => 100,
     breakoutSide: 'both', height: 10, stopRef: { up: 109, down: 101 }, quality: 1, notes: [], ...over };
   const z = (low: number, high: number) => ({ low, high, strength: 2, touches: 2, sources: ['t'] });
-  const a: PatternPlanArgs = { mode: 'swing', geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
+  const a: PatternPlanArgs = { mode: 'swing', patternId: 'BTCUSDT|4h|rectangle|1|2', geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
     state: { state: 'breakout', breakoutIndex: 30, side: 'up', breakoutLine: 110, distanceAtr: 0, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
     zones: [z(118, 118.5), z(121, 122), z(126, 127)], multiMonth: null, btcSma200ReclaimedAt: null,
     capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8 };

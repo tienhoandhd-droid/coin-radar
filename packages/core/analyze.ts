@@ -247,7 +247,7 @@ export function analyze(i: AnalyzeInput): Analysis {
       }
       // Mức cắt lỗ (chữ nhật: pivot nhỏ phía trong) do patternStopLevel tính chung cho kế hoạch và máy trạng thái
       const res = buildPatternPlan({
-        mode: i.mode, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
+        mode: i.mode, patternId: t.id, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
         btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct),
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });

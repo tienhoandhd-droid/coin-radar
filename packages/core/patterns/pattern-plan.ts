@@ -19,6 +19,9 @@ export type EntryLeg = { kind: 'market' | 'limit'; price: number; qty: number; q
 export type PatternFillRow = FillRow & { legs: EntryLeg[]; avgEntry: number };
 
 export type PatternPlan = {
+  patternId: string; // id ổn định của mô hình (patternId: theo openTime 2 pivot đầu) — để nhận ra "cùng mô hình/cùng lần phá" giữa các lần quét
+  breakoutTime: number; // openTime (ms) nến phá của khung nhận diện
+  signalTime: number; // closeTime (ms) nến đóng cuối của khung nhận diện lúc lập kế hoạch
   kind: PatternKind;
   timeframe: string;
   side: Side;
@@ -82,6 +85,7 @@ export type PatternPlanResult = {
 
 export type PatternPlanArgs = {
   mode: Mode;
+  patternId: string; // patternId(symbol, geometry, candles)
   geometry: PatternGeometry;
   state: StateResult; // evaluateState tại nến cuối của `candles`
   candles: Candle[]; // nến ĐÃ ĐÓNG của khung nhận diện, cùng chỉ số với geometry/state
@@ -500,6 +504,9 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const fundingPerUnit = a.fundingRate * fundingEvents * entry;
 
   const plan: PatternPlan = {
+    patternId: a.patternId,
+    breakoutTime: c[bi]!.openTime,
+    signalTime: c[last]!.closeTime,
     kind: g.kind,
     timeframe: g.timeframe,
     side,

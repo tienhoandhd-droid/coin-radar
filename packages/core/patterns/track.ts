@@ -64,7 +64,7 @@ export function trackPatterns(symbol: string, full: Candle[], tf: PatternTf, kin
   const byId = new Map<string, PatternGeometry[]>();
   for (const g of geoms) {
     if (knownAt(g) > c.length - 1) continue; // chưa xác nhận trong dữ liệu hiện có
-    const id = patternId(symbol, g);
+    const id = patternId(symbol, g, c);
     byId.set(id, [...(byId.get(id) ?? []), g]);
   }
   const items = [...byId.entries()].map(([id, group]) => {

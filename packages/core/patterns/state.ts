@@ -16,12 +16,16 @@ export type StateResult = {
   inBreakoutWindow: boolean | null; // tam giác: phá trong 50–80% quãng tới apex (điều kiện dùng); null nếu không phải tam giác hoặc chưa phá
 };
 
-// Định danh ổn định, xác định (không cần thư viện hash): mã | khung | loại | chỉ số nến của 2 pivot đầu.
-export function patternId(symbol: string, g: PatternGeometry): string {
+// Định danh ổn định giữa các lần quét (không cần thư viện hash): mã | khung | loại | openTime (ms) nến của 2 pivot đầu.
+// Dùng THỜI GIAN, không dùng chỉ số mảng: cửa sổ nến trượt mỗi lần quét nên chỉ số đổi, thời gian thì không (rà soát cuối 1c, B2).
+export function patternId(symbol: string, g: PatternGeometry, c: Candle[]): string {
   const p1 = g.pivots[0];
   const p2 = g.pivots[1];
   if (!p1 || !p2) throw new Error(`mô hình ${g.kind} thiếu pivot để tạo id`);
-  return `${symbol}|${g.timeframe}|${g.kind}|${p1.index}|${p2.index}`;
+  const t1 = c[p1.index]?.openTime;
+  const t2 = c[p2.index]?.openTime;
+  if (t1 === undefined || t2 === undefined) throw new Error(`mô hình ${g.kind}: pivot ${p1.index}/${p2.index} ngoài dữ liệu (${c.length} nến)`);
+  return `${symbol}|${g.timeframe}|${g.kind}|${t1}|${t2}`;
 }
 
 // MỘT hàm mức dừng cho cả máy trạng thái (failed do chạm cắt lỗ) và kế hoạch lệnh (SL trước làm tròn tick / đẩy qua số tròn):

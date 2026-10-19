@@ -17,6 +17,9 @@ function k(high: number, low: number, close: number, volume = 1): Candle {
 // Nến "đóng ở giá x", râu ±1 (tuỳ chỉnh được)
 const bar = (close: number, hi = close + 1, lo = close - 1, vol = 1) => k(hi, lo, close, vol);
 const A = (n: number, v: number) => new Array<number>(n).fill(v);
+// Gán openTime/closeTime theo vị trí (1H) — patternId dùng openTime của pivot nên chuỗi dài cần thời gian phân biệt.
+const HOUR = 3_600_000;
+const timed = (c: Candle[]): Candle[] => c.map((x, i) => ({ ...x, openTime: i * HOUR, closeTime: (i + 1) * HOUR - 1 }));
 
 // Chữ nhật tay: biên 100–110, nến 0..20, pivot cuối 20 → xác nhận ở nến 23; A = 2.
 function rect(over: Partial<PatternGeometry> = {}): PatternGeometry {
@@ -200,9 +203,14 @@ test('khung không hỗ trợ → ném lỗi', () => {
   assert.throws(() => evaluateState(rect(), base(), A(24, 2), '5m'), /khung/);
 });
 
-test('patternId xác định và gồm mã, khung, loại, chỉ số 2 pivot đầu', () => {
+test('patternId xác định và gồm mã, khung, loại, openTime nến của 2 pivot đầu (không phải chỉ số mảng)', () => {
   const g = rect({ pivots: [{ index: 5, price: 1, kind: 'high' }, { index: 9, price: 1, kind: 'low' }, { index: 14, price: 1, kind: 'high' }] });
-  assert.equal(patternId('BTCUSDT', g), 'BTCUSDT|1d|rectangle|5|9');
+  const c = timed(base());
+  assert.equal(patternId('BTCUSDT', g, c), `BTCUSDT|1d|rectangle|${c[5]!.openTime}|${c[9]!.openTime}`);
+  // cùng mô hình nhìn từ cửa sổ trượt 2 nến (chỉ số pivot lùi 2) → cùng id
+  const shifted = rect({ pivots: g.pivots.map((p) => ({ ...p, index: p.index - 2 })) });
+  assert.equal(patternId('BTCUSDT', shifted, c.slice(2)), patternId('BTCUSDT', g, c));
+  assert.throws(() => patternId('BTCUSDT', g, c.slice(0, 6)), /ngoài dữ liệu/);
 });
 
 test('dedupePatterns: trong cùng (loại, khung) cửa sổ chồng nhau chỉ giữ cái mới nhất đang armed/breakout', () => {
@@ -266,8 +274,8 @@ const ASOF = 189; // tại nến này bản phát đầu đã failed nhưng bả
 test('C2: cùng patternId nhiều hình học cờ → giữ trạng thái của hình học phát ĐẦU TIÊN (failed không bị ghi đè)', () => {
   const c = series();
   const a = atr(c, COMMON.patterns.atrPeriod);
-  const id = 'X|1h|bear_flag|129|144';
-  const same = geometriesOf(c).map(({ g }) => g).filter((g) => patternId('X', g) === id).sort((x, y) => x.endIndex - y.endIndex);
+  const id = `X|1h|bear_flag|${129 * HOUR}|${144 * HOUR}`;
+  const same = geometriesOf(c).map(({ g }) => g).filter((g) => patternId('X', g, c) === id).sort((x, y) => x.endIndex - y.endIndex);
   assert.ok(same.length >= 3, `cần ≥3 bản phát lại cùng id, có ${same.length}`);
   const recs = same.map((g) => ({ id, geometry: g, result: evaluateState(g, c, a, TF, ASOF) }));
   const firstState = recs[0]!.result.state;
@@ -303,7 +311,7 @@ function series(): Candle[] {
   leg(100, 108, 3); leg(108, 130, 10); // cán cờ
   for (let i = 0; i < 12; i++) push(129 - i * 0.2, 0.8); // cờ
   leg(129, 140, 4); leg(140, 128, 12); leg(128, 141, 4);
-  return c;
+  return timed(c);
 }
 const TF = '1h';
 function geometriesOf(c: Candle[]): { g: PatternGeometry; a: number[] }[] {
@@ -333,11 +341,11 @@ function series2(): Candle[] {
   for (let i = 0; i < 14; i++) push(135 + (i % 2), 1);
   leg(135, 112, 6); // quay đầu thủng sâu vào trong sau > 10 nến
   for (let i = 0; i < 6; i++) push(112 + (i % 2), 1);
-  return c;
+  return timed(c);
 }
 
 // Gương giá (240 - giá): phá xuống + retest bằng râu trên, để phủ nhánh phá xuống.
-const mirrorSeries = (c: Candle[]): Candle[] => c.map((x) => k(240 - x.low, 240 - x.high, 240 - x.close, x.volume));
+const mirrorSeries = (c: Candle[]): Candle[] => timed(c.map((x) => k(240 - x.low, 240 - x.high, 240 - x.close, x.volume)));
 
 function checkReplay(full: Candle[], minCompared: number): Set<string> {
   const fullAtr = atr(full, COMMON.patterns.atrPeriod);
@@ -350,13 +358,13 @@ function checkReplay(full: Candle[], minCompared: number): Set<string> {
     const prefixAtr = fullAtr.slice(0, last + 1);
     const incr = new Map<string, string>();
     for (const { g } of geometriesOf(prefix)) {
-      incr.set(`${patternId('X', g)}|${g.endIndex}`, JSON.stringify(evaluateState(g, prefix, prefixAtr, TF)));
+      incr.set(`${patternId('X', g, prefix)}|${g.endIndex}`, JSON.stringify(evaluateState(g, prefix, prefixAtr, TF)));
     }
     for (const { g } of fullGeoms) {
       // Hình học chỉ tồn tại khi đã đủ dữ liệu: pivot cuối xác nhận (hoặc nến e của cờ) nằm trong tiền tố.
       const known = g.kind.endsWith('flag') ? g.endIndex <= last : g.endIndex + COMMON.pivotConfirmBars <= last;
       if (!known) continue;
-      const id = `${patternId('X', g)}|${g.endIndex}`;
+      const id = `${patternId('X', g, full)}|${g.endIndex}`;
       const viaFull = evaluateState(g, full, fullAtr, TF, last); // chạy trên toàn bộ chuỗi, xét tới nến `last`
       assert.ok(incr.has(id), `tiền tố ${last} thiếu mô hình ${id} mà toàn bộ có`);
       assert.equal(JSON.stringify(viaFull), incr.get(id), `lệch trạng thái ${id} tại nến ${last}`);
