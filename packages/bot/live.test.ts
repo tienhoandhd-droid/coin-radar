@@ -77,6 +77,7 @@ test('Đổi trần sau khi kích hoạt → mất kích hoạt; file kích ho�
   assert.equal(run(CAPS_RAW, JSON.stringify({ version: 1, capsHash: 'x'.repeat(64), armedAt: NOW })).ok, false);
   assert.equal(run(CAPS_RAW, JSON.stringify({ ...JSON.parse(ARM()), version: 2 })).ok, false);
   assert.equal(run({ maxCapitalUsdt: 1_000 }, ARM()).ok, false, 'thiếu đòn bẩy → live từ chối chạy');
+  for (const junk of ['null', '[]', '1', '"x"', '{}', 'true']) assert.equal(run(CAPS_RAW, junk).ok, false, junk);
 });
 
 // ================= CLI arm-live =================

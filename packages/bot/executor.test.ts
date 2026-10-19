@@ -409,9 +409,11 @@ test('cancel_then_place: hủy không rõ và tra cũng không kết luận → 
   const r = await executeActions([cancelOld(t, null, sl.clientId), sl], h.ctx);
   assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'queryAlgo', 'openAlgoOrders']);
   assert.equal(h.of('closeMarket').length, 0);
-  assert.deepEqual(r.unprotected, [C.symbol]);
-  assert.ok(h.state.unprotected[C.symbol]);
-  assert.ok(h.alerts.some((a) => a.level === 'urgent' && a.text.includes(C.symbol)));
+  // Hủy chưa xác nhận → dừng cũ coi như CÒN SỐNG → không phải vị thế trần (không dấu, không báo "không có lệnh dừng")
+  assert.deepEqual(r.unprotected, []);
+  assert.equal(h.state.unprotected[C.symbol], undefined);
+  assert.ok(h.alerts.some((a) => a.level === 'urgent' && a.text.includes(C.symbol) && /không rõ/.test(a.text)));
+  assert.ok(!h.alerts.some((a) => /KHÔNG CÓ LỆNH DỪNG/.test(a.text)));
 });
 
 test('Đặt lại bị từ chối nhưng mã GỐC hóa ra đã lên sàn → nhận lệnh gốc làm dừng, KHÔNG đóng (Long + Short)', async () => {
@@ -475,4 +477,54 @@ test('Lượt sau: mã bị đánh dấu chưa bảo vệ được xử lý TRƯ
   await executeActions([tpB, stopAction(a)], h.ctx);
   assert.deepEqual(h.calls.map((c) => c.m), ['placeStopLoss', 'placeTakeProfit']);
   assert.equal(h.state.unprotected[C.symbol], undefined);
+});
+
+// ================= B5 vòng 2 =================
+test('Lệch giờ TRƯỚC khi kịp hủy dừng cũ (cancel_then_place) → KHÔNG đặt dừng mới đè dừng cũ, KHÔNG đóng, không báo trần (Long + Short)', async () => {
+  for (const side of ['long', 'short'] as const) {
+    const t = mkTrade(side);
+    const sl = stopAction(t);
+    const h = harness([t], { placeTakeProfit: [res('clock', { code: -1021 })], placeStopLoss: [res('stop_rejected', { code: -4130 })] });
+    const r = await executeActions([tp1Action(t), cancelOld(t, null, sl.clientId), sl], h.ctx);
+    assert.deepEqual(h.calls.map((c) => c.m), ['placeTakeProfit'], side);
+    assert.equal(h.of('closeMarket').length, 0, side);
+    assert.deepEqual(r.closedSymbols, [], side);
+    assert.deepEqual(r.unprotected, [], side);
+  }
+});
+
+test('Bị cấm TRƯỚC khi kịp hủy dừng cũ → không báo "KHÔNG CÓ LỆNH DỪNG", không ghi dấu chưa bảo vệ (Long + Short)', async () => {
+  for (const side of ['long', 'short'] as const) {
+    const t = mkTrade(side);
+    const sl = stopAction(t);
+    const h = harness([t], { placeTakeProfit: [res('banned', { status: 429 })] });
+    const r = await executeActions([tp1Action(t), cancelOld(t, null, sl.clientId), sl], h.ctx);
+    assert.deepEqual(h.calls.map((c) => c.m), ['placeTakeProfit'], side);
+    assert.deepEqual(r.unprotected, [], side);
+    assert.equal(h.events.filter((e) => e.type === 'unprotected').length, 0, side);
+    assert.ok(!h.alerts.some((a) => /KHÔNG CÓ LỆNH DỪNG/.test(a.text)), side);
+  }
+});
+
+test('Chính lệnh hủy dừng cũ bị lệch giờ (chưa hủy được) → dừng cũ coi như còn sống: không đặt mới, không đóng (Short)', async () => {
+  const t = mkTrade('short');
+  const sl = stopAction(t);
+  const h = harness([t], { cancelAlgo: [res('clock', { code: -1021 })] });
+  const r = await executeActions([cancelOld(t, null, sl.clientId), sl], h.ctx);
+  assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo']);
+  assert.deepEqual(r.unprotected, []);
+  assert.equal(h.of('closeMarket').length, 0);
+});
+
+test('Lần đặt lại báo không rõ, tra thấy ĐÃ KÍCH HOẠT → vị thế đang được dừng đóng: không tra tiếp, không đóng khẩn (Long)', async () => {
+  const t = mkTrade('long');
+  const h = harness([t], {
+    placeStopLoss: [UNKNOWN(), UNKNOWN()],
+    queryAlgo: [res('rejected', { code: -2013 }), res('ok', { body: { algoStatus: 'TRIGGERED' } })],
+  });
+  const r = await executeActions([stopAction(t), tp1Action(t)], h.ctx);
+  assert.deepEqual(h.calls.map((c) => c.m), ['placeStopLoss', 'queryAlgo', 'placeStopLoss', 'queryAlgo']);
+  assert.equal(h.of('closeMarket').length, 0);
+  assert.deepEqual(r.unprotected, []);
+  assert.equal(r.reconcileAgain, true);
 });

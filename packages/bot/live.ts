@@ -78,14 +78,16 @@ export function resolveRunMode(a: { configMode: unknown; env: Readonly<Record<st
   if (!caps.ok) problems.push(...caps.problems.map((p) => `Trần live: ${p}`));
   if (a.armRaw === null) problems.push('Chưa kích hoạt live — chạy `node packages/bot/arm-live.ts` và gõ câu xác nhận');
   else {
-    let arm: unknown = null;
+    let arm: unknown;
+    let parsed = false;
     try {
       arm = JSON.parse(a.armRaw);
+      parsed = true;
     } catch (e) {
       problems.push(`File kích hoạt live không đọc được (${e instanceof Error ? e.message : String(e)})`);
     }
-    if (arm !== null) {
-      const f = arm as Partial<ArmFile>;
+    if (parsed) {
+      const f = (arm !== null && typeof arm === 'object' && !Array.isArray(arm) ? arm : {}) as Partial<ArmFile>;
       if (f.version !== 1 || typeof f.capsHash !== 'string' || typeof f.armedAt !== 'number') problems.push('File kích hoạt live sai cấu trúc/phiên bản');
       else if (caps.ok && f.capsHash !== capsHash(caps.caps)) problems.push('Cấu hình trần live đã đổi sau lần kích hoạt — phải kích hoạt lại (arm-live.ts)');
     }

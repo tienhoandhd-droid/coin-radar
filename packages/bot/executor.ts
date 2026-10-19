@@ -77,6 +77,9 @@ export async function executeActions(actionsIn: readonly Action[], ctx: Executor
   const safe = new Set<string>(); // place_stop KHÔNG cần nữa: dừng cũ còn sống / dừng đã kích hoạt
   const skipPlace = new Set<string>(); // place_stop bị bỏ vì hủy dừng cũ chưa xác nhận (tránh -4130 → đóng oan)
   const sentAttempt = new Map<string, number>(); // place_stop (mã của hành động) → lần thử cuối đã GỬI
+  // place_stop của cancel_then_place mà lệnh hủy dừng cũ ĐÃ được xác nhận (hủy ok, hoặc tra thấy dừng cũ đã vắng) trong lượt này.
+  // Hủy chưa chạy / lỗi / không rõ → dừng cũ coi như CÒN SỐNG → vị thế KHÔNG trần.
+  const oldStopGone = new Set<string>();
   const sleep = ctx.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const wait = () => sleep(ctx.confirmDelayMs ?? DEFAULT_CONFIRM_DELAY_MS);
   const say = (level: AlertLevel, symbol: string | null, text: string) => ctx.notify({ level, symbol, text });
@@ -260,6 +263,15 @@ export async function executeActions(actionsIn: readonly Action[], ctx: Executor
             placed.add(lastId);
             return;
           }
+          if (pr2 === 'triggered') {
+            // Lệnh dừng đặt lại đã kích hoạt → vị thế đang/đã được chính lệnh dừng đóng: không đóng khẩn, đối chiếu lại theo vị thế
+            legUpdate(a.signalId, a.role, lastId, 'filled', 'Tra lại: lệnh dừng đặt lại đã kích hoạt');
+            safe.add(a.clientId);
+            freeze(sym);
+            rep.reconcileAgain = true;
+            say('warn', sym, `${sym}: lệnh dừng ${lastId} đã kích hoạt — vị thế đang được đóng bởi lệnh dừng; đối chiếu lại`);
+            return;
+          }
           unresolved = pr2 !== 'absent';
         }
         // Đặt lại hỏng: lệnh GỐC có thể vừa lên sàn (sàn từ chối lần thử mới vì đã có dừng) → tra mã gốc lần nữa trước khi đóng
@@ -314,7 +326,10 @@ export async function executeActions(actionsIn: readonly Action[], ctx: Executor
     const r = a.type === 'cancel_algo'
       ? await send(m, () => ctx.orders.cancelAlgo({ algoId: a.algoId }))
       : await send(m, () => ctx.orders.cancelOrder(a.symbol, { orderId: a.orderId }));
-    if (r.kind === 'ok') return;
+    if (r.kind === 'ok') {
+      if (a.type === 'cancel_algo' && a.replacedBy !== null) oldStopGone.add(a.replacedBy);
+      return;
+    }
     rep.reconcileAgain = true; // đã khớp/hủy từ trước hoặc không rõ → lượt sau đối chiếu
     if (a.type !== 'cancel_algo' || a.replacedBy === null) return;
     // cancel_then_place: hủy dừng cũ CHƯA xác nhận → tra dừng cũ trước khi đặt mới (dừng cũ còn sống thì lệnh mới sẽ bị từ chối
@@ -322,7 +337,7 @@ export async function executeActions(actionsIn: readonly Action[], ctx: Executor
     const paired = actions.find((x): x is StopAction => x.type === 'place_stop' && x.clientId === a.replacedBy);
     if (r.kind === 'unknown_status') await wait();
     const pr = await algoPresence(a.symbol, a.clientId);
-    if (pr === 'absent') return; // dừng cũ đã vắng → đặt mới bình thường
+    if (pr === 'absent') { oldStopGone.add(a.replacedBy); return; } // dừng cũ đã vắng → đặt mới bình thường
     skipPlace.add(a.replacedBy);
     if (pr === 'present') {
       safe.add(a.replacedBy);
@@ -369,12 +384,16 @@ export async function executeActions(actionsIn: readonly Action[], ctx: Executor
     else say(role === 'SL' || role === 'BE' ? 'urgent' : 'warn', a.symbol, `${a.symbol}: tra lại lệnh ${a.clientId} không kết luận được — tra lại lượt sau`);
   }
 
-  // Lệnh dừng mà vị thế KHÔNG có dừng nào khác (onReject market_close) nhưng chưa lên sàn, mã chưa được đóng → vị thế trần
+  // Vị thế TRẦN theo điều THỰC SỰ xảy ra trong lượt: lệnh dừng mà reconcile xác định không có dừng nào khác phủ vị thế
+  // (onReject market_close) chưa lên sàn, mã chưa đóng được, VÀ nếu là cancel_then_place thì lệnh hủy dừng cũ phải ĐÃ được xác
+  // nhận (hủy chưa chạy / lỗi / không rõ / bị bỏ → dừng cũ coi như còn sống → không trần).
+  const pairedCancel = (a: StopAction) => actions.some((x) => x.type === 'cancel_algo' && x.replacedBy === a.clientId);
   const nakedStops = (): StopAction[] => {
     const seen = new Set<string>();
     const out: StopAction[] = [];
     for (const a of actions) {
       if (a.type !== 'place_stop' || a.onReject !== 'market_close' || placed.has(a.clientId) || safe.has(a.clientId) || closeOk.has(a.symbol) || seen.has(a.symbol)) continue;
+      if (skipPlace.has(a.clientId) || (pairedCancel(a) && !oldStopGone.has(a.clientId))) continue;
       seen.add(a.symbol);
       out.push(a);
     }
