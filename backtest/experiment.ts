@@ -40,22 +40,33 @@ const CAPITAL = 10_000;
 export const MIN_LIFT = 1.25;
 
 // ---------------------------------------------------------------- danh mục biến thể ------------------------------------------------
+// run: thay đổi so với GỐC của lần thử (--base, mặc định 'baseline'): chính sách thoát / bộ lọc (bỏ trống = giữ của gốc) + configOverride
+// (H0: khóa cấu hình → giá trị, áp trong lúc mô phỏng — packages/core/config-override.ts). Thay đổi được nhận thì CHỒNG lên nhau: lần
+// thử sau chạy với --base <biến thể đã nhận> → cấu hình hiệu lực = cấu hình hiệu lực của gốc + thay đổi của biến thể.
+export type Filter = 'A' | 'all';
+export type RunSpec = { policy: ExitPolicy; filter: Filter; configOverride: Record<string, unknown> };
 export type Variant = {
   name: string; proposal: number | null; change: string; rationale: string; wired: boolean;
-  run: { policy: ExitPolicy; filter: 'A' | 'all' } | null; // đã nối: tham số mô phỏng hiện có
-  configOverride: Record<string, unknown>; // chưa nối: khóa cấu hình → giá trị (CẦN hook H0 + hook riêng)
+  run: { policy?: ExitPolicy; filter?: Filter } | null; // null = chưa nối
+  configOverride: Record<string, unknown>;
   hooks: string[];
+  notTrial?: string; // sửa công cụ/định cỡ (không phải giả thuyết luật): không tính vào k, ghi lý do
+  modes?: Mode[]; // chế độ áp dụng được (mặc định cả hai)
 };
 
-// H0 — hook chung bộ mô phỏng cần (KHÔNG tự thêm ở đây: simulate-run.ts do agent khác sửa): RunOptions nhận
-// `configOverride?: Record<string, unknown>` và runSimulation áp nó vào CONFIG/COMMON trong lúc chạy (lõi đọc CONFIG/COMMON cấp
-// module, chưa có tham số cấu hình) — vd. `const restore = applyConfigOverride(o.configOverride); try { … } finally { restore(); }`.
+export const BASELINE_SPEC: RunSpec = { policy: 'C2', filter: 'all', configOverride: {} };
+export function stackRun(base: RunSpec, v: Variant): RunSpec {
+  if (v.run === null) throw new Error(`biến thể "${v.name}" chưa nối`);
+  return { policy: v.run.policy ?? base.policy, filter: v.run.filter ?? base.filter, configOverride: { ...base.configOverride, ...v.configOverride } };
+}
+
 const H0 = 'H0: simulate-run.ts RunOptions.configOverride → runSimulation áp vào CONFIG/COMMON trong lúc chạy rồi trả lại (try/finally)';
 const RESEARCH = 'reports/Nghiên cứu cải thiện lợi nhuận.md';
 const PRIOR = 'đã xem trên D trước khi có nhật ký (Task 3)';
 
-function wired(name: string, change: string, rationale: string, run: Variant['run']): Variant {
-  return { name, proposal: null, change, rationale, wired: true, run, configOverride: {}, hooks: [] };
+function wired(name: string, proposal: number | null, change: string, rationale: string, run: NonNullable<Variant['run']>,
+  configOverride: Record<string, unknown> = {}, extra: Partial<Variant> = {}): Variant {
+  return { name, proposal, change, rationale, wired: true, run, configOverride, hooks: [], ...extra };
 }
 function unwired(name: string, proposal: number | null, change: string, rationale: string,
   configOverride: Record<string, unknown>, hooks: string[]): Variant {
@@ -63,11 +74,11 @@ function unwired(name: string, proposal: number | null, change: string, rational
 }
 
 const list: Variant[] = [
-  wired('baseline', 'gốc: mọi Đạt, thoát C2 (TP1 50% + trailing)', 'đối chứng cho mọi biến thể', { policy: 'C2', filter: 'all' }),
-  wired('filter-A', 'chỉ tín hiệu Hạng A (bot thật), thoát C2', `lọc Hạng A so với mọi Đạt — ${PRIOR}`, { policy: 'C2', filter: 'A' }),
-  wired('exit-A0', 'thoát A0 (TP1/TP2/TP3 50/30/20, dời SL sau TP1)', `Task 4: so cách thoát với C2 — ${PRIOR}`, { policy: 'A0', filter: 'all' }),
-  unwired('tp1-any-strength', null, 'TP1 tại vùng đầu tiên bất kể độ mạnh (B3b)', 'Task 4: biến thể chọn TP1, tính vào k Bonferroni',
-    { 'COMMON.zones.tp1SkipWeak': false }, ['khóa đã có (zones.ts đọc lúc gọi) — chỉ cần H0']),
+  wired('baseline', null, 'gốc: mọi Đạt, thoát C2 (TP1 50% + trailing)', 'đối chứng cho mọi biến thể', { policy: 'C2', filter: 'all' }),
+  wired('filter-A', null, 'chỉ tín hiệu Hạng A (bot thật), thoát C2', `lọc Hạng A so với mọi Đạt — ${PRIOR}`, { policy: 'C2', filter: 'A' }),
+  wired('exit-A0', null, 'thoát A0 (TP1/TP2/TP3 50/30/20, dời SL sau TP1)', `Task 4: so cách thoát với C2 — ${PRIOR}`, { policy: 'A0', filter: 'all' }),
+  wired('tp1-any-strength', null, 'TP1 tại vùng đầu tiên bất kể độ mạnh (B3b)', 'Task 4: biến thể chọn TP1, tính vào k Bonferroni', {},
+    { 'COMMON.zones.tp1SkipWeak': false }),
   ...[0.1, 0.15].map((k) => unwired(`p1-cost-floor-k${k.toFixed(2).replace('.', '')}`, 1,
     `#1 sàn chi phí: bỏ kế hoạch nếu (phí vào + phí ra ở SL + funding dự kiến)/d > ${k}; phí maker/taker tách riêng`,
     `${RESEARCH} #1 — phí ăn 0,32R/lệnh ở Lướt nhanh`,
@@ -110,6 +121,9 @@ const list: Variant[] = [
     ['replay.ts đưa funding 7 ngày (đã chốt ≤ t) của mọi hợp đồng vào input', 'gates: kiểm phân vị funding theo chiều lệnh']),
 ];
 export const VARIANTS: Record<string, Variant> = Object.fromEntries(list.map((v) => [v.name, v]));
+export function notTrialNames(): Set<string> {
+  return new Set(Object.values(VARIANTS).filter((v) => v.notTrial !== undefined).map((v) => v.name));
+}
 
 export function requireWired(name: string): Variant {
   const v = VARIANTS[name];
@@ -141,8 +155,10 @@ export function validateSource(s: SourceSummary, v: Variant, mode: Mode): void {
   }
   if (s.mode !== mode) throw new Error(`kết quả nguồn là chế độ "${String(s.mode)}", cần "${mode}"`);
   if (v.run === null) throw new Error(`biến thể "${v.name}" chưa nối — không có kết quả nguồn hợp lệ`);
-  if (s.policy !== v.run.policy || s.filter !== v.run.filter) {
-    throw new Error(`kết quả nguồn ${String(s.policy)}/${String(s.filter)} không khớp biến thể "${v.name}" (${v.run.policy}/${v.run.filter})`);
+  const want = stackRun(BASELINE_SPEC, v);
+  if (Object.keys(want.configOverride).length > 0) throw new Error(`biến thể "${v.name}" cần ghi đè cấu hình — không nhận kết quả mô phỏng có sẵn, phải chạy mô phỏng`);
+  if (s.policy !== want.policy || s.filter !== want.filter) {
+    throw new Error(`kết quả nguồn ${String(s.policy)}/${String(s.filter)} không khớp biến thể "${v.name}" (${want.policy}/${want.filter})`);
   }
 }
 
@@ -182,9 +198,11 @@ export function logRows(text: string): Array<{ variant: string; mode: string; li
   return out;
 }
 
-export function countTrials(text: string, variant: string, modes: readonly string[]): number {
-  const s = new Set(logRows(text).filter((r) => r.variant !== 'baseline').map((r) => `${r.variant}|${r.mode}`));
-  if (variant !== 'baseline') for (const m of modes) s.add(`${variant}|${m}`);
+// Biến thể "không phải lần thử" (sửa công cụ/định cỡ, ghi lý do ở Variant.notTrial) không tính vào k.
+export function countTrials(text: string, variant: string, modes: readonly string[], notTrials: ReadonlySet<string> = notTrialNames()): number {
+  const counts = (name: string) => name !== 'baseline' && !notTrials.has(name);
+  const s = new Set(logRows(text).filter((r) => counts(r.variant)).map((r) => `${r.variant}|${r.mode}`));
+  if (counts(variant)) for (const m of modes) s.add(`${variant}|${m}`);
   return Math.max(1, s.size);
 }
 
@@ -209,11 +227,13 @@ export function upsertLogRow(text: string, row: string): string {
 }
 
 export type DecideInput = {
+  notTrial?: string; // lý do không tính là lần thử → gốc mới, không áp tiêu chí nhận
   baseline: boolean; trades: number; rPerDayAdjLo: number; retPerDayAdjLo: number; expectancy: number; baseExpectancy: number;
   dd: number; baseDd: number; streak: number; baseStreak: number;
 };
 export function decide(a: DecideInput): string {
   if (a.baseline) return 'gốc (đối chứng)';
+  if (a.notTrial !== undefined) return `sửa định cỡ, không tính là thử — gốc mới (${a.notTrial})`;
   if (a.trades < 30) return `không kết luận được (< 30 lệnh: ${a.trades})`;
   if (!(a.rPerDayAdjLo > 0)) return 'không nhận (cận dưới CI Bonferroni của Δ R/ngày ≤ 0)';
   if (!(a.retPerDayAdjLo > 0)) return 'không nhận (cận dưới CI Bonferroni của Δ lợi suất/ngày ≤ 0)';
@@ -290,9 +310,21 @@ function regimeTagger(btcDaily: readonly Candle[]) {
 const randomInterval: Record<Mode, Interval> = { swing: '1h', fast: '15m' };
 
 type Shared = {
+  base: string; // gốc so sánh + cấu hình nền (biến thể đã nhận trước đó; mặc định 'baseline')
   cacheDir: string; boot: { resamples: number; seed: number; alpha: number }; k: number; randomReps: number;
   data: ReturnType<typeof createData>; regimeAt: (t: number) => string; events: ReturnType<typeof parseEvents>; btc: readonly Candle[];
 };
+
+// Cấu hình hiệu lực của một biến thể đã chạy (output/experiments/<tên>/<chế độ>/effective.json) — gốc của lần thử chồng lên nó
+export function readEffective(name: string, mode: Mode): RunSpec {
+  const p = resolvePath(REPO_ROOT, 'output/experiments', name, mode, 'effective.json');
+  if (!existsSync(p)) {
+    if (name === 'baseline') return BASELINE_SPEC;
+    throw new Error(`chưa có cấu hình hiệu lực của "${name}" (${p}) — chạy biến thể đó trước`);
+  }
+  const e = JSON.parse(readFileSync(p, 'utf8')) as RunSpec;
+  return { policy: e.policy, filter: e.filter, configOverride: e.configOverride ?? {} };
+}
 
 // Lấy kết quả mô phỏng vào outDir: chép từ --from-output (kiểm kỳ D + chính sách) hoặc chạy mô phỏng (biến thể đã nối)
 async function materialize(v: Variant, mode: Mode, src: string | undefined, outDir: string, sh: Shared): Promise<void> {
@@ -302,15 +334,19 @@ async function materialize(v: Variant, mode: Mode, src: string | undefined, outD
     validateSource(JSON.parse(readFileSync(join(from, 'summary.json'), 'utf8')) as SourceSummary, v, mode);
     for (const f of ['trades.jsonl', 'equity.json', 'summary.json']) copyFileSync(join(from, f), join(outDir, f));
     writeFileSync(join(outDir, 'source.json'), JSON.stringify({ from, copiedAt: new Date().toISOString() }, null, 2));
+    writeFileSync(join(outDir, 'effective.json'), JSON.stringify({ base: 'baseline', ...stackRun(BASELINE_SPEC, v) }, null, 2));
     return;
   }
   const w = requireWired(v.name);
-  // nạp động: simulate-run.ts nặng (máy quét) và đang được sửa song song — chỉ cần khi thật sự mô phỏng
+  const spec = stackRun(readEffective(sh.base, mode), w);
+  writeFileSync(join(outDir, 'effective.json'), JSON.stringify({ base: sh.base, ...spec }, null, 2));
+  // nạp động: simulate-run.ts nặng (máy quét) — chỉ cần khi thật sự mô phỏng
   const sim = await import('./simulate-run.ts');
   const { loadContracts } = await import('./replay.ts');
-  const opts = { dir: sh.cacheDir, mode, window: { ...DEV_PERIOD }, filter: w.run!.filter, policy: w.run!.policy, capital: CAPITAL, pauseHours: 24 };
+  const opts = { dir: sh.cacheDir, mode, window: { ...DEV_PERIOD }, filter: spec.filter, policy: spec.policy, capital: CAPITAL, pauseHours: 24 };
   const contracts = await loadContracts(sh.cacheDir);
-  const res = await sim.runSimulation({ ...opts, contracts, events: sh.events, fetcher: null, log: (m) => console.log(`  [${mode}] ${m}`) });
+  console.log(`  [${mode}] cấu hình hiệu lực (gốc ${sh.base}): ${JSON.stringify(spec)}`);
+  const res = await sim.runSimulation({ ...opts, configOverride: spec.configOverride, contracts, events: sh.events, fetcher: null, log: (m) => console.log(`  [${mode}] ${m}`) });
   writeFileSync(join(outDir, 'trades.jsonl'), res.done.map((r) => JSON.stringify(r)).join('\n') + '\n');
   const curve = res.book.curve.filter((_, i, arr) => i === arr.length - 1 || arr[i + 1]!.t !== arr[i]!.t);
   writeFileSync(join(outDir, 'equity.json'), JSON.stringify(curve));
@@ -367,7 +403,7 @@ async function runMode(v: Variant, mode: Mode, src: string | undefined, sh: Shar
   let paired: ReturnType<typeof pairedComparison> | null = null;
   let base: { expectancy: number; dd: number; streak: number } | null = null;
   if (v.name !== 'baseline') {
-    const baseDir = resolvePath(REPO_ROOT, 'output/experiments/baseline', mode);
+    const baseDir = resolvePath(REPO_ROOT, 'output/experiments', sh.base, mode);
     if (!existsSync(join(baseDir, 'trades.jsonl'))) throw new Error(`chưa có kết quả gốc ${baseDir} — chạy --variant baseline trước`);
     const b = readRun(baseDir);
     const bs = computeStats(b.trades, { ...sh.boot, resamples: 1 });
@@ -390,7 +426,8 @@ async function runMode(v: Variant, mode: Mode, src: string | undefined, sh: Shar
 
   const s = overall;
   return {
-    date: new Date().toISOString().slice(0, 10), variant: v.name, mode, change: v.change, rationale: v.rationale, trades: s.trades,
+    date: new Date().toISOString().slice(0, 10), variant: v.name, mode, change: sh.base === 'baseline' ? v.change : `${v.change} [gốc: ${sh.base}]`,
+    rationale: v.rationale, trades: s.trades,
     expectancy: `${vn(s.expectancyR, 3)} ${ci(s.expectancyCIBlock)}`,
     dRPerDay: portfolio === null ? '—' : `${vn(portfolio.rPerDay.mean, 3)} ${ci(portfolio.rPerDay.ciAdj)}`,
     dRetPerDay: portfolio === null ? '—' : `${vn(portfolio.retPerDay.mean, 3)} ${ci(portfolio.retPerDay.ciAdj)}`,
@@ -398,10 +435,10 @@ async function runMode(v: Variant, mode: Mode, src: string | undefined, sh: Shar
       : `${vn(portfolio.deltaTotalReturnPct)} / ${vn(portfolio.deltaMaxDdPct)} / ${s.longestLosingStreak - base.streak >= 0 ? '+' : '−'}${Math.abs(s.longestLosingStreak - base.streak)}`,
     paired: paired === null ? '—'
       : `${vn(paired.meanDeltaR, 3)} ${ci(paired.ciAdj)} (${paired.matched} cặp; chỉ gốc ${paired.baseOnly.length} lệnh ${vn(paired.baseOnlyR, 1)}R, chỉ biến thể ${paired.variantOnly.length} lệnh ${vn(paired.variantOnlyR, 1)}R)`,
-    k: v.name === 'baseline' ? '—' : String(sh.k), totalPct: vn(run.summary.totalReturnPct), pf: vn(s.profitFactor), maxDd: vn(run.summary.maxDdPct),
+    k: v.name === 'baseline' || v.notTrial !== undefined ? '—' : String(sh.k), totalPct: vn(run.summary.totalReturnPct), pf: vn(s.profitFactor), maxDd: vn(run.summary.maxDdPct),
     streak: String(s.longestLosingStreak),
     decision: decide({
-      baseline: v.name === 'baseline', trades: s.trades, rPerDayAdjLo: portfolio?.rPerDay.ciAdj.lo ?? NaN, retPerDayAdjLo: portfolio?.retPerDay.ciAdj.lo ?? NaN,
+      ...(v.notTrial !== undefined ? { notTrial: v.notTrial } : {}), baseline: v.name === 'baseline', trades: s.trades, rPerDayAdjLo: portfolio?.rPerDay.ciAdj.lo ?? NaN, retPerDayAdjLo: portfolio?.retPerDay.ciAdj.lo ?? NaN,
       expectancy: s.expectancyR, baseExpectancy: base?.expectancy ?? NaN, dd: run.summary.maxDdPct, baseDd: base?.dd ?? NaN,
       streak: s.longestLosingStreak, baseStreak: base?.streak ?? NaN,
     }),
@@ -452,7 +489,7 @@ async function main() {
   const { values: o } = parseArgs({ options: {
     variant: { type: 'string' }, modes: { type: 'string', default: 'swing,fast' }, 'from-output': { type: 'string' }, period: { type: 'string', default: 'dev' },
     resamples: { type: 'string', default: '5000' }, seed: { type: 'string', default: '20261019' }, 'random-reps': { type: 'string', default: '200' },
-    dir: { type: 'string', default: 'data/cache' }, list: { type: 'boolean', default: false },
+    dir: { type: 'string', default: 'data/cache' }, list: { type: 'boolean', default: false }, base: { type: 'string', default: 'baseline' },
   } });
   if (o.list) {
     for (const v of list) console.log(`${v.wired ? 'ĐÃ NỐI ' : 'CHƯA NỐI'} ${v.name.padEnd(20)} ${v.change}${v.hooks.length > 0 ? '\n           cần: ' + v.hooks.join('\n                ') : ''}`);
@@ -466,6 +503,10 @@ async function main() {
   if (Object.keys(fromOutput).length === 0) requireWired(v.name);
   const modes = o.modes!.split(',').map((m) => m.trim());
   for (const m of modes) if (m !== 'swing' && m !== 'fast') throw new Error(`--modes chỉ nhận swing,fast — nhận "${m}"`);
+  for (const m of modes) if (v.modes !== undefined && !v.modes.includes(m as Mode)) throw new Error(`biến thể "${v.name}" chỉ áp dụng cho ${v.modes.join(', ')}`);
+  const base = o.base!;
+  if (base === v.name) throw new Error('--base phải khác biến thể đang thử');
+  if (base !== 'baseline' && VARIANTS[base] === undefined) throw new Error(`--base: không có biến thể "${base}"`);
   const num = (x: string, name: string) => { const n = Number(x); if (!(n > 0 && Number.isInteger(n))) throw new Error(`--${name} không hợp lệ: "${x}"`); return n; };
 
   const logPath = join(REPO_ROOT, LOG_PATH);
@@ -475,14 +516,16 @@ async function main() {
   const cacheDir = o.dir!;
   const btcDaily = loadCandles(cacheDir, 'BTCUSDT', '1d', DEV_PERIOD.start - 300 * DAY, DEV_PERIOD.end).candles;
   const sh: Shared = {
-    cacheDir, boot, k, randomReps: num(o['random-reps']!, 'random-reps'), data: createData(cacheDir), regimeAt: regimeTagger(btcDaily),
+    base, cacheDir, boot, k, randomReps: num(o['random-reps']!, 'random-reps'), data: createData(cacheDir), regimeAt: regimeTagger(btcDaily),
     events: parseEvents(JSON.parse(readFileSync(join(REPO_ROOT, 'data/events/events.json'), 'utf8'))),
     btc: loadCandles(cacheDir, 'BTCUSDT', '5m', DEV_PERIOD.start, DEV_PERIOD.end).candles, // cú sốc BTC đo trên nến 5m
   };
 
-  let text = logText;
-  for (const mode of modes as Mode[]) text = upsertLogRow(text, formatLogRow(await runMode(v, mode, fromOutput[mode], sh)));
-  writeFileSync(logPath, text);
+  // Đọc lại nhật ký NGAY trước khi ghi từng dòng: nhiều lần chạy song song (mỗi chế độ một tiến trình) không ghi đè dòng của nhau
+  for (const mode of modes as Mode[]) {
+    const row = formatLogRow(await runMode(v, mode, fromOutput[mode], sh));
+    writeFileSync(logPath, upsertLogRow(existsSync(logPath) ? readFileSync(logPath, 'utf8') : LOG_HEADER, row));
+  }
   console.log(`\nĐã ghi output/experiments/${v.name}/ và ghi ${modes.length} dòng vào ${LOG_PATH} (k = ${k})`);
 }
 

@@ -84,3 +84,14 @@ test('fundingBufferAt: không có kỳ funding nào trong 30 ngày (hoặc toàn
   assert.deepEqual(fundingBufferAt([{ fundingTime: T - D, fundingRate: 0, markPrice: 1 }], T, 4), { maxAbsRate: COMMON.risk.fundingFallbackPer8h / 2, intervalHours: 4, fallback: true });
   assert.deepEqual(fundingBufferAt([{ fundingTime: T - D, fundingRate: -0.0003, markPrice: 1 }], T, 8), { maxAbsRate: 0.0003, intervalHours: 8, fallback: false });
 });
+
+test('H0: runSimulation áp configOverride trong lúc chạy và trả lại cả khi lỗi; khóa gõ sai → từ chối trước khi chạy', async () => {
+  const { runSimulation } = await import('./simulate-run.ts');
+  const { CONFIG } = await import('../packages/core/config.ts');
+  const ts = CONFIG.swing.timeStopHours;
+  const base = { dir: '/khong/co/thu/muc', mode: 'swing' as const, window: { start: T, end: T + 86_400_000 }, filter: 'all' as const, policy: 'C2' as const,
+    capital: 1000, pauseHours: 24, contracts: [], events: [], fetcher: null, log: () => {} };
+  await assert.rejects(runSimulation({ ...base, configOverride: { 'CONFIG.swing.timeStopHours': 3 } }));
+  assert.equal(CONFIG.swing.timeStopHours, ts);
+  await assert.rejects(runSimulation({ ...base, configOverride: { 'CONFIG.swing.khongCo': 3 } }), /khóa không có trong config.ts/);
+});

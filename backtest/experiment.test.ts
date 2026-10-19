@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  VARIANTS, assertDevPeriod, requireWired, logRows, countTrials, formatLogRow, upsertLogRow, LOG_HEADER, decide, parseFromOutput, validateSource, resamplesFor,
+  VARIANTS, stackRun, BASELINE_SPEC, assertDevPeriod, requireWired, logRows, countTrials, formatLogRow, upsertLogRow, LOG_HEADER, decide, parseFromOutput, validateSource, resamplesFor,
 } from './experiment.ts';
 import { DEV_PERIOD } from './replay.ts';
 
@@ -17,7 +17,7 @@ test('danh mục biến thể: gốc đã nối; đủ 8 đề xuất; biến th
   const proposals = new Set(Object.values(VARIANTS).map((v) => v.proposal).filter((p) => p !== null));
   assert.deepEqual([...proposals].sort(), [1, 2, 3, 4, 5, 6, 7, 8]);
   for (const v of Object.values(VARIANTS)) {
-    if (v.wired) { assert.ok(v.run !== null, `${v.name}: đã nối phải có run`); assert.deepEqual(v.configOverride, {}, `${v.name}: đã nối thì không được dựa vào configOverride`); }
+    if (v.wired) assert.ok(v.run !== null, `${v.name}: đã nối phải có run`);
     else { assert.ok(v.hooks.length > 0, `${v.name}: chưa nối phải ghi hook`); assert.match(v.change, /chưa nối/); }
     assert.ok(v.change.length > 0 && v.rationale.length > 0);
   }
@@ -91,4 +91,24 @@ test('validateSource: chỉ nhận kết quả kỳ D đúng chính sách/lọc 
   assert.throws(() => validateSource({ ...ok, window: { ...ok.window, end: '2026-10-01T00:00:00.000Z' } }, VARIANTS.baseline!, 'swing'), /kỳ D/);
   assert.throws(() => validateSource({ ...ok, policy: 'A0' }, VARIANTS.baseline!, 'swing'), /C2/);
   assert.throws(() => validateSource(ok, VARIANTS.baseline!, 'fast'), /chế độ/);
+});
+
+test('stackRun: thay đổi được nhận CHỒNG lên nhau — cấu hình hiệu lực = gốc + thay đổi của biến thể (khóa trùng: biến thể thắng)', () => {
+  const v = { name: 'x', proposal: 1, change: 'c', rationale: 'r', wired: true, run: {}, configOverride: { 'COMMON.a': 2 }, hooks: [] };
+  const base = { policy: 'A0' as const, filter: 'all' as const, configOverride: { 'COMMON.a': 1, 'COMMON.b': 1 } };
+  assert.deepEqual(stackRun(base, v), { policy: 'A0', filter: 'all', configOverride: { 'COMMON.a': 2, 'COMMON.b': 1 } });
+  assert.deepEqual(stackRun(BASELINE_SPEC, { ...v, run: { policy: 'C2' } }).policy, 'C2');
+  assert.throws(() => stackRun(BASELINE_SPEC, { ...v, run: null }), /chưa nối/);
+});
+
+test('không phải lần thử (sửa định cỡ): không tính vào k; quyết định ghi "gốc mới"', () => {
+  const log = LOG_HEADER + row('baseline', 'swing') + row('fix-x', 'swing') + row('exit-A0', 'swing');
+  assert.equal(countTrials(log, 'fix-x', ['swing'], new Set(['fix-x'])), 1);
+  assert.equal(countTrials(log, 'p', ['swing'], new Set(['fix-x'])), 2);
+  assert.match(decide({ ...ok, notTrial: 'sửa đệm funding' }), /không tính là thử — gốc mới/);
+});
+
+test('validateSource: biến thể có ghi đè cấu hình không được nhận kết quả mô phỏng có sẵn', () => {
+  const src = { period: 'dev', mode: 'swing', policy: 'C2', filter: 'all', window: { start: new Date(DEV_PERIOD.start).toISOString(), end: new Date(DEV_PERIOD.end).toISOString() } };
+  assert.throws(() => validateSource(src, VARIANTS['tp1-any-strength']!, 'swing'), /ghi đè cấu hình/);
 });

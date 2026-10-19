@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { runScan } from '../scanner/run-scan.ts';
 import { COMMON, CONFIG } from '../packages/core/config.ts';
+import { withConfigOverride, type ConfigOverride } from '../packages/core/config-override.ts';
 import { parseEvents } from '../packages/core/events.ts';
 import { advanceSignalState, type SignalState } from '../packages/core/signal.ts';
 import { planOrders, type PlannerPlan } from '../packages/bot/planner.ts';
@@ -115,9 +116,16 @@ const bucket = (reason: string) => reason.replace(/[-\d.,]+/g, '#').slice(0, 70)
 export type RunOptions = {
   dir: string; mode: Mode; window: Window; filter: Filter; policy: ExitPolicy; capital: number; pauseHours: number;
   contracts: Contract[]; events: ReturnType<typeof parseEvents>; fetcher: Fetcher | null; log: (m: string) => void;
+  // H0 (Task 8): tùy chọn cấu hình đang thử, áp vào CONFIG/COMMON trong lúc chạy rồi trả lại (packages/core/config-override.ts).
+  // Mỗi tiến trình chỉ chạy một mô phỏng tại một thời điểm (CONFIG/COMMON là trạng thái chung của module).
+  configOverride?: ConfigOverride;
 };
 
-export async function runSimulation(o: RunOptions) {
+export function runSimulation(o: RunOptions) {
+  return withConfigOverride(o.configOverride, () => simulate(o));
+}
+
+async function simulate(o: RunOptions) {
   const rep = createReplay({ dir: o.dir, mode: o.mode, window: o.window, contracts: o.contracts, events: o.events, capital: o.capital, limit: null });
   const times = decisionTimes(o.mode, o.window);
   const book = createBook({ capital: o.capital, ...DEFAULT_BOOK, pauseHours: o.pauseHours });
