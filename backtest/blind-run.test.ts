@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  parseLock, configHash, canonicalJson, runBlind, type BlindDeps, type Lock, type SimRequest,
+  parseLock, configHash, canonicalJson, runBlind, effectiveSpec, type BlindDeps, type Lock, type SimRequest,
 } from './blind-run.ts';
+import { stackRun, BASELINE_SPEC, VARIANTS } from './experiment.ts';
 import { BLIND_PERIOD, DEV_PERIOD, LOCK_FILE } from './replay.ts';
 import { createBook, bookFlow, bookClose, type TradeRecord } from './simulate.ts';
 import type { runSimulation } from './simulate-run.ts';
@@ -19,8 +20,8 @@ function lockObj(over: Partial<Lock> = {}): Lock {
   return {
     lockedCommit: SHA, configHash: configHash(), capital: 10_000, pauseHours: 24, criteria: 'kỳ vọng R > 0 với cận dưới CI khối ngày > 0',
     candidates: [
-      { id: 'swing-base', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline' },
-      { id: 'swing-tp1', mode: 'swing', filter: 'all', policy: 'C2', variant: 'tp1-any-strength' },
+      { id: 'swing-base', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline', base: 'baseline' },
+      { id: 'swing-tp1', mode: 'swing', filter: 'all', policy: 'C2', variant: 'tp1-any-strength', base: 'baseline' },
     ],
     ...over,
   };
@@ -100,10 +101,11 @@ test('parseLock: tệp khóa sai/thiếu → từ chối', () => {
     [md({ ...lockObj(), criteria: '' }), /criteria/],
     [md({ ...lockObj(), candidates: [] }), /candidates/],
     [md({ ...lockObj(), thua: 1 }), /khóa lạ/],
-    [md(lockObj({ candidates: [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2' } as never] })), /variant/],
-    [md(lockObj({ candidates: [{ id: 'x', mode: 'scalp', filter: 'all', policy: 'C2', variant: 'baseline' } as never] })), /mode/],
-    [md(lockObj({ candidates: [{ id: '../x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline' }] })), /id/],
-    [md(lockObj({ candidates: [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline' }, { id: 'x', mode: 'fast', filter: 'all', policy: 'C2', variant: 'baseline' }] })), /trùng/],
+    [md(lockObj({ candidates: [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', base: 'baseline' } as never] })), /variant/],
+    [md(lockObj({ candidates: [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline' } as never] })), /base/],
+    [md(lockObj({ candidates: [{ id: 'x', mode: 'scalp', filter: 'all', policy: 'C2', variant: 'baseline', base: 'baseline' } as never] })), /mode/],
+    [md(lockObj({ candidates: [{ id: '../x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline', base: 'baseline' }] })), /id/],
+    [md(lockObj({ candidates: [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline', base: 'baseline' }, { id: 'x', mode: 'fast', filter: 'all', policy: 'C2', variant: 'baseline', base: 'baseline' }] })), /trùng/],
   ];
   for (const [text, re] of bad) assert.throws(() => parseLock(text), re, text.slice(0, 80));
 });
@@ -150,11 +152,11 @@ test('từ chối: tệp khóa hỏng / không có', async () => {
 
 test('từ chối: biến thể không có / chưa nối / lệch chế độ hoặc chính sách của biến thể', async () => {
   const cases: Array<[Lock['candidates'][number], RegExp]> = [
-    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'khong-co' }, /không có biến thể/],
-    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'p2-fast-off' }, /chưa nối/],
-    [{ id: 'x', mode: 'fast', filter: 'all', policy: 'C2', variant: 'p4-trend-only' }, /chế độ/],
-    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'exit-A0' }, /policy/],
-    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'filter-A' }, /filter/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'khong-co', base: 'baseline' }, /không có biến thể/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'p2-fast-off', base: 'baseline' }, /chưa nối/],
+    [{ id: 'x', mode: 'fast', filter: 'all', policy: 'C2', variant: 'p4-trend-only', base: 'baseline' }, /chế độ/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'exit-A0', base: 'baseline' }, /policy/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'filter-A', base: 'baseline' }, /filter/],
   ];
   for (const [c, re] of cases) {
     const w = world(md(lockObj({ candidates: [c] })));
@@ -259,7 +261,7 @@ test('chạy đúng (dữ liệu giả, cửa sổ giả không phải B): truy�
 });
 
 test('--rerun-after-crash tiếp tục lượt đã đổ: chạy lại ứng viên đổ + ứng viên chưa bắt đầu, KHÔNG chạy lại ứng viên đã xong', async () => {
-  const c3 = { id: 'swing-a0', mode: 'swing' as const, filter: 'all' as const, policy: 'A0' as const, variant: 'exit-A0' };
+  const c3 = { id: 'swing-a0', mode: 'swing' as const, filter: 'all' as const, policy: 'A0' as const, variant: 'exit-A0', base: 'baseline' };
   const w = world(md(lockObj({ candidates: [...lockObj().candidates, c3] })));
   const ok = w.deps.simulate;
   w.deps.simulate = async (req) => { await ok(req); if (req.candidate.id === 'swing-tp1') throw new Error('đổ giữa chừng'); return fakeResult(req.capital); };
@@ -272,4 +274,53 @@ test('--rerun-after-crash tiếp tục lượt đã đổ: chạy lại ứng vi
   assert.equal(base.attempts.length, 1);
   const a0 = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-a0/summary.json'), 'utf8'));
   assert.equal(a0.blind.rerunAfterCrash, false);
+});
+
+// ---------------------------------------------------------------- gốc chồng (base) ---------------------------------------------------
+test('effectiveSpec: combo-loc/p2-fast-4h trên gốc f1-funding-fix = đúng cấu hình hiệu lực đã chạy trên D (effective.json, hoặc stackRun)', () => {
+  const cases = [
+    { id: 'x', mode: 'swing' as const, filter: 'all' as const, policy: 'C2' as const, variant: 'combo-loc', base: 'f1-funding-fix' },
+    { id: 'y', mode: 'fast' as const, filter: 'all' as const, policy: 'C2' as const, variant: 'p2-fast-4h', base: 'f1-funding-fix' },
+  ];
+  for (const c of cases) {
+    const got = effectiveSpec(c);
+    const f = join(import.meta.dirname, '..', 'output/experiments', c.variant, c.mode, 'effective.json');
+    const want = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : { base: c.base, ...stackRun(stackRun(BASELINE_SPEC, VARIANTS[c.base]!), VARIANTS[c.variant]!) };
+    assert.equal(want.base, c.base);
+    assert.deepEqual({ policy: got.policy, filter: got.filter, configOverride: got.configOverride },
+      { policy: want.policy, filter: want.filter, configOverride: want.configOverride }, c.variant);
+    assert.equal(got.configOverride['COMMON.risk.fundingRuntimeGuard'], true, 'phải gồm cấu hình của gốc f1');
+  }
+  assert.deepEqual(effectiveSpec({ id: 'z', mode: 'swing', filter: 'all', policy: 'C2', variant: 'baseline', base: 'baseline' }), { base: 'baseline', ...BASELINE_SPEC });
+});
+
+test('từ chối: gốc không có / chưa nối / policy hoặc filter của ứng viên trái cấu hình chồng', async () => {
+  const cases: Array<[Lock['candidates'][number], RegExp]> = [
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'combo-loc', base: 'khong-co' }, /không có biến thể/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'combo-loc', base: 'p2-fast-off' }, /chưa nối/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'combo-loc', base: 'p2-fast-4h' }, /chế độ/],
+    [{ id: 'x', mode: 'swing', filter: 'all', policy: 'C2', variant: 'tp1-any-strength', base: 'exit-A0' }, /policy/],
+    [{ id: 'x', mode: 'swing', filter: 'A', policy: 'C2', variant: 'tp1-any-strength', base: 'f1-funding-fix' }, /filter/],
+  ];
+  for (const [c, re] of cases) {
+    const w = world(md(lockObj({ candidates: [c] })));
+    await assert.rejects(runBlind(args, w.deps), re);
+    assert.equal(w.calls.length, 0);
+  }
+});
+
+test('chạy với gốc chồng: mô phỏng nhận cấu hình chồng; effective.json ghi TRƯỚC khi chạy', async () => {
+  const c = { id: 'swing-combo', mode: 'swing' as const, filter: 'all' as const, policy: 'C2' as const, variant: 'combo-loc', base: 'f1-funding-fix' };
+  const w = world(md(lockObj({ candidates: [c] })));
+  const ok = w.deps.simulate;
+  w.deps.simulate = async (req) => {
+    assert.ok(existsSync(join(w.root, 'output/blind/swing-combo/effective.json')), 'effective.json phải có trước khi chạy');
+    return ok(req);
+  };
+  await runBlind(args, w.deps);
+  const eff = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-combo/effective.json'), 'utf8'));
+  assert.deepEqual(eff, effectiveSpec(c));
+  assert.deepEqual(w.calls[0]!.configOverride, eff.configOverride);
+  assert.equal(w.calls[0]!.policy, eff.policy);
+  assert.equal(w.calls[0]!.filter, eff.filter);
 });

@@ -5,7 +5,9 @@
 //
 // TỆP KHÓA (Markdown) chứa đúng MỘT khối ```json lock … ``` với ĐỦ các khóa (thiếu/lạ → từ chối):
 //   { "lockedCommit": "<SHA 40 ký tự>", "configHash": "<sha256 hex>", "capital": 10000, "pauseHours": 24, "criteria": "<tiêu chí, văn bản>",
-//     "candidates": [{ "id": "swing-tp1", "mode": "swing|fast", "filter": "A|all", "policy": "C2|A0|C3", "variant": "<tên trong experiment.ts>" }] }
+//     "candidates": [{ "id": "swing-tp1", "mode": "swing|fast", "filter": "A|all", "policy": "C2|A0|C3", "variant": "<tên trong experiment.ts>",
+//                      "base": "baseline|<biến thể gốc, vd. f1-funding-fix>" }] }
+//   Cấu hình chạy = stackRun(gốc, biến thể) như experiment.ts (ghi output/blind/<id>/effective.json trước khi chạy); policy/filter phải trùng.
 //
 // TỪ CHỐI nếu: HEAD ≠ lockedCommit; có thay đổi chưa commit (kể cả tệp chưa theo dõi) trong packages/ scanner/ backtest/; configHash ≠
 // mặc định hiện tại; thủ tục mở kỳ mù sai (replay.ts checkBlindAuth — tệp khóa phải đúng LOCK_FILE và tồn tại); biến thể không có/chưa nối/
@@ -28,7 +30,7 @@ import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Mode } from '../packages/core/types.ts';
 import { assertWindowAllowed, BLIND_PERIOD, loadContracts, type BlindAuth, type Window } from './replay.ts';
 import { report, runSimulation, type Filter } from './simulate-run.ts';
-import { requireWired } from './experiment.ts';
+import { requireWired, stackRun, BASELINE_SPEC, type RunSpec } from './experiment.ts';
 import { computeStats, type StatTrade } from './stats.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -57,11 +59,11 @@ export function configHash(): string {
 }
 
 // ---------------------------------------------------------------- tệp khóa ---------------------------------------------------------
-export type Candidate = { id: string; mode: Mode; filter: Filter; policy: ExitPolicy; variant: string };
+export type Candidate = { id: string; mode: Mode; filter: Filter; policy: ExitPolicy; variant: string; base: string };
 export type Lock = { lockedCommit: string; configHash: string; capital: number; pauseHours: number; criteria: string; candidates: Candidate[] };
 
 const LOCK_KEYS = ['lockedCommit', 'configHash', 'capital', 'pauseHours', 'criteria', 'candidates'];
-const CAND_KEYS = ['id', 'mode', 'filter', 'policy', 'variant'];
+const CAND_KEYS = ['id', 'mode', 'filter', 'policy', 'variant', 'base'];
 
 function exactKeys(o: Record<string, unknown>, keys: readonly string[], where: string): void {
   for (const k of keys) if (!(k in o) || o[k] === undefined) throw new Error(`tệp khóa: ${where} thiếu "${k}"`);
@@ -99,18 +101,32 @@ export function parseLock(text: string): Lock {
     if (c.filter !== 'A' && c.filter !== 'all') throw new Error(`tệp khóa: ${where}.filter phải là A|all`);
     if (c.policy !== 'C2' && c.policy !== 'A0' && c.policy !== 'C3') throw new Error(`tệp khóa: ${where}.policy phải là C2|A0|C3`);
     if (typeof c.variant !== 'string' || c.variant === '') throw new Error(`tệp khóa: ${where}.variant phải là tên biến thể`);
-    return { id: c.id, mode: c.mode, filter: c.filter, policy: c.policy, variant: c.variant };
+    if (typeof c.base !== 'string' || c.base === '') throw new Error(`tệp khóa: ${where}.base phải là tên biến thể gốc hoặc "baseline"`);
+    return { id: c.id, mode: c.mode, filter: c.filter, policy: c.policy, variant: c.variant, base: c.base };
   });
   return { lockedCommit: raw.lockedCommit, configHash: raw.configHash, capital: raw.capital, pauseHours: raw.pauseHours, criteria: raw.criteria, candidates };
 }
 
-// Ứng viên → ghi đè cấu hình của biến thể (danh mục experiment.ts). policy/filter của ứng viên là chính; biến thể tự đặt khác → từ chối.
-export function candidateOverride(c: Candidate): Record<string, unknown> {
+// Cấu hình hiệu lực của ứng viên = ĐÚNG cách experiment.ts dựng trên D: stackRun(cấu hình của gốc, biến thể), với cấu hình của gốc
+// = BASELINE_SPEC ('baseline') hoặc stackRun(BASELINE_SPEC, gốc) — gốc là biến thể đã chạy trên 'baseline' (như f1-funding-fix; gốc
+// chồng nhiều tầng không hỗ trợ). policy/filter trong tệp khóa phải TRÙNG cấu hình chồng, khác → từ chối.
+export type Effective = { base: string } & RunSpec;
+export function effectiveSpec(c: Candidate): Effective {
+  const modeOk = (name: string, modes: readonly Mode[] | undefined) => {
+    if (modes !== undefined && !modes.includes(c.mode)) throw new Error(`ứng viên "${c.id}": biến thể "${name}" không áp dụng cho chế độ ${c.mode} (chỉ ${modes.join(', ')})`);
+  };
+  let baseSpec: RunSpec = BASELINE_SPEC;
+  if (c.base !== 'baseline') {
+    const b = requireWired(c.base);
+    modeOk(b.name, b.modes);
+    baseSpec = stackRun(BASELINE_SPEC, b);
+  }
   const v = requireWired(c.variant);
-  if (v.modes !== undefined && !v.modes.includes(c.mode)) throw new Error(`ứng viên "${c.id}": biến thể "${v.name}" không áp dụng cho chế độ ${c.mode} (chỉ ${v.modes.join(', ')})`);
-  if (v.run!.policy !== undefined && v.run!.policy !== c.policy) throw new Error(`ứng viên "${c.id}": policy ${c.policy} khác policy của biến thể "${v.name}" (${v.run!.policy})`);
-  if (v.run!.filter !== undefined && v.run!.filter !== c.filter) throw new Error(`ứng viên "${c.id}": filter ${c.filter} khác filter của biến thể "${v.name}" (${v.run!.filter})`);
-  return { ...v.configOverride };
+  modeOk(v.name, v.modes);
+  const spec = stackRun(baseSpec, v);
+  if (spec.policy !== c.policy) throw new Error(`ứng viên "${c.id}": policy ${c.policy} trái cấu hình chồng (gốc ${c.base} + ${v.name} → ${spec.policy})`);
+  if (spec.filter !== c.filter) throw new Error(`ứng viên "${c.id}": filter ${c.filter} trái cấu hình chồng (gốc ${c.base} + ${v.name} → ${spec.filter})`);
+  return { base: c.base, ...spec };
 }
 
 // ---------------------------------------------------------------- chạy -------------------------------------------------------------
@@ -155,7 +171,7 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
   const hash = configHash();
   if (hash !== lock.configHash) throw new Error(`Từ chối: configHash của mặc định hiện tại ${hash} khác tệp khóa ${lock.configHash}`);
   // 4. Ứng viên: biến thể hợp lệ (kiểm hết trước khi chạy)
-  const overrides = new Map(lock.candidates.map((c) => [c.id, candidateOverride(c)]));
+  const effective = new Map(lock.candidates.map((c) => [c.id, effectiveSpec(c)]));
   // 5. Một lần mỗi ứng viên
   const outRoot = join(d.repoRoot, 'output/blind');
   const dirOf = (id: string) => join(outRoot, id);
@@ -189,9 +205,11 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
     const marker: Marker = { candidate: c, lockedCommit: lock.lockedCommit, configHash: hash, window: { start: iso(d.period.start), end: iso(d.period.end) },
       attempts: [...prev, { startedAt: d.now().toISOString(), rerunAfterCrash: isRerun }] };
     writeFileSync(mp, JSON.stringify(marker, null, 2)); // TRƯỚC khi mô phỏng
+    const eff = effective.get(c.id)!;
+    writeFileSync(join(dir, 'effective.json'), JSON.stringify(eff, null, 2));
     d.log(`[${c.id}] bắt đầu: ${c.mode} ${c.filter} ${c.policy} biến thể ${c.variant}${isRerun ? ' (CHẠY LẠI SAU KHI ĐỔ)' : ''}`);
-    const req: SimRequest = { candidate: c, mode: c.mode, window: { ...d.period }, filter: c.filter, policy: c.policy, capital: lock.capital,
-      pauseHours: lock.pauseHours, configOverride: overrides.get(c.id)!, auth };
+    const req: SimRequest = { candidate: c, mode: c.mode, window: { ...d.period }, filter: eff.filter, policy: eff.policy, capital: lock.capital,
+      pauseHours: lock.pauseHours, configOverride: eff.configOverride, auth };
     const res = await d.simulate(req);
     writeOutputs(dir, req, res, { lockedCommit: lock.lockedCommit, configHash: hash, criteria: lock.criteria, rerunAfterCrash: isRerun, attempts: marker.attempts,
       lockFile: a.lock, finishedAt: d.now().toISOString() });
