@@ -66,4 +66,20 @@ export const COMMON = {
   maintenanceMarginRate: 0.01,
   liquidationBufferStops: 1, // giá thanh lý phải xa hơn cắt lỗ ≥ 1 khoảng cắt lỗ
   riskAtrPctTiers: [4, 6, 10],
+  // ĐIỂM S-01/S-02/S-03 — ĐỀ XUẤT, CHƯA BACKTEST:
+  score: {
+    smaFast: 20, // SMA ngắn cho điểm xu hướng
+    smaSlow: 50, // SMA dài cho điểm xu hướng
+    emaLong: 200, // EMA dài cho điểm xu hướng
+    emaOrderWeight: 0.5, // trọng số điều kiện thứ tự SMA50 so EMA200
+    relStrengthZScale: 2, // quy đổi z sức mạnh tương đối về [0,1]: 0,5 + z / 2
+    rsiPeriod: 14, // RSI khung vào lệnh
+    rsiMid: 50, // ngưỡng RSI phân chia tăng/giảm
+    macd: { fast: 12, slow: 26, signal: 9 }, // MACD khung vào lệnh
+    volumeLookback: 20, // số nến so khối lượng bất thường
+    volumeSpikeZ: 2, // z khối lượng vượt ngưỡng này mới được cộng điểm phụ S-02
+    imbalanceScale: 0.2, // mất cân bằng taker ±20% là đạt tối đa thành phần taker
+    flowTakerShare: 0.7, // tỷ trọng thành phần taker trong S-02
+    flowVolumeShare: 0.3, // tỷ trọng thành phần khối lượng bất thường trong S-02
+  },
 } as const;

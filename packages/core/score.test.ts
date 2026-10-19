@@ -54,3 +54,20 @@ test('kháng cự nằm trước chốt lời 1 → điểm Đường đi thấp
   const blocked = scoreSide({ ...base, nearestLevels: { above: price + 1, below: null } }, 'long', 5);
   assert.ok(blocked.score < free.score);
 });
+
+test('thiếu toàn bộ dữ liệu (mảng rỗng) + có vùng cản → điểm 0, không NaN, độ phủ < 70%', () => {
+  const inp = { ...input([], [], []), nearestLevels: { above: 150, below: null } };
+  const s = scoreSide(inp, 'long', 5);
+  assert.equal(s.score, 0);
+  assert.ok(Number.isFinite(s.score));
+  assert.ok(s.coverage < 0.7);
+});
+
+test('chỉ còn S-03 khả dụng (dữ liệu quá ngắn) → điểm 0 và có lý do độ phủ', () => {
+  const short = rising(10, 1);
+  const inp = { ...input(short, rising(10, 0.2, 0.6), short), nearestLevels: { above: 1000, below: null } };
+  const s = scoreSide(inp, 'long', 5);
+  assert.equal(s.score, 0);
+  assert.ok(s.coverage < 0.7);
+  assert.ok(s.reasons.some((r) => r.code === 'S-01' && /Độ phủ dữ liệu \d+% < 70% — không chấm điểm/.test(r.text)));
+});
