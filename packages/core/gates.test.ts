@@ -20,7 +20,7 @@ const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
   move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
-  liquidationOk: true, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
+  liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
 };
 
 test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
@@ -78,4 +78,22 @@ test('G-01: cầu dao bật thì note nêu thời điểm bật', () => {
   const g = evaluateGates({ ...ok, breakerTripped: true, breakerNote: 'bật lúc X' }).find((x) => x.code === 'G-01')!;
   assert.equal(g.pass, false);
   assert.match(g.note, /bật lúc X/);
+});
+
+test('G-11: cắt lỗ > 2×ATR ngày hoặc > 20% giá thì trượt; note nêu % và bội ATR', () => {
+  const pass = evaluateGates({ ...ok, stopDistPct: 8, stopDistAtr: 2 }).find((x) => x.code === 'G-11')!;
+  assert.equal(pass.pass, true);
+  const wideAtr = evaluateGates({ ...ok, stopDistPct: 8, stopDistAtr: 2.5 }).find((x) => x.code === 'G-11')!;
+  assert.equal(wideAtr.pass, false);
+  assert.match(wideAtr.note, /8,0%/);
+  assert.match(wideAtr.note, /2,5×ATR/);
+  const widePct = evaluateGates({ ...ok, stopDistPct: 25, stopDistAtr: 1.5 }).find((x) => x.code === 'G-11')!;
+  assert.equal(widePct.pass, false);
+  assert.match(widePct.note, /25,0%/);
+});
+
+test('G-11: ATR ngày không hợp lệ (NaN) → trượt (fail closed)', () => {
+  const g = evaluateGates({ ...ok, stopDistAtr: NaN }).find((x) => x.code === 'G-11')!;
+  assert.equal(g.pass, false);
+  assert.match(g.note, /ATR/);
 });

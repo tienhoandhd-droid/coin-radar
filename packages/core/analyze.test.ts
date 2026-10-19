@@ -75,7 +75,7 @@ test('M1: fundingCostR của hợp đồng 4h gấp đôi hợp đồng 8h cùng
 
 // ATR ngày ~ 12% giá → mức rủi ro Rất cao
 const volatileDaily = Array.from({ length: 300 }, (_, i) => {
-  const c = k(i, 100 + i);
+  const c = k(i, 100 + i * 0.33); // giá cuối ~199, khớp giá khung vào lệnh
   return { ...c, high: c.close * 1.06, low: c.close * 0.94 };
 });
 
@@ -99,4 +99,21 @@ test('M2: chế độ fast luôn không quá 0,25% dù truyền 0,5', () => {
   const a = analyze({ ...base, mode: 'fast', trend: up(500, 0.2, 0.6), btcTrend: up(500, 0.1), riskPct: 0.5 });
   const p = a.plan ?? (() => { throw new Error('không có plan: ' + a.label + JSON.stringify(a.gates.filter((g) => !g.pass))); })();
   assert.equal(p.riskPct, 0.25);
+});
+
+test('D1: cắt lỗ rộng hơn 2×ATR ngày → G-11 trượt, không còn nhãn Đạt', () => {
+  // nến ngày biên độ rất nhỏ (ATR ngày nhỏ) nhưng khung 4h dao động lớn → cắt lỗ (2×ATR 4h) vượt 2×ATR ngày
+  const calmDaily = up(300, 1).map((c) => ({ ...c, high: c.close * 1.0005, low: c.close * 0.9995 }));
+  const wildEntry = up(500, 0.2, 0.6).map((c) => ({ ...c, high: c.close * 1.03, low: c.close * 0.97 }));
+  const a = analyze({ ...base, daily: calmDaily, trend: calmDaily, entry: wildEntry });
+  const g = a.gates.find((x) => x.code === 'G-11')!;
+  assert.equal(g.pass, false, g.note);
+  assert.match(g.note, /×ATR/);
+  assert.ok(!a.label.startsWith('Đạt'));
+  assert.equal(a.plan, null);
+});
+
+test('D1: kế hoạch thường → G-11 qua', () => {
+  const a = analyze(base);
+  assert.equal(a.gates.find((x) => x.code === 'G-11')?.pass, true, a.gates.find((x) => x.code === 'G-11')?.note);
 });

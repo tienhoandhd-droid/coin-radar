@@ -108,6 +108,7 @@ export function analyze(i: AnalyzeInput): Analysis {
     move1hPct, volumeZ1h: volumeZ(h, 20),
     ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
     eventBlocked: ev.blocked,
+    stopDistPct: stopDistPct * 100, stopDistAtr: plan.riskPerUnit / dailyAtr,
     liquidationOk: maxSafeLeverage(stopDistPct, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops) >= 1,
     fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
     minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,

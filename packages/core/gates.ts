@@ -19,12 +19,15 @@ export type GateContext = {
   ageDays: number;
   eventBlocked: boolean;
   liquidationOk: boolean;
+  stopDistPct: number; // khoảng cắt lỗ theo % giá vào lệnh
+  stopDistAtr: number; // khoảng cắt lỗ chia ATR(14) nến NGÀY; NaN nếu thiếu ATR ngày
   fundingRate: number; // mức MỖI KỲ funding của hợp đồng, dương = Long trả
   fundingIntervalHours: number; // chu kỳ funding của hợp đồng (giờ)
   fundingIntervalDefault: boolean; // true = mã không có trong fundingInfo, dùng mặc định 8h
   minutesToFunding: number;
 };
 
+const comma1 = (x: number) => x.toFixed(1).replace('.', ',');
 const pct4 = (rate: number) => (rate * 100).toFixed(4).replace('.', ',');
 
 // Quy mức funding mỗi kỳ về %/8h để dùng chung một ngưỡng cho mọi hợp đồng.
@@ -80,6 +83,13 @@ export function evaluateGates(c: GateContext): GateResult[] {
       code: 'G-10',
       pass: !(c.mode === 'fast' && adverseFunding > 0 && c.minutesToFunding < COMMON.fundingCutoffMinutes),
       note: `${Math.round(c.minutesToFunding)} phút tới mốc funding`,
+    },
+    {
+      code: 'G-11',
+      pass: Number.isFinite(c.stopDistAtr) && c.stopDistAtr <= COMMON.maxStopDailyAtr && c.stopDistPct <= COMMON.maxStopPct,
+      note: Number.isFinite(c.stopDistAtr)
+        ? `Cắt lỗ cách ${comma1(c.stopDistPct)}% giá (${comma1(c.stopDistAtr)}×ATR ngày); trần ${COMMON.maxStopDailyAtr}×ATR hoặc ${COMMON.maxStopPct}%`
+        : `Cắt lỗ cách ${comma1(c.stopDistPct)}% giá; thiếu ATR ngày nên không đánh giá được — chặn`,
     },
   ];
 }

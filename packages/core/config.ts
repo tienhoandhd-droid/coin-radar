@@ -59,6 +59,8 @@ export const COMMON = {
   fundingExtremePer8h: 0.001, // G-09: |funding| > 0,1%/8h cùng chiều lệnh → chặn. Tạm dùng ngưỡng tuyệt đối (spec: z-score 30 ngày — làm ở kế hoạch 3 khi có lịch sử)
   fundingHotPer8h: 0.0005, // F-01: > 0,05%/8h cùng chiều → trừ điểm
   fundingHotPenalty: 10,
+  maxStopDailyAtr: 2, // G-11: khoảng cắt lỗ tối đa = 2 × ATR(14) nến NGÀY — quyết định D1, đề xuất, chưa backtest
+  maxStopPct: 20, // G-11: hoặc tối đa 20% giá vào lệnh — quyết định D1, đề xuất, chưa backtest
   breakerBtcMovePct: 4,
   breakerRangeAtr: 3,
   regimeBandPct: 2,

@@ -3,6 +3,7 @@ export type RuleStatus = 'active' | 'display' | 'not_evaluated';
 export type Rule = { code: string; title: string; evidence: Evidence; status: RuleStatus; source: string };
 
 const REPORT = 'reports/Bộ nguyên tắc phân tích coin.md';
+const FINAL_REVIEW = '.superpowers/sdd/2026-10-19-ke-hoach-1-loi-cham-diem/final-review.md';
 const REVIEW = 'reports/Phản biện bộ nguyên tắc.md';
 
 export const RULES: readonly Rule[] = [
@@ -16,6 +17,7 @@ export const RULES: readonly Rule[] = [
   { code: 'G-08', title: 'Giá thanh lý ước tính xa hơn cắt lỗ', evidence: 'industry', status: 'active', source: REVIEW },
   { code: 'G-09', title: 'Funding cùng chiều lệnh không cực đoan', evidence: 'evidence', status: 'active', source: REPORT },
   { code: 'G-10', title: 'Lướt nhanh: không vào sát mốc funding bất lợi', evidence: 'industry', status: 'active', source: REVIEW },
+  { code: 'G-11', title: 'Khoảng cắt lỗ không quá rộng (≤ 2×ATR ngày và ≤ 20% giá)', evidence: 'industry', status: 'active', source: FINAL_REVIEW },
   { code: 'S-01', title: 'Đà giá: xu hướng + sức mạnh so BTC + động lượng', evidence: 'evidence', status: 'active', source: REPORT },
   { code: 'S-02', title: 'Dòng tiền: mất cân bằng taker + khối lượng bất thường', evidence: 'evidence', status: 'active', source: REPORT },
   { code: 'S-03', title: 'Đường đi: chốt lời 1 nằm trước vùng cản', evidence: 'industry', status: 'active', source: REPORT },
