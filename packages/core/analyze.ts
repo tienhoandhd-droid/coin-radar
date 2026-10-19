@@ -70,7 +70,7 @@ export function analyze(i: AnalyzeInput): Analysis {
   const zones = findZones({
     entry: i.entry, trend: i.trend,
     entryLabel: label4(CONFIG[i.mode].entryInterval), trendLabel: label4(CONFIG[i.mode].trendInterval),
-    atr: atrEntry,
+    atr: atrEntry, tickSize: i.contract.tickSize,
   });
   const price = last(i.entry.map((k) => k.close));
   const closesWindow = i.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
@@ -90,7 +90,7 @@ export function analyze(i: AnalyzeInput): Analysis {
 
   const planFor = (side: Side) => buildPlan({
     mode: i.mode, side, entry: i.entry, dailyAtr, capital: i.capital, riskPct,
-    costTier: costTier(i.liquidityRankPct), stepSize: i.contract.stepSize,
+    costTier: costTier(i.liquidityRankPct), tickSize: i.contract.tickSize, stepSize: i.contract.stepSize,
     fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, zones,
   });
   const planLong = planFor('long');

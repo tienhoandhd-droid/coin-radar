@@ -1,5 +1,6 @@
 import { pivotHighs, pivotLows, roundStep } from './indicators.ts';
 import { COMMON } from './config.ts';
+import { formatTick } from './price.ts';
 import type { Candle, Side } from './types.ts';
 
 export type Zone = { low: number; high: number; strength: number; touches: number; sources: string[] };
@@ -30,7 +31,7 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (pos - lo);
 }
 
-export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: string; trendLabel: string; atr: number }): Zone[] {
+export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: string; trendLabel: string; atr: number; tickSize?: number }): Zone[] {
   if (!Number.isFinite(a.atr) || a.atr <= 0) throw new Error(`findZones: ATR không hợp lệ (${a.atr}), cần số hữu hạn > 0`);
   const cfg = COMMON.zones;
   const points = [
@@ -70,7 +71,7 @@ export function findZones(a: { entry: Candle[]; trend: Candle[]; entryLabel: str
     const k = Math.ceil(from / step - 1e-9);
     if (k * step <= to + 1e-9) {
       z.strength += cfg.roundBonus;
-      z.sources.push(`số tròn ${formatPrice(k * step)}`);
+      z.sources.push(`số tròn ${a.tickSize === undefined ? formatPrice(k * step) : formatTick(k * step, a.tickSize)}`);
     }
   }
 
@@ -102,6 +103,9 @@ export function targetSideZones(zones: Zone[], price: number, side: Side): Zone[
     : zones.filter((z) => z.high < price).sort((p, q) => q.high - p.high);
 }
 
-export function describeZone(z: Zone): string {
-  return `${formatPrice(z.low)}–${formatPrice(z.high)} (${z.sources.join(', ')})`;
+// tickSize có → in theo tickSize; vùng chỉ có một mức (low = high) in một giá
+export function describeZone(z: Zone, tickSize?: number): string {
+  const f = (x: number) => (tickSize === undefined ? formatPrice(x) : formatTick(x, tickSize));
+  const range = f(z.low) === f(z.high) ? f(z.low) : `${f(z.low)}–${f(z.high)}`;
+  return `${range} (${z.sources.join(', ')})`;
 }

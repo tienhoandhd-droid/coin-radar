@@ -64,6 +64,7 @@ export const COMMON = {
   regimeBandPct: 2,
   regimeDrawdownPct: 20,
   pivotConfirmBars: 3,
+  binanceTrailMaxCallbackPct: 10, // lệnh TRAILING_STOP_MARKET của Binance: callbackRate tối đa 10 (%), tối thiểu 0,1 — developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order (tra 19/10/2026)
   // Vùng hỗ trợ/kháng cự — ĐỀ XUẤT, CHƯA BACKTEST
   zones: {
     entryWeight: 1, // mỗi đỉnh/đáy khung vào lệnh
