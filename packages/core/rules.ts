@@ -51,7 +51,7 @@ export const RULES: readonly Rule[] = [
   { code: 'H-A3', title: 'Hạng A — điểm vào đẹp: SL sau vùng độ mạnh ≥ 3, giá vào sát mép vùng, không có vùng cản trước TP1', evidence: 'industry', status: 'active', source: GRADE_A },
   { code: 'H-A4', title: 'Hạng A — TP1 ≥ 1,5R sau phí + funding', evidence: 'industry', status: 'active', source: GRADE_A },
   { code: 'H-A5', title: 'Hạng A — rủi ro coin Thấp/Vừa, không F-01, cầu dao tắt, ngoài cửa sổ sự kiện', evidence: 'industry', status: 'active', source: GRADE_A },
-  { code: 'H-A6', title: 'Hạng A — có ít nhất một hợp lưu: mô hình phá vỡ/retest, dòng tiền taker mạnh, coil vừa bung hoặc hai đáy/hai đỉnh cùng chiều', evidence: 'industry', status: 'active', source: GRADE_A },
+  { code: 'H-A6', title: 'Hạng A — có ít nhất một hợp lưu: mô hình phá vỡ/retest, dòng tiền taker mạnh, hoặc coil vừa bung', evidence: 'industry', status: 'active', source: GRADE_A },
 ];
 
 export function ruleByCode(code: string): Rule {

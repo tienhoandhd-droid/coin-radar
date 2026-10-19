@@ -299,6 +299,7 @@ export function analyze(i: AnalyzeInput): Analysis {
     zones, atr: atrEntry,
     tp1NetR: chosen.patternSignal !== null ? chosen.patternSignal.tp1NetR : zoneTp1Net,
     coilReleased: i.patternData === null ? { long: false, short: false } : coilReleasedAt(i.patternData.c4h),
+    eventFlagged: Boolean(ev.flag),
   };
   const result = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns, ...chosen, grading, grade: null as GradeResult | null };
   if (result.label.startsWith('Đạt') && (result.plan !== null || result.patternSignal !== null)) result.grade = gradeSignal(result);

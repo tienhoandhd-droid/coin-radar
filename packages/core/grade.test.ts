@@ -19,20 +19,20 @@ type Over = Partial<{
   mode: 'swing' | 'fast'; score: number; regime: GradeInput['regime']; trendSide: GradeInput['trendSide']; entrySide: GradeInput['entrySide'];
   btcSide: GradeInput['btcSide']; zones: Zone[]; tp1NetR: number | null; tier: string; flags: string[]; gates: Array<{ code: string; pass: boolean; note: string }>;
   breakerTripped: boolean; flowPoints: number | null; coilReleased: boolean; patterns: PatternInfo[]; doubles: Array<{ kind: 'double_top' | 'double_bottom' }>;
-  entryType: 'market' | 'limit'; entry: number; label: string;
+  entryType: 'market' | 'limit'; entry: number; label: string; f01: boolean; eventFlag: boolean; atr: number;
 }>;
 function make(side: Side, o: Over = {}): Analysis {
   const mode = o.mode ?? 'swing';
   const want = side === 'long' ? 'up' : 'down';
   const entry = o.entry ?? mirror(side, 96.5);
   const flowMax = CONFIG[mode].weights.flow;
-  const reasons = [{ code: 'S-02', text: 'Taker', points: o.flowPoints === undefined ? 0 : (o.flowPoints ?? 0) }];
+  const reasons = [{ code: 'S-02', text: 'Taker', points: o.flowPoints === undefined ? 0 : (o.flowPoints ?? 0) }, ...(o.f01 ? [{ code: 'F-01', text: 'Funding quá nhiệt cùng chiều lệnh', points: -10 }] : [])];
   const grading: GradeInput = {
     regime: o.regime ?? (side === 'long' ? 'up' : 'down'),
     breakerTripped: o.breakerTripped ?? false,
     trendSide: o.trendSide ?? want, entrySide: o.entrySide ?? want, btcSide: mode === 'swing' ? (o.btcSide ?? want) : null,
     zones: o.zones ?? [zone(side, 90, 95, 3), zone(side, 130, 135, 2)],
-    atr: 4,
+    atr: o.atr ?? 4, eventFlagged: o.eventFlag ?? false,
     tp1NetR: o.tp1NetR === undefined ? 2 : o.tp1NetR,
     coilReleased: { long: side === 'long' && (o.coilReleased ?? false), short: side === 'short' && (o.coilReleased ?? false) },
   };
@@ -72,9 +72,14 @@ for (const side of ['long', 'short'] as const) {
     assert.equal(gradeSignal(perfect(side, { mode: 'fast' })).grade, 'A');
   });
 
-  test(`${S}: tiêu chí 1 — chế độ thị trường ngược chiều lệnh → trượt; đi ngang thì không ngược → đạt`, () => {
+  test(`${S}: tiêu chí 1 — chế độ thị trường ngược chiều lệnh → trượt (cả hai chế độ)`, () => {
     only(perfect(side, { regime: side === 'long' ? 'down' : 'up' }), 1);
+    only(perfect(side, { mode: 'fast', regime: side === 'long' ? 'down' : 'up' }), 1);
+  });
+  test(`${S}: tiêu chí 1 — Swing: đi ngang được chấp nhận (đã có BTC 1D cùng chiều); Lướt nhanh: đi ngang trượt`, () => {
     assert.equal(gradeSignal(perfect(side, { regime: 'sideways' })).grade, 'A');
+    only(perfect(side, { mode: 'fast', regime: 'sideways' }), 1);
+    assert.equal(gradeSignal(perfect(side, { mode: 'fast' })).grade, 'A');
   });
   test(`${S}: tiêu chí 1 — khung xu hướng hoặc khung vào lệnh không cùng chiều → trượt`, () => {
     only(perfect(side, { trendSide: 'sideways' }), 1);
@@ -109,7 +114,8 @@ for (const side of ['long', 'short'] as const) {
     assert.equal(gradeSignal(perfect(side, { tier: 'Vừa' })).grade, 'A');
   });
   test(`${S}: tiêu chí 5 — F-01 cùng chiều lệnh trượt; F-01 của chiều kia không ảnh hưởng`, () => {
-    only(perfect(side, { flags: [`F-01 Funding quá nhiệt cùng chiều ${S} (x)`] }), 5);
+    only(perfect(side, { f01: true }), 5);
+    // cờ chữ của chiều kia (flags) không ảnh hưởng: chỉ lý do F-01 có cấu trúc của phía lệnh mới tính
     const other = side === 'long' ? 'Short' : 'Long';
     assert.equal(gradeSignal(perfect(side, { flags: [`F-01 Funding quá nhiệt cùng chiều ${other} (x)`] })).grade, 'A');
   });
@@ -118,7 +124,7 @@ for (const side of ['long', 'short'] as const) {
   });
   test(`${S}: tiêu chí 5 — trong cửa sổ sự kiện (cổng G-07 trượt hoặc cờ G-07) trượt`, () => {
     only(perfect(side, { gates: [{ code: 'G-07', pass: false, note: 'Trong cửa sổ sự kiện' }] }), 5);
-    only(perfect(side, { flags: ['G-07 đáo hạn quyền chọn quý trong ±24h'] }), 5);
+    only(perfect(side, { eventFlag: true }), 5);
   });
   test(`${S}: tiêu chí 6 — không có hợp lưu nào → trượt`, () => {
     only(make(side, { flowPoints: flowOk() - 0.01 }), 6);
@@ -134,11 +140,16 @@ for (const side of ['long', 'short'] as const) {
     a.grading.coilReleased = { long: side === 'short', short: side === 'long' };
     only(a, 6);
   });
-  test(`${S}: tiêu chí 6 — hai đáy/hai đỉnh đã xác nhận ĐÚNG chiều là bối cảnh hỗ trợ; sai chiều thì không`, () => {
+  test(`${S}: tiêu chí 6 — hai đáy/hai đỉnh đã xác nhận KHÔNG phải nguồn hợp lưu (chỉ 3 nguồn theo brief)`, () => {
     const good = side === 'long' ? 'double_bottom' : 'double_top';
-    const bad = side === 'long' ? 'double_top' : 'double_bottom';
-    assert.equal(gradeSignal(make(side, { doubles: [{ kind: good }] })).grade, 'A');
-    only(make(side, { doubles: [{ kind: bad }] }), 6);
+    only(make(side, { doubles: [{ kind: good }] }), 6);
+  });
+  test(`${S}: tiêu chí 3 — ATR không hợp lệ (0 / NaN) → trượt kèm lý do, không lọt im lặng`, () => {
+    for (const atr of [0, NaN]) {
+      const r = gradeSignal(perfect(side, { atr }));
+      assert.equal(r.grade, 'B');
+      assert.ok(r.failed.some((f) => /^Tiêu chí 3\b.*ATR/.test(f)), r.failed.join('|'));
+    }
   });
   test(`${S}: trượt nhiều tiêu chí → liệt kê đủ, mỗi lý do nêu số tiêu chí`, () => {
     const a = make(side, { score: 60, tp1NetR: 1, tier: 'Cao' });

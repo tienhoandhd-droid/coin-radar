@@ -17,6 +17,7 @@ export type GradeInput = {
   atr: number; // ATR khung vào lệnh
   tp1NetR: number | null; // TP1 sau phí khứ hồi + funding phải trả; null = không có TP1 cố định
   coilReleased: { long: boolean; short: boolean }; // coil 4H vừa bung theo chiều
+  eventFlagged: boolean; // có cờ sự kiện G-07 (kể cả cờ không chặn như đáo hạn quyền chọn ±24h)
 };
 
 export type GradeResult = { grade: 'A' | 'B'; failed: string[] };
@@ -42,11 +43,12 @@ export function gradeSignal(a: Analysis): GradeResult {
   const plan = pp ?? zp!;
   const tf = (s: DailyTrend['trend']) => (s === 'up' ? 'tăng' : s === 'down' ? 'giảm' : 'đi ngang');
 
-  // 1. Xu hướng đồng thuận nhiều khung. Chế độ thị trường chỉ cần "không ngược chiều lệnh" (đi ngang được chấp nhận);
-  //    chiều của khung xu hướng, khung vào lệnh (và BTC 1D ở Swing) phải cùng chiều lệnh.
-  const regimeOpposed = side === 'long' ? g.regime === 'down' : g.regime === 'up';
+  // 1. Xu hướng đồng thuận nhiều khung. Swing: chế độ thị trường chỉ cần "không ngược chiều lệnh" (đi ngang được, vì đã bắt buộc BTC 1D cùng chiều).
+  //    Lướt nhanh không có BTC 1D nên chế độ phải CÙNG chiều lệnh (đi ngang không đạt). Khung xu hướng và khung vào lệnh phải cùng chiều lệnh.
+  const regimeName = g.regime === 'up' ? 'Lên' : g.regime === 'down' ? 'Xuống' : 'Đi ngang';
+  const regimeBad = a.mode === 'fast' ? g.regime !== (side === 'long' ? 'up' : 'down') : (side === 'long' ? g.regime === 'down' : g.regime === 'up');
   const why1: string[] = [];
-  if (regimeOpposed) why1.push(`chế độ thị trường ${g.regime === 'up' ? 'Lên' : 'Xuống'} ngược chiều ${sideName}`);
+  if (regimeBad) why1.push(`chế độ thị trường ${regimeName} ${g.regime === 'sideways' ? 'không cùng chiều (Lướt nhanh cần cùng chiều)' : 'ngược chiều'} ${sideName}`);
   if (g.trendSide !== want) why1.push(`khung xu hướng ${tf(g.trendSide)}`);
   if (g.entrySide !== want) why1.push(`khung vào lệnh ${tf(g.entrySide)}`);
   if (a.mode === 'swing' && g.btcSide !== want) why1.push(`BTC 1D ${g.btcSide === null ? 'thiếu dữ liệu' : tf(g.btcSide)}`);
@@ -58,7 +60,9 @@ export function gradeSignal(a: Analysis): GradeResult {
   // 3. Điểm vào đẹp: (a) SL sau vùng đủ mạnh, (b) giá vào sát mép vùng, (c) không có vùng cản trước TP1
   const atr = g.atr;
   const why3: string[] = [];
-  if (zp !== null) {
+  if (!Number.isFinite(atr) || atr <= 0) {
+    why3.push(`ATR khung vào lệnh không hợp lệ (${atr}) nên không đo được khoảng cách tới mép vùng`);
+  } else if (zp !== null) {
     // cùng cách chọn vùng với buildPlan: vùng đầu tiên phía SL có độ mạnh ≥ minSlStrength
     const stopZone = stopSideZones(g.zones, zp.marketPrice, side).find((z) => z.strength >= COMMON.zones.minSlStrength) ?? null;
     if (stopZone === null) why3.push('không có vùng đặt SL');
@@ -70,9 +74,10 @@ export function gradeSignal(a: Analysis): GradeResult {
     }
   } else {
     const p = pp!;
+    if (!Number.isFinite(p.atr) || p.atr <= 0) why3.push(`ATR khung nhận diện không hợp lệ (${p.atr})`);
     // Xấp xỉ: SL của lệnh mô hình không đặt theo vùng S/R → "SL sau vùng mạnh" = có vùng độ mạnh ≥ ngưỡng nằm phía SL của giá vào,
     // SL nằm sau mép xa của vùng đó và cách mép ≤ patternStopZoneGapAtr×A.
-    const behind = stopSideZones(g.zones, p.entry, side).find((z) => {
+    const behind = !(p.atr > 0) ? undefined : stopSideZones(g.zones, p.entry, side).find((z) => {
       const far = side === 'long' ? z.low : z.high;
       return z.strength >= G.minStopZoneStrength && dir * (far - p.stop) > 0 && (dir * (far - p.stop)) / p.atr <= G.patternStopZoneGapAtr;
     });
@@ -100,9 +105,9 @@ export function gradeSignal(a: Analysis): GradeResult {
   // 5. Rủi ro coin
   const why5: string[] = [];
   if (!(G.allowedRiskTiers as readonly string[]).includes(a.risk.tier)) why5.push(`mức rủi ro ${a.risk.tier}`);
-  if (a.flags.some((f) => f.startsWith('F-01') && f.includes(`cùng chiều ${sideName}`))) why5.push('funding quá nhiệt cùng chiều lệnh (F-01)');
+  if (a.best.reasons.some((r) => r.code === 'F-01')) why5.push('funding quá nhiệt cùng chiều lệnh (F-01)');
   if (g.breakerTripped) why5.push('cầu dao đang bật');
-  if (a.gates.some((x) => x.code === 'G-07' && !x.pass) || a.flags.some((f) => f.startsWith('G-07'))) why5.push('trong cửa sổ sự kiện (G-07)');
+  if (a.gates.some((x) => x.code === 'G-07' && !x.pass) || g.eventFlagged) why5.push('trong cửa sổ sự kiện (G-07)');
   if (why5.length > 0) fail(5, 'rủi ro coin', why5.join('; '));
 
   // 6. Hợp lưu (ít nhất một)
@@ -116,11 +121,10 @@ export function gradeSignal(a: Analysis): GradeResult {
   const flow = a.best.reasons.find((r) => r.code === 'S-02');
   if (flow !== undefined && flow.points >= G.minFlowShare * flowMax - 1e-9) confluence.push('dòng tiền taker');
   if (side === 'long' ? g.coilReleased.long : g.coilReleased.short) confluence.push('coil vừa bung');
-  // Quyết định: hai đáy (Long) / hai đỉnh (Short) 4H/1D đã phá cổ (đã xác nhận, còn hiệu lực — contextFlags) là bối cảnh hỗ trợ cùng chiều.
-  if (a.context?.doubles.some((d) => d.kind === (side === 'long' ? 'double_bottom' : 'double_top'))) confluence.push('bối cảnh hai đáy/hai đỉnh cùng chiều');
+  // Chỉ 3 nguồn hợp lưu theo brief. Hai đáy/hai đỉnh đã xác nhận KHÔNG tính (quyết định điều phối 19/10/2026: chất lượng hơn số lượng).
   if (confluence.length === 0) {
     const flowTxt = flow === undefined ? 'không có điểm dòng tiền' : `dòng tiền ${vn(flow.points, 1)}/${vn(flowMax, 0)} điểm < ${Math.round(G.minFlowShare * 100)}%`;
-    fail(6, 'hợp lưu', `chưa có yếu tố nào (mô hình phá vỡ/retest, ${flowTxt}, coil vừa bung, hai đáy/hai đỉnh cùng chiều)`);
+    fail(6, 'hợp lưu', `chưa có yếu tố nào (mô hình phá vỡ/retest, ${flowTxt}, coil vừa bung)`);
   }
 
   return { grade: failed.length === 0 ? 'A' : 'B', failed };
