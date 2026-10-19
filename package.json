@@ -7,7 +7,8 @@
     "test": "node --test \"packages/**/*.test.ts\" \"scanner/**/*.test.ts\" \"backtest/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json",
     "probe": "node scripts/probe-sources.ts",
-    "scan": "node scanner/scan.ts"
+    "scan": "node scanner/scan.ts",
+    "blind": "node backtest/blind-run.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.0",

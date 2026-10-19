@@ -30,7 +30,7 @@ import { planOrders, type PlannerPlan } from '../packages/bot/planner.ts';
 import type { Analysis } from '../packages/core/analyze.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Candle, Contract, Mode } from '../packages/core/types.ts';
-import { createReplay, decisionTimes, signalDedupeKey, loadContracts, DEV_PERIOD, type FundingRow, type Window } from './replay.ts';
+import { createReplay, decisionTimes, signalDedupeKey, loadContracts, assertWindowAllowed, DEV_PERIOD, type BlindAuth, type FundingRow, type Window } from './replay.ts';
 import { fundingFallbackRate, maxAbsFundingRate, meanFundingRate } from '../packages/core/sizing.ts';
 import { donchianBreakout } from '../packages/core/breakout.ts';
 import { loadCandles, createFetcher, fetchWindow1m, HOUR, MINUTE, DAY, type Interval, type Fetcher } from './data.ts';
@@ -128,14 +128,17 @@ export type RunOptions = {
   // H0 (Task 8): tùy chọn cấu hình đang thử, áp vào CONFIG/COMMON trong lúc chạy rồi trả lại (packages/core/config-override.ts).
   // Mỗi tiến trình chỉ chạy một mô phỏng tại một thời điểm (CONFIG/COMMON là trạng thái chung của module).
   configOverride?: ConfigOverride;
+  // Kỳ mù B: chỉ backtest/blind-run.ts truyền (cùng cổng replay.ts checkBlindAuth). Không có → cửa sổ chạm B bị từ chối.
+  auth?: BlindAuth;
 };
 
-export function runSimulation(o: RunOptions) {
+export async function runSimulation(o: RunOptions) {
+  assertWindowAllowed(o.window, o.auth); // cổng kỳ mù — TRƯỚC cả ghi đè cấu hình
   return withConfigOverride(o.configOverride, () => simulate(o));
 }
 
 async function simulate(o: RunOptions) {
-  const rep = createReplay({ dir: o.dir, mode: o.mode, window: o.window, contracts: o.contracts, events: o.events, capital: o.capital, limit: null });
+  const rep = createReplay({ dir: o.dir, mode: o.mode, window: o.window, contracts: o.contracts, events: o.events, capital: o.capital, limit: null, ...(o.auth !== undefined ? { auth: o.auth } : {}) });
   const times = decisionTimes(o.mode, o.window);
   const book = createBook({ capital: o.capital, ...DEFAULT_BOOK, pauseHours: o.pauseHours });
   const active: SimTrade[] = [];
