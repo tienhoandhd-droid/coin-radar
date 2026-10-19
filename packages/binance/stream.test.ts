@@ -115,11 +115,13 @@ test('SUBSCRIBE: id là số nguyên không âm, gửi dàn đều ≤ 10 tin/gi
 
 test('mặc định gửi ≤ 5 tin/giây (chừa chỗ cho pong tự động)', async () => {
   const symbols = Array.from({ length: 100 }, (_, i) => `S${i}USDT`);
-  const { ws, m, clock } = marketSetup({ symbols, paramsPerMessage: 5 });
+  const { ws, m, clock } = marketSetup({ symbols, paramsPerMessage: 5, ackTimeoutMs: 600_000 });
   m.start();
   ws.last().open();
   await clock.advance(60_000);
+  assert.equal(ws.all.length, 1, 'không được nối lại giữa chừng');
   const sent = ws.last().sent;
+  assert.equal(sent.length, 40, '100 mã × 2 stream / 5 mỗi tin = 40 tin');
   for (const s of sent) assert.ok(sent.filter((x) => x.at >= s.at && x.at < s.at + 1000).length <= 5);
 });
 
