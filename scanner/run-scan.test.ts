@@ -86,3 +86,31 @@ test('I3 runScan: nến BTC cũ → ném lỗi, không quét (chế độ thị 
   const base = input();
   await assert.rejects(runScan({ ...base, klines: (s, iv, l) => (s === 'BTCUSDT' && iv === '1h' ? series(l, 0.05, '1h', NOW - 6 * 3_600_000) : base.klines(s, iv, l)) }), /BTC.*dữ liệu cũ/);
 });
+
+// Rà soát B0b #2: MỌI chuỗi nến dùng cho cổng/kế hoạch phải được kiểm độ mới/thiếu nến
+const staleFor = (base: ScanInput, iv: string) => (s: string, interval: string, l: number) =>
+  s !== 'BTCUSDT' && interval === iv ? series(Math.min(l, 500), 0.05, interval, NOW - 3 * 86_400_000) : base.klines(s, interval, l);
+
+test('I3 runScan Swing: nến 1H cũ (cả mã trong và ngoài phạm vi mô hình) → không chấm, lỗi nêu khung 1H', async () => {
+  const base = input();
+  const r = await runScan({ ...base, klines: staleFor(base, '1h') });
+  const others = ['AAAUSDT', 'BBBUSDT', 'CCCUSDT'];
+  for (const s of others) assert.match(r.errors.find((e) => e.symbol === s)?.error ?? 'không lỗi', /1H.*dữ liệu cũ|dữ liệu cũ.*1H/, s);
+  assert.ok(!r.results.some((a) => others.includes(a.symbol)));
+});
+
+test('I3 runScan Lướt nhanh: nến 1D cũ → không chấm; nến 4H (phần mô hình) cũ → mã trong phạm vi không chấm', async () => {
+  const base = input({ mode: 'fast' });
+  const d = await runScan({ ...base, klines: staleFor(base, '1d') });
+  for (const s of ['AAAUSDT', 'BBBUSDT', 'CCCUSDT']) assert.match(d.errors.find((e) => e.symbol === s)?.error ?? 'không lỗi', /1D/, s);
+  // Mã nào tải nến 4H (mã trong phạm vi mô hình) mà 4H cũ → phải bị ghi lỗi nêu 4H; ép mã vào phạm vi bằng nến 1D biến động thấp
+  const calm = (s: string, interval: string, l: number) => (interval === '1d' ? series(Math.min(l, 500), 0.01, '1d').map((x) => ({ ...x, high: x.close * 1.001, low: x.close * 0.999 })) : base.klines(s, interval, l));
+  const asked = new Set<string>();
+  const h4 = await runScan({ ...base, klines: (s, iv, l) => {
+    if (iv === '4h') asked.add(s);
+    return iv === '4h' ? series(Math.min(l, 500), 0.05, '4h', NOW - 3 * 86_400_000) : calm(s, iv, l);
+  } });
+  const scoped = [...asked]; // Lướt nhanh: BTC chung không tải 4H, nên 4H chỉ là nến mô hình của từng mã
+  assert.ok(scoped.length > 0, 'fixture cần ít nhất một mã trong phạm vi mô hình');
+  for (const s of scoped) assert.match(h4.errors.find((e) => e.symbol === s)?.error ?? 'không lỗi', /4H/, s);
+});

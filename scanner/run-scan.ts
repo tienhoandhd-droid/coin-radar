@@ -15,7 +15,8 @@ import type { SignalState } from '../packages/core/signal.ts';
 // Nến BTC (1D 400, 1H 100, khung xu hướng Lướt nhanh) cũng lấy qua `klines`.
 // Thay thế theo thời điểm mà phát lại phải tự cung cấp: tickers (quoteVolume 24h → hạng thanh khoản), books (spread — không có
 // lịch sử, cần quy ước thay thế cho G-02/G-03), premiums (giá mark tại t — "giá hiện tại" của kế hoạch, I3 — + funding gần nhất + giờ funding kế tiếp),
-// fundingIntervals. Chuỗi nến cũ hơn 1 khung so với `now`, thiếu nến hoặc sai thứ tự → mã bị ghi lỗi, không chấm (BTC hỏng → ném lỗi).
+// fundingIntervals. MỌI chuỗi nến của một mã (xu hướng, vào lệnh, 1D, 1H, 4H mô hình) cũ hơn 1 khung so với `now`, thiếu nến hoặc
+// sai thứ tự → mã bị ghi lỗi (nêu khung), không chấm (BTC hỏng → ném lỗi).
 export type ScanInput = {
   mode: Mode;
   contracts: Contract[];
@@ -82,7 +83,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
       const trend = fresh(await kl(c.symbol, cfg.trendInterval, cfg.trendLimit), cfg.trendInterval, 'Không chấm');
       const entry = fresh(await kl(c.symbol, cfg.entryInterval, cfg.entryLimit), cfg.entryInterval, 'Không chấm');
       // Lướt nhanh: 1D tải 300 nến (cùng trọng số API với 120) để dùng luôn cho bối cảnh mô hình 1D
-      const daily = mode === 'swing' ? trend : await kl(c.symbol, '1d', FB.d1);
+      const daily = mode === 'swing' ? trend : fresh(await kl(c.symbol, '1d', FB.d1), '1d', 'Không chấm');
       const rank = ranks.get(c.symbol) ?? 1;
       const lastEntry = entry[entry.length - 1];
       if (!lastEntry) throw new Error('Không có nến khung vào lệnh');
@@ -93,16 +94,16 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
       if (scope.ok) {
         inScope++;
         if (mode === 'swing') {
-          const c1h = await kl(c.symbol, '1h', FB.h1);
+          const c1h = fresh(await kl(c.symbol, '1h', FB.h1), '1h', 'Không chấm');
           patternData = { c4h: entry, c1d: trend, c1h, btcSma200ReclaimedAt: btcReclaim };
           hourly = c1h.slice(-30);
         } else {
-          const c4h = await kl(c.symbol, '4h', FB.h4);
+          const c4h = fresh(await kl(c.symbol, '4h', FB.h4), '4h', 'Không chấm');
           patternData = { c4h, c1d: daily, c1h: trend, btcSma200ReclaimedAt: btcReclaim };
           hourly = trend.slice(-100);
         }
       } else {
-        hourly = mode === 'fast' ? trend.slice(-100) : await kl(c.symbol, '1h', 30);
+        hourly = mode === 'fast' ? trend.slice(-100) : fresh(await kl(c.symbol, '1h', 30), '1h', 'Không chấm');
       }
       const book = input.books.get(c.symbol);
       const premium = input.premiums.get(c.symbol);
