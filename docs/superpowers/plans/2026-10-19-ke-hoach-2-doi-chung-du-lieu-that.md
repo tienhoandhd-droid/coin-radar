@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Phát lại thị trường Binance Futures thật **từng giờ trong 30 ngày gần nhất** (và 2–3 tháng trước đó để kiểm ngoài mẫu), cho chính máy chấm hiện có ra quyết định như đang chạy thật, mô phỏng lệnh đúng như bot sẽ đặt, đo tỉ lệ thắng / kỳ vọng R / sụt giảm, **mổ xẻ nguyên nhân từng lệnh thua** (tin tức hay thứ khác), so **12 cách đặt/thoát lệnh**, rồi đề xuất điều chỉnh có kỷ luật.
+**Goal:** Phát lại thị trường Binance Futures thật **từng giờ trong 30 ngày gần nhất** (và 2–3 tháng trước đó để kiểm ngoài mẫu), cho chính máy chấm hiện có ra quyết định như đang chạy thật, mô phỏng lệnh đúng như bot sẽ đặt, đo tỉ lệ thắng / kỳ vọng R / sụt giảm, **mổ xẻ nguyên nhân từng lệnh thua** (tin tức hay thứ khác), so **12 cách đặt/thoát lệnh** (cách chính: C2 — TP1 50% + trailing, người dùng chốt), rồi đề xuất điều chỉnh có kỷ luật.
 
 **Yêu cầu người dùng (19/10/2026):** “lấy dữ liệu mỗi giờ của 1 tháng gần đây… theo phương pháp của bạn xem tỉ lệ thắng thế nào → rút ra nhận xét và điều chỉnh… nguyên nhân nào gây biến động sai → do tin tức hay thứ khác → bổ sung thêm nguồn thông tin”; so sánh TP cố định với trailing; học cách các bot đặt lệnh rồi thử nghiệm so sánh.
 
@@ -53,4 +53,4 @@ Chạy 30 ngày gần nhất + 3 tháng ngoài mẫu; báo cáo `reports/Đối 
 
 ### Task 8: Điều chỉnh có kỷ luật
 
-Chỉ chỉnh trên **3 tuần đầu** của tháng gần nhất; kiểm trên **tuần cuối** + **3 tháng trước**; ghi nhật ký mọi lần thử (số lần thử → nêu rủi ro quá khớp). Chỉ đề xuất đổi luật khi cận dưới khoảng tin cậy của chênh lệch R > 0 **và** sụt giảm không tệ hơn. Đề xuất trình người dùng duyệt trước khi sửa `config.ts`.
+Chỉ chỉnh trên **3 tuần đầu** của tháng gần nhất; kiểm trên **tuần cuối** + **3 tháng trước**; ghi nhật ký mọi lần thử (số lần thử → nêu rủi ro quá khớp). Chỉ đề xuất đổi luật khi cận dưới khoảng tin cậy của chênh lệch R > 0 **và** sụt giảm không tệ hơn. **Người dùng cho phép (19/10/2026): cách thoát lệnh chính là C2 (TP1 chốt 50% + 50% trailing); nếu một cách thoát khác tốt hơn RÕ RỆT thì ÁP DỤNG luôn và báo kèm số liệu.** “Rõ rệt” = cận dưới khoảng tin cậy 95% của chênh lệch R theo cặp so với C2 > 0 trên tuần kiểm **và** trên 3 tháng ngoài mẫu, sụt giảm lớn nhất và chuỗi thua dài nhất không tệ hơn, số lệnh đủ để tính (ghi rõ). Không đạt cả hai giai đoạn → giữ C2. Các thay đổi luật KHÁC (vào lệnh, bộ lọc, ngưỡng) vẫn trình người dùng duyệt trước khi sửa `config.ts`. Mô phỏng phải dùng trần **10 lệnh mở cùng lúc** và rủi ro **2%/lệnh** như bot thật.
