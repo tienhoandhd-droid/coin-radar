@@ -85,6 +85,11 @@ export const COMMON = {
     limitBufferAtr: 0.1, // giá limit = mép trên vùng hỗ trợ + 0,1×ATR (Short: mép dưới vùng kháng cự − 0,1×ATR)
     limitExpiryBars: { fast: 8, swing: 6 }, // limit hết hiệu lực sau 8 nến 15m (2h) / 6 nến 4H (24h)
   },
+  // Mô hình biểu đồ — ĐỀ XUẤT, CHƯA BACKTEST (nguồn: reports/Mô hình biểu đồ cho BTC.md, mục (2))
+  patterns: {
+    minSwingAtr: { '15m': 1.0, '1h': 1.0, '4h': 0.75, '1d': 0.75 }, // biên độ swing tối thiểu so với pivot ngược chiều trước đó, tính bằng ×ATR(14) tại nến pivot — đề xuất, chưa backtest
+    atrPeriod: 14, // chu kỳ ATR của khung nhận diện — đề xuất, chưa backtest
+  },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
   maintenanceMarginRate: 0.01,
