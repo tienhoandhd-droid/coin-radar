@@ -258,3 +258,28 @@ test('nhật ký: mọi lần thay lệnh dừng bị từ chối (kể cả -20
   assert.equal(j.state().trades[t.signalId]!.stopReplaceFallback, false);
   assert.deepEqual(restore({ dir }), j.state());
 });
+
+test('B5: dấu "unprotected" lưu qua khởi động lại; tự xóa khi lệnh dừng được sàn nhận; leg_adopt trỏ chân về lần thử cũ', () => {
+  const dir = tmp();
+  const c = clock();
+  const t = plannedTrade('AAAUSDT|unprot');
+  const j = openJournal({ dir, now: c.now, warn: () => {} });
+  j.append({ type: 'signal_accepted', trade: t });
+  j.append({ type: 'unprotected', symbol: t.symbol, signalId: t.signalId, reason: 'bị khóa' });
+  const s1 = restore({ dir, warn: () => {} });
+  assert.equal(s1.unprotected[t.symbol]!.reason, 'bị khóa');
+  const sl1 = legClientId(t, 'SL', 1);
+  j.append({ type: 'order_intent', signalId: t.signalId, role: 'SL', clientId: sl1, attempt: 1, qty: null, triggerPrice: 97 });
+  j.append({ type: 'leg_adopt', signalId: t.signalId, role: 'SL', clientId: t.legs.SL!.clientId, attempt: 0, status: 'open', reason: 'gốc đã lên sàn' });
+  const s2 = restore({ dir, warn: () => {} });
+  assert.equal(s2.trades[t.signalId]!.legs.SL!.clientId, t.legs.SL!.clientId);
+  assert.equal(s2.trades[t.signalId]!.legs.SL!.status, 'open');
+  assert.equal(s2.unprotected[t.symbol], undefined);
+  // Ảnh chụp cũ không có trường unprotected vẫn khôi phục được
+  j.snapshot();
+  const snapPath = join(dir, 'snapshot.json');
+  const snap = JSON.parse(readFileSync(snapPath, 'utf8'));
+  delete snap.state.unprotected;
+  writeFileSync(snapPath, JSON.stringify(snap));
+  assert.deepEqual(restore({ dir, warn: () => {} }).unprotected, {});
+});

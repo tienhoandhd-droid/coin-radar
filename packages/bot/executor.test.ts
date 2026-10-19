@@ -15,9 +15,10 @@ const NOW = 1_760_000_000_000;
 const px = (side: Side, x: number) => Number((side === 'long' ? x : 200 - x).toFixed(2));
 
 let seq = 1;
-function mkTrade(side: Side): TradeState {
+const C2: Contract = { ...C, symbol: 'BBBUSDT', baseAsset: 'BBB' };
+function mkTrade(side: Side, symbol = C.symbol): TradeState {
   const t: TradeState = {
-    signalId: `sig-${side}-${seq++}`, symbol: C.symbol, side, runId: 'r1', createdAt: NOW - 3_600_000, status: 'open', closedReason: null,
+    signalId: `sig-${side}-${seq++}`, symbol, side, runId: 'r1', createdAt: NOW - 3_600_000, status: 'open', closedReason: null,
     plan: { stop: px(side, 97), tp1: px(side, 106), activatePrice: px(side, 106), callbackPct: 1, costPct: 0.1, needsBreakevenFloor: false, leverage: 3, qtyStep: 0.001, tp1Pct: 50, limitCancelAt: null },
     legs: {}, fills: [], tp1Filled: false, trailingActivated: false, stopReplaceFallback: false,
   };
@@ -46,6 +47,7 @@ function harness(trades: TradeState[], script: Partial<Record<Method, OrderResul
     return script[m]?.shift() ?? OK();
   }])) as unknown as OrdersClient;
   const alerts: Array<{ level: string; symbol: string | null; text: string }> = [];
+  let resyncs = 0;
   const journal = {
     state: () => state,
     append(b: JournalEventBody): JournalEvent {
@@ -58,11 +60,14 @@ function harness(trades: TradeState[], script: Partial<Record<Method, OrderResul
   };
   const t0 = trades[0]!;
   const ctx: ExecutorCtx = {
-    orders: client, journal, runId: 'r1', pass: 7, filters: { [C.symbol]: C },
-    positions: positions ?? [{ symbol: C.symbol, positionAmt: t0.side === 'long' ? 60 : -60, entryPrice: 100, liquidationPrice: null }],
+    orders: client, journal, runId: 'r1', pass: 7, filters: { [C.symbol]: C, [C2.symbol]: C2 },
+    positions: positions ?? trades.map((t) => ({ symbol: t.symbol, positionAmt: t.side === 'long' ? 60 : -60, entryPrice: 100, liquidationPrice: null })),
     notify: (a) => alerts.push(a),
+    sleep: async (ms) => { log.push(`S:${ms}`); },
+    confirmDelayMs: 1500,
+    resyncClock: async () => { resyncs++; log.push('R'); },
   };
-  return { ctx, log, calls, events, state, alerts, of: (m: Method) => calls.filter((c) => c.m === m) };
+  return { ctx, log, calls, events, state, alerts, of: (m: Method) => calls.filter((c) => c.m === m), resyncs: () => resyncs };
 }
 
 function stopAction(t: TradeState, o: { attempt?: number; role?: 'SL' | 'BE'; qty?: number | null; onReject?: 'market_close' | 'stop_replace_rejected'; entries?: Array<{ clientId: string; orderId: number }>; replaces?: string | null } = {}): Extract<Action, { type: 'place_stop' }> {
@@ -164,13 +169,15 @@ test('Vắng xác nhận + đặt lại bị từ chối → hủy lệnh vào t
   const sl = stopAction(t, { entries });
   const h = harness([t], {
     placeStopLoss: [UNKNOWN(), res('stop_rejected', { code: -4142, msg: 'would trigger immediately' })],
-    queryAlgo: [res('rejected', { code: -2013 })],
+    queryAlgo: [res('rejected', { code: -2013 }), res('rejected', { code: -2013 })],
     closeMarket: [res('ok', { body: { orderId: 9, status: 'FILLED' } })],
   });
   const r = await executeActions([cancelOld(t, null, sl.clientId), sl, tp1Action(t), trAction(t)], h.ctx);
-  assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'placeStopLoss', 'queryAlgo', 'placeStopLoss', 'cancelOrder', 'closeMarket']);
-  assert.deepEqual(h.calls[4]!.args, [C.symbol, { orderId: 4242 }]);
-  const close = h.calls[5]!.args[0] as { side: Side; qty: number; contract: Contract; id: { leg: string } };
+  // Trước khi đóng: tra lại mã GỐC một lần nữa (lệnh gốc có thể vừa lên sàn sau 503)
+  assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'placeStopLoss', 'queryAlgo', 'placeStopLoss', 'queryAlgo', 'cancelOrder', 'closeMarket']);
+  assert.deepEqual(h.calls[4]!.args[0], { clientId: sl.clientId });
+  assert.deepEqual(h.calls[5]!.args, [C.symbol, { orderId: 4242 }]);
+  const close = h.calls[6]!.args[0] as { side: Side; qty: number; contract: Contract; id: { leg: string } };
   assert.equal(close.side, 'short');
   assert.equal(close.qty, 60);
   assert.ok(h.alerts.some((a) => a.level === 'urgent' && /đóng/i.test(a.text)));
@@ -254,10 +261,12 @@ test('Bị khóa (banned/429/418) → dừng lượt NGAY, không gửi thêm g�
     const t = mkTrade('long');
     const h = harness([t], { placeTakeProfit: [res(kind, { status: 429, sent: kind === 'banned' })] });
     const r = await executeActions([tp1Action(t), trAction(t), stopAction(t)], h.ctx);
-    assert.deepEqual(h.calls.map((c) => c.m), ['placeTakeProfit'], kind);
+    // banned: không gửi thêm gì. clock: đồng bộ giờ rồi CHỈ cứu lệnh dừng còn thiếu (TP/trailing không gửi)
+    assert.deepEqual(h.calls.map((c) => c.m), kind === 'banned' ? ['placeTakeProfit'] : ['placeTakeProfit', 'placeStopLoss'], kind);
+    assert.equal(h.resyncs(), kind === 'clock' ? 1 : 0, kind);
     assert.equal(r.halted?.kind, kind);
     assert.ok(h.alerts.some((a) => a.level === 'urgent'), kind);
-    assert.equal(h.events.at(-1)!.type, 'order_result', 'kết quả vẫn được ghi');
+    assert.ok(h.events.some((e) => e.type === 'order_result' && e.kind === kind), 'kết quả vẫn được ghi');
   }
   // Khóa ngay lúc tra lại → cũng dừng, không đặt lại
   const t = mkTrade('short');
@@ -357,4 +366,113 @@ test('Ghép reconcile → executor: vị thế THIẾU dừng → SL được đ
     assert.equal(h.state.trades[t.signalId]!.legs.SL!.status, 'open', side);
     assert.ok(h.calls.some((c) => c.m === 'placeTakeProfit'), side);
   }
+});
+
+// ================= B5 vòng 1 =================
+test('Không rõ → CHỜ (đồng hồ tiêm) rồi mới tra lại mã gốc', async () => {
+  const t = mkTrade('long');
+  const h = harness([t], { placeStopLoss: [UNKNOWN()], queryAlgo: [res('ok', { body: { algoStatus: 'NEW' } })] });
+  await executeActions([stopAction(t)], h.ctx);
+  assert.deepEqual(h.log.filter((x) => x.startsWith('C:') || x.startsWith('S:')), ['C:placeStopLoss', 'S:1500', 'C:queryAlgo']);
+});
+
+test('cancel_then_place: hủy dừng cũ KHÔNG xác nhận, tra thấy dừng cũ còn sống → giữ dừng cũ, KHÔNG đặt mới, KHÔNG đóng, bật dự phòng (Long + Short)', async () => {
+  for (const side of ['long', 'short'] as const) {
+    for (const cancelRes of [UNKNOWN(), res('rejected', { code: -1102 })]) {
+      const t = mkTrade(side);
+      const sl = stopAction(t);
+      const h = harness([t], { cancelAlgo: [cancelRes], queryAlgo: [res('ok', { body: { algoStatus: 'NEW' } })] });
+      const r = await executeActions([cancelOld(t, null, sl.clientId), sl, tp1Action(t)], h.ctx);
+      assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'queryAlgo', 'placeTakeProfit'], side);
+      assert.deepEqual(h.calls[1]!.args[0], { clientId: legClientId(t, 'SL', 0) });
+      assert.equal(h.of('closeMarket').length, 0);
+      assert.equal(h.state.trades[t.signalId]!.stopReplaceFallback, true);
+      assert.ok(h.alerts.some((a) => a.level === 'warn'));
+      assert.deepEqual(r.unprotected, []);
+    }
+  }
+});
+
+test('cancel_then_place: hủy bị từ chối nhưng tra xác nhận dừng cũ đã VẮNG → đặt dừng mới bình thường (Short)', async () => {
+  const t = mkTrade('short');
+  const sl = stopAction(t);
+  const h = harness([t], { cancelAlgo: [res('rejected', { code: -2011, msg: 'Unknown order sent.' })], queryAlgo: [res('rejected', { code: -2013 })] });
+  await executeActions([cancelOld(t, null, sl.clientId), sl], h.ctx);
+  assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'queryAlgo', 'placeStopLoss']);
+  assert.equal(h.state.trades[t.signalId]!.legs.SL!.status, 'open');
+});
+
+test('cancel_then_place: hủy không rõ và tra cũng không kết luận → không đặt (tránh -4130 → đóng oan), báo khẩn + đánh dấu chưa bảo vệ (Long)', async () => {
+  const t = mkTrade('long');
+  const sl = stopAction(t);
+  const h = harness([t], { cancelAlgo: [UNKNOWN()], queryAlgo: [UNKNOWN()], openAlgoOrders: [UNKNOWN()] });
+  const r = await executeActions([cancelOld(t, null, sl.clientId), sl], h.ctx);
+  assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'queryAlgo', 'openAlgoOrders']);
+  assert.equal(h.of('closeMarket').length, 0);
+  assert.deepEqual(r.unprotected, [C.symbol]);
+  assert.ok(h.state.unprotected[C.symbol]);
+  assert.ok(h.alerts.some((a) => a.level === 'urgent' && a.text.includes(C.symbol)));
+});
+
+test('Đặt lại bị từ chối nhưng mã GỐC hóa ra đã lên sàn → nhận lệnh gốc làm dừng, KHÔNG đóng (Long + Short)', async () => {
+  for (const side of ['long', 'short'] as const) {
+    const t = mkTrade(side);
+    const sl = stopAction(t, { onReject: 'market_close' });
+    const h = harness([t], {
+      placeStopLoss: [UNKNOWN(), res('stop_rejected', { code: -4130, msg: 'closePosition stop exists' })],
+      queryAlgo: [res('rejected', { code: -2013 }), res('ok', { body: { algoStatus: 'NEW' } })],
+    });
+    const r = await executeActions([sl, cancelOld(t, sl.clientId)], h.ctx);
+    assert.deepEqual(h.calls.map((c) => c.m), ['placeStopLoss', 'queryAlgo', 'placeStopLoss', 'queryAlgo', 'cancelAlgo'], side);
+    assert.equal(h.of('closeMarket').length, 0, side);
+    const leg = h.state.trades[t.signalId]!.legs.SL!;
+    assert.equal(leg.clientId, sl.clientId, side);
+    assert.equal(leg.status, 'open', side);
+    assert.deepEqual(r.closedSymbols, []);
+  }
+});
+
+test('Bị khóa (banned) ngay sau khi đã hủy dừng cũ, trước khi đặt dừng mới → báo KHẨN từng mã không có dừng + ghi dấu chưa bảo vệ vào nhật ký (Short)', async () => {
+  const t = mkTrade('short');
+  const sl = stopAction(t);
+  const h = harness([t], { placeStopLoss: [res('banned', { status: 418 })] });
+  const r = await executeActions([cancelOld(t, null, sl.clientId), sl, tp1Action(t)], h.ctx);
+  assert.deepEqual(h.calls.map((c) => c.m), ['cancelAlgo', 'placeStopLoss']);
+  assert.equal(r.halted?.kind, 'banned');
+  assert.deepEqual(r.unprotected, [C.symbol]);
+  assert.ok(h.events.some((e) => e.type === 'unprotected' && e.symbol === C.symbol));
+  assert.ok(h.state.unprotected[C.symbol]);
+  assert.ok(h.alerts.some((a) => a.level === 'urgent' && a.symbol === C.symbol && /KHÔNG CÓ LỆNH DỪNG/.test(a.text)));
+  assert.equal(h.resyncs(), 0, 'bị cấm thì không gửi gì thêm');
+});
+
+test('Lệch giờ (clock) sau khi đã hủy dừng cũ → đồng bộ giờ, xác nhận vắng, đặt lại MỘT lần với mã MỚI (Long)', async () => {
+  const t = mkTrade('long');
+  const sl = stopAction(t);
+  const h = harness([t], { placeStopLoss: [res('clock', { code: -1021, sent: true }), OK()], queryAlgo: [res('rejected', { code: -2013 })] });
+  const r = await executeActions([cancelOld(t, null, sl.clientId), sl, tp1Action(t)], h.ctx);
+  assert.deepEqual(h.log.filter((x) => x.startsWith('C:') || x === 'R'), ['C:cancelAlgo', 'C:placeStopLoss', 'R', 'C:queryAlgo', 'C:placeStopLoss']);
+  assert.equal((h.calls[3]!.args[0] as StopLossInput).id.attempt, 2);
+  assert.equal(r.halted?.kind, 'clock');
+  assert.deepEqual(r.unprotected, []);
+  assert.equal(h.state.trades[t.signalId]!.legs.SL!.status, 'open');
+  assert.equal(h.of('placeTakeProfit').length, 0, 'lượt vẫn dừng sau khi cứu lệnh dừng');
+});
+
+test('Lệch giờ mà không đồng bộ được (không có resyncClock) → đánh dấu chưa bảo vệ + khẩn', async () => {
+  const t = mkTrade('short');
+  const h = harness([t], { placeStopLoss: [res('clock', { sent: false })] });
+  const r = await executeActions([stopAction(t)], { ...h.ctx, resyncClock: undefined });
+  assert.deepEqual(r.unprotected, [C.symbol]);
+});
+
+test('Lượt sau: mã bị đánh dấu chưa bảo vệ được xử lý TRƯỚC mọi mã khác; đặt dừng xong thì dấu tự xóa', async () => {
+  const a = mkTrade('long', C.symbol);
+  const b = mkTrade('short', C2.symbol);
+  const h = harness([b, a]);
+  h.state.unprotected[C.symbol] = { signalId: a.signalId, since: NOW, reason: 'bị khóa' };
+  const tpB: Action = { ...tp1Action(b), symbol: C2.symbol } as Action;
+  await executeActions([tpB, stopAction(a)], h.ctx);
+  assert.deepEqual(h.calls.map((c) => c.m), ['placeStopLoss', 'placeTakeProfit']);
+  assert.equal(h.state.unprotected[C.symbol], undefined);
 });

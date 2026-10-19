@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FUSE, LIVE_CONFIRM_ENV, LIVE_CONFIRM_PHRASE, PROTECTION_CONFIG,
-  checkEntry, cooldownUntil, evaluateProtections, isLosingTrade, resetProtection, resolveRunMode, utcDayStart,
+  FUSE, PROTECTION_CONFIG,
+  checkEntry, cooldownUntil, evaluateProtections, isLosingTrade, resetProtection, utcDayStart,
   type EntryCheckInput, type ProtectionInput, type TradeOutcome,
 } from './protections.ts';
 import { applyEvent, emptyState, type JournalEvent, type JournalEventBody, type ProtectionState } from './journal.ts';
@@ -13,8 +13,9 @@ const H = 3_600_000;
 const NOW = Date.UTC(2026, 9, 20, 12, 0, 0); // 20/10/2026 12:00 UTC
 const BAR15 = 15 * 60_000;
 
+let outSeq = 0;
 const out = (over: Partial<TradeOutcome> = {}): TradeOutcome => ({
-  signalId: `s${Math.random()}`, symbol: 'AAAUSDT', side: 'long', closedAt: NOW - H, realizedPnl: -10, pastTp1: false, ...over,
+  signalId: `s${outSeq++}`, symbol: 'AAAUSDT', side: 'long', closedAt: NOW - H, realizedPnl: -10, pastTp1: false, ...over,
 });
 const losses = (n: number, over: Partial<TradeOutcome> = {}) => Array.from({ length: n }, (_, i) => out({ signalId: `L${i}`, closedAt: NOW - (i + 1) * H, ...over }));
 
@@ -256,48 +257,16 @@ test('Protections chỉ chặn lệnh MỚI: đầu ra không bao giờ chứa l
   assert.deepEqual(Object.keys(r).sort(), ['alerts', 'dayLossPct', 'drawdownPct', 'events', 'lossesIn24h']);
 });
 
-// ================= Khóa cứng live =================
-const PH = LIVE_CONFIRM_PHRASE;
-
-test('Chế độ mặc định là paper', () => {
-  assert.deepEqual(resolveRunMode({ configMode: undefined, env: {}, confirmFile: null }), { ok: true, mode: 'paper' });
-  assert.deepEqual(resolveRunMode({ configMode: 'paper', env: { BINANCE_ENV: 'demo' }, confirmFile: null }), { ok: true, mode: 'paper' });
-  assert.deepEqual(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, confirmFile: null }), { ok: true, mode: 'demo' });
-  assert.equal(resolveRunMode({ configMode: 'LIVE', env: {}, confirmFile: null }).ok, false);
+test('Trần lỗ ngày của cấu hình live (chặt hơn) được dùng khi truyền vào; không bao giờ nới quá 10%', () => {
+  assert.equal(evaluateProtections(base({ equity: 9_400, maxDailyLossPct: 5 })).events.length, 1);
+  assert.deepEqual(evaluateProtections(base({ equity: 8_500, maxDailyLossPct: 50 })).events.map((e) => e.type), ['protection_tripped']);
+  assert.deepEqual(evaluateProtections(base({ equity: 9_100, maxDailyLossPct: 50 })).events, []);
 });
 
-test('live chỉ bật khi CẢ BA: cấu hình live + câu xác nhận đúng nguyên văn + BINANCE_ENV=live', () => {
-  assert.deepEqual(resolveRunMode({ configMode: 'live', env: { BINANCE_ENV: 'live', [LIVE_CONFIRM_ENV]: PH }, confirmFile: null }), { ok: true, mode: 'live' });
-  assert.deepEqual(resolveRunMode({ configMode: 'live', env: { BINANCE_ENV: 'live' }, confirmFile: `${PH}\n` }), { ok: true, mode: 'live' });
-});
-
-test('live KHÔNG bỏ qua được bằng bất kỳ MỘT hoặc HAI thiết lập nào', () => {
-  const cfg = [undefined, 'paper', 'demo', 'live'] as const;
-  const envs = [undefined, 'demo', 'live'] as const;
-  const tokens = [null, PH] as const;
-  for (const configMode of cfg) for (const be of envs) for (const tok of tokens) for (const viaFile of [false, true]) {
-    const env: Record<string, string | undefined> = { BINANCE_ENV: be };
-    if (tok !== null && !viaFile) env[LIVE_CONFIRM_ENV] = tok;
-    const r = resolveRunMode({ configMode, env, confirmFile: tok !== null && viaFile ? tok : null });
-    const all = configMode === 'live' && be === 'live' && tok !== null;
-    if (all) assert.deepEqual(r, { ok: true, mode: 'live' });
-    else assert.ok(!r.ok || r.mode !== 'live', JSON.stringify({ configMode, be, tok, viaFile }));
-    // Key thật (BINANCE_ENV=live) mà chế độ không phải live → từ chối chạy (không bao giờ dùng key thật cho paper/demo)
-    if (be === 'live' && !all) assert.equal(r.ok, false, JSON.stringify({ configMode, be, tok }));
-  }
-});
-
-test('Câu xác nhận phải ĐÚNG NGUYÊN VĂN (chữ hoa/thường, khoảng trắng, câu khác đều bị từ chối)', () => {
-  for (const bad of [PH.toLowerCase(), ` ${PH}`, `${PH} `, PH.replace(/ /g, '  '), PH.slice(0, -1), 'yes', '']) {
-    const env = { BINANCE_ENV: 'live', [LIVE_CONFIRM_ENV]: bad };
-    assert.equal(resolveRunMode({ configMode: 'live', env, confirmFile: null }).ok, false, JSON.stringify(bad));
-    assert.equal(resolveRunMode({ configMode: 'live', env: { BINANCE_ENV: 'live' }, confirmFile: bad }).ok, false, JSON.stringify(bad));
-  }
-  // Token đúng nhưng file sai → vẫn được nếu token đúng? KHÔNG: hai nguồn mâu thuẫn → từ chối
-  assert.equal(resolveRunMode({ configMode: 'live', env: { BINANCE_ENV: 'live', [LIVE_CONFIRM_ENV]: PH }, confirmFile: 'sai' }).ok, false);
-});
-
-test('demo cần BINANCE_ENV=demo', () => {
-  assert.equal(resolveRunMode({ configMode: 'demo', env: {}, confirmFile: null }).ok, false);
-  assert.equal(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'live' }, confirmFile: null }).ok, false);
+test('checkEntry với trần live: vốn bot, đòn bẩy, số lệnh còn rủi ro vượt trần live → chặn', () => {
+  const caps = { maxCapitalUsdt: 5_000, maxLeverage: 3, maxDailyLossPct: 10, maxOpenTrades: 2, riskPerTradePct: 2 };
+  assert.match(checkEntry(entry({ liveCaps: caps })).reasons.join(), /vốn bot/i);
+  assert.match(checkEntry(entry({ liveCaps: { ...caps, maxCapitalUsdt: 20_000 } })).reasons.join(), /đòn bẩy/i);
+  assert.match(checkEntry(entry({ liveCaps: { ...caps, maxCapitalUsdt: 20_000, maxLeverage: 5 }, openTrades: opens(2) })).reasons.join(), /lệnh/);
+  assert.equal(checkEntry(entry({ liveCaps: { ...caps, maxCapitalUsdt: 20_000, maxLeverage: 5 } })).allowed, true);
 });

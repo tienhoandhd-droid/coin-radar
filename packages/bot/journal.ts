@@ -31,6 +31,9 @@ export type JournalState = {
   prevSignals: Record<string, SignalState>; // theo mã — trạng thái tín hiệu cho hysteresis/luật đảo chiều (advanceSignalState)
   protections: Record<string, ProtectionState>; // theo tên cầu chì
   positions: Record<string, ExPosition>; // ảnh chụp vị thế gần nhất theo mã
+  // Mã có vị thế mà lượt trước KHÔNG đặt được lệnh dừng (bị khóa giữa chừng, không xác nhận được) — lượt sau xử lý TRƯỚC.
+  // Tự xóa khi lệnh dừng (SL/BE) của mã được sàn nhận hoặc lệnh đóng.
+  unprotected: Record<string, { signalId: string | null; since: number; reason: string }>;
 };
 
 // algoStatus (tài liệu tra cứu mục 4): NEW, CANCELED, TRIGGERING, TRIGGERED, FINISHED, REJECTED, EXPIRED
@@ -45,6 +48,9 @@ export type JournalEventBody =
   // giữ lệnh cũ; từ đó lệnh này thay lệnh dừng theo cancel_then_place
   | { type: 'stop_replace_rejected'; signalId: string; role: LegRole; clientId: string; code: number | null; msg: string }
   | { type: 'trade_closed'; signalId: string; reason: string }
+  // Nhận lại một lần thử cũ của chân lệnh (vd lệnh dừng gốc báo "không rõ" hóa ra đã nằm trên sàn) làm chân hiện tại
+  | { type: 'leg_adopt'; signalId: string; role: LegRole; clientId: string; attempt: number; status: LegStatus; reason: string }
+  | { type: 'unprotected'; symbol: string; signalId: string | null; reason: string }
   | { type: 'position_snapshot'; positions: ExPosition[] }
   | { type: 'protection_tripped'; name: string; reason: string }
   | { type: 'protection_reset'; name: string; by: string; baseline?: number }
@@ -52,7 +58,7 @@ export type JournalEventBody =
   | { type: 'note'; text: string };
 export type JournalEvent = { seq: number; at: number } & JournalEventBody;
 
-export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {} });
+export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {} });
 
 export function journalFileName(at: number): string {
   return `journal-${new Date(at).toISOString().slice(0, 10)}.jsonl`;
@@ -69,6 +75,7 @@ const ALGO_STATUS: Record<string, LegStatus> = {
 // Áp một sự kiện vào trạng thái (SỬA TẠI CHỖ s, trả về s). Sự kiện tham chiếu lệnh không có → cảnh báo, bỏ qua.
 export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaultWarn): JournalState {
   s.seq = e.seq;
+  s.unprotected ??= {}; // ảnh chụp cũ (trước B5 vòng 1) không có trường này
   const tradeOf = (signalId: string): TradeState | null => {
     const t = s.trades[signalId];
     if (t === undefined) warn(`sự kiện #${e.seq} (${e.type}) tham chiếu lệnh ${signalId} không có trong nhật ký — bỏ qua`);
@@ -115,8 +122,11 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       const leg = legOf(t, e.role, e.clientId);
       if (e.orderId !== null && !leg.orderIds.includes(e.orderId)) leg.orderIds.push(e.orderId);
       if (leg.clientId === e.clientId) leg.status = e.kind === 'ok' ? 'open' : e.kind === 'unknown_status' ? 'unknown' : 'rejected';
-      // Thay lệnh dừng đã thành công → bỏ chế độ dự phòng cancel_then_place
-      if (e.kind === 'ok' && (e.role === 'SL' || e.role === 'BE')) t.stopReplaceFallback = false;
+      // Thay lệnh dừng đã thành công → bỏ chế độ dự phòng cancel_then_place; mã đã có lệnh dừng
+      if (e.kind === 'ok' && (e.role === 'SL' || e.role === 'BE')) {
+        t.stopReplaceFallback = false;
+        delete s.unprotected[t.symbol];
+      }
       break;
     }
     case 'fill': {
@@ -166,8 +176,19 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       if (t === null) break;
       t.status = 'closed';
       t.closedReason = e.reason;
+      delete s.unprotected[t.symbol];
       break;
     }
+    case 'leg_adopt': {
+      const t = tradeOf(e.signalId);
+      if (t === null) break;
+      Object.assign(legOf(t, e.role, e.clientId), { clientId: e.clientId, attempt: e.attempt, status: e.status });
+      if (e.status === 'open' && (e.role === 'SL' || e.role === 'BE')) delete s.unprotected[t.symbol];
+      break;
+    }
+    case 'unprotected':
+      s.unprotected[e.symbol] = { signalId: e.signalId, since: e.at, reason: e.reason };
+      break;
     case 'position_snapshot':
       s.positions = {};
       for (const p of e.positions) s.positions[p.symbol] = { ...p };
@@ -243,6 +264,7 @@ function restoreFull(dir: string, warn: Warn): { state: JournalState; tornLine: 
       const snap = JSON.parse(readFileSync(snapPath, 'utf8')) as { version: number; at: number; state: JournalState };
       if (snap.version !== 1 || typeof snap.state?.seq !== 'number') throw new Error(`phiên bản/cấu trúc lạ`);
       state = snap.state;
+      state.unprotected ??= {}; // ảnh chụp cũ
       snapshotAt = snap.at;
     } catch (e) {
       warn(`ảnh chụp ${snapPath} không đọc được (${e instanceof Error ? e.message : String(e)}) — phát lại toàn bộ nhật ký`);

@@ -2,6 +2,7 @@ import { COMMON } from '../core/config.ts';
 import { canOpen, type CanOpenResult, type NewTrade, type OpenTrade } from '../core/portfolio.ts';
 import type { Side } from '../core/types.ts';
 import type { JournalEventBody, ProtectionState } from './journal.ts';
+import type { LiveCaps } from './live.ts';
 
 // Cầu chì + cổng vào lệnh MỚI (B5, thiết kế D3/D11 và mục "An toàn tiền"). Hàm THUẦN: không đọc giờ máy, không đọc file,
 // không gửi gì. Trạng thái cầu chì nằm trong nhật ký (sự kiện protection_tripped / protection_reset → JournalState.protections)
@@ -43,7 +44,10 @@ export type ProtectionInput = {
   now: number;
   state: Readonly<Record<string, ProtectionState>>; // JournalState.protections
   outcomes: readonly TradeOutcome[]; // lệnh đã đóng gần đây (≥ 24 giờ qua); thừa cũng được, hàm tự lọc
-  dayStartEquity: number; // vốn (ví + PnL chưa chốt) lúc 00:00 UTC hôm nay — nơi gọi chụp lại mỗi ngày
+  // vốn (ví + PnL chưa chốt) lúc 00:00 UTC hôm nay — nơi gọi chụp lại mỗi ngày VÀ cộng/trừ nạp/rút trong ngày (nạp giữa ngày
+  // che mất lỗ thật, rút giữa ngày làm nhảy oan)
+  dayStartEquity: number;
+  maxDailyLossPct?: number; // trần lỗ ngày của cấu hình live — chỉ dùng khi CHẶT hơn PROTECTION_CONFIG
   equity: number; // vốn hiện tại = ví + PnL chưa chốt
   equityPeak: number; // đỉnh vốn từ trước tới nay (nơi gọi theo dõi)
 };
@@ -85,7 +89,8 @@ export function evaluateProtections(i: ProtectionInput): ProtectionEval {
   const dl = st(FUSE.dailyLoss);
   // Người dùng mở lại trong CÙNG ngày UTC → ngưỡng tính từ mức lỗ lúc mở (baseline); sang ngày mới → về ngưỡng gốc
   const sameDayReset = dl?.resetAt != null && utcDayStart(dl.resetAt) === utcDayStart(i.now) && typeof dl.baseline === 'number';
-  const dlLimit = cfg.dailyLoss.maxLossPct + (sameDayReset ? dl!.baseline! : 0);
+  const baseLimit = Math.min(cfg.dailyLoss.maxLossPct, i.maxDailyLossPct ?? Infinity);
+  const dlLimit = baseLimit + (sameDayReset ? dl!.baseline! : 0);
   if (!tripped(FUSE.dailyLoss) && dayLossPct > dlLimit) {
     const reason = `lỗ trong ngày ${vn(dayLossPct)}% vốn đầu ngày UTC (trần ${vn(dlLimit)}%)`;
     trip(FUSE.dailyLoss, reason, 'urgent', `KHẨN cầu chì: ${reason} — ngừng mở lệnh mới tới khi bạn cho phép (/tieptuc). Lệnh đang mở vẫn giữ nguyên dừng trên sàn.`);
@@ -132,6 +137,7 @@ export type EntryCheckInput = {
   newTrade: NewTrade; // cho canOpen
   openTrades: readonly OpenTrade[]; // danh mục thật
   capital: number;
+  liveCaps?: LiveCaps; // chế độ live: trần cứng (vượt là từ chối)
 };
 export type EntryCheck = { allowed: boolean; reasons: string[]; canOpen: CanOpenResult | null };
 
@@ -153,35 +159,18 @@ export function checkEntry(i: EntryCheckInput): EntryCheck {
     const until = cooldownUntil(last, i.barMs);
     if (i.now < until) reasons.push(`Cooldown ${s.symbol} ${s.side}: chờ ${PROTECTION_CONFIG.cooldownBars} nến sau lần đóng lệnh trước (tới ${new Date(until).toISOString()})`);
   }
-  if (reasons.length > 0) return { allowed: false, reasons, canOpen: null };
-  const c = canOpen(i.newTrade, i.openTrades, i.capital, COMMON.portfolio);
-  return { allowed: c.allowed, reasons: c.reasons, canOpen: c };
-}
-
-// ---- Khóa cứng chế độ chạy ----------------------------------------------------------------------------------------------
-// live CHỈ khi đủ cả ba: cấu hình chế độ = 'live' + câu xác nhận gõ tay đúng NGUYÊN VĂN (biến môi trường hoặc file) + BINANCE_ENV=live.
-// Không có cờ bỏ qua. BINANCE_ENV=live (key thật) với chế độ khác → từ chối chạy. demo cần BINANCE_ENV=demo. Mặc định paper.
-export type RunMode = 'paper' | 'demo' | 'live';
-export const LIVE_CONFIRM_PHRASE = 'TOI HIEU BOT SE GIAO DICH BANG TIEN THAT';
-export const LIVE_CONFIRM_ENV = 'COIN_RADAR_LIVE_CONFIRM';
-
-export function resolveRunMode(a: { configMode: unknown; env: Readonly<Record<string, string | undefined>>; confirmFile: string | null }):
-  { ok: true; mode: RunMode } | { ok: false; problems: string[] } {
-  const problems: string[] = [];
-  const raw = a.configMode === undefined || a.configMode === null || a.configMode === '' ? 'paper' : a.configMode;
-  if (raw !== 'paper' && raw !== 'demo' && raw !== 'live') return { ok: false, problems: [`Chế độ "${String(raw)}" không hợp lệ (paper | demo | live)`] };
-  const mode: RunMode = raw;
-  const be = a.env.BINANCE_ENV;
-  if (be === 'live' && mode !== 'live') problems.push(`BINANCE_ENV=live (key tiền thật) nhưng chế độ là ${mode} — từ chối chạy`);
-  if (mode === 'demo' && be !== 'demo') problems.push(`Chế độ demo cần BINANCE_ENV=demo (đang là ${be ?? 'trống'})`);
-  if (mode === 'live') {
-    if (be !== 'live') problems.push(`Chế độ live cần BINANCE_ENV=live (đang là ${be ?? 'trống'})`);
-    const token = a.env[LIVE_CONFIRM_ENV];
-    // File: chỉ bỏ MỘT ký tự xuống dòng cuối (trình soạn thảo tự thêm); mọi khác biệt khác đều là sai
-    const file = a.confirmFile === null ? undefined : a.confirmFile.replace(/\r?\n$/, '');
-    const given = [token, file].filter((x): x is string => x !== undefined);
-    if (given.length === 0) problems.push(`Chế độ live cần câu xác nhận gõ tay (${LIVE_CONFIRM_ENV} hoặc file xác nhận)`);
-    else if (given.some((g) => g !== LIVE_CONFIRM_PHRASE)) problems.push('Câu xác nhận live không đúng nguyên văn');
+  const lc = i.liveCaps;
+  if (lc !== undefined) {
+    if (i.capital > lc.maxCapitalUsdt) reasons.push(`Vốn bot ${i.capital} USDT vượt trần live ${lc.maxCapitalUsdt} USDT`);
+    if (i.newTrade.leverage > lc.maxLeverage) reasons.push(`Đòn bẩy ${i.newTrade.leverage}x vượt trần live ${lc.maxLeverage}x`);
+    const atRisk = i.openTrades.filter((o) => !o.pastTp1).length;
+    if (atRisk >= lc.maxOpenTrades) reasons.push(`Đã có ${atRisk} lệnh còn rủi ro = trần live ${lc.maxOpenTrades} lệnh`);
   }
-  return problems.length > 0 ? { ok: false, problems } : { ok: true, mode };
+  if (reasons.length > 0) return { allowed: false, reasons, canOpen: null };
+  const portfolio = lc === undefined ? COMMON.portfolio : { ...COMMON.portfolio, maxOpenTrades: Math.min(COMMON.portfolio.maxOpenTrades, lc.maxOpenTrades) };
+  const c = canOpen(i.newTrade, i.openTrades, i.capital, portfolio);
+  if (lc !== undefined && c.allowed && c.riskPctActual > lc.riskPerTradePct + 1e-9) {
+    return { allowed: false, reasons: [...c.reasons, `Rủi ro thực ${c.riskPctActual.toFixed(2)}% vượt trần live ${lc.riskPerTradePct}%/lệnh`], canOpen: c };
+  }
+  return { allowed: c.allowed, reasons: c.reasons, canOpen: c };
 }
