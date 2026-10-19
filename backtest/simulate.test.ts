@@ -460,8 +460,8 @@ test('F1: chốt chặn funding khi chạy — đệm theo thời gian giữ d�
   const rows = Array.from({ length: 241 }, (_, i) => [100, i === 0 ? 105.5 : 100.5, 99.5, 100] as [number, number, number, number]);
   rows.push([99.8, 99.9, 94, 94.5]);
   const funding = Array.from({ length: 30 }, (_, j) => ({ fundingTime: T0 + (j + 1) * 8 * H, fundingRate: 0.001, markPrice: 100 }));
-  const off = await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected' }, () => run(mk(), bars(rows, T0, H), { funding }));
-  assert.ok(off.pctEquity < -2, `không có chốt chặn: lỗ ${off.pctEquity}% vượt 2%`);
+  // không có chốt chặn: đệm 'expected' một mình bị cấu hình từ chối (validateConfig); đệm 'max' (63 kỳ) thì không cần chốt chặn
+  await assert.rejects(withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected' }, () => run(mk(), bars(rows, T0, H), { funding })), /fundingRuntimeGuard/);
   const on = await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true },
     () => run(mk(), bars(rows, T0, H), { funding }));
   assert.ok(on.pctEquity >= -2 - 1e-9, `có chốt chặn: lỗ ${on.pctEquity}%`);

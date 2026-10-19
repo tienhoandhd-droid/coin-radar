@@ -33,3 +33,13 @@ test('withConfigOverride: khôi phục cả khi hàm ném lỗi (cách ly giữa
   assert.equal(CONFIG.swing.timeStopHours, ts);
   assert.equal(await withConfigOverride({}, async () => 7), 7);
 });
+
+test('F1 ràng buộc: fundingBufferHorizon "expected" BẮT BUỘC fundingRuntimeGuard bật — validateConfig ném lỗi; ghi đè sai bị từ chối, không đổi gì', async () => {
+  const { validateConfig } = await import('./config-validate.ts');
+  assert.doesNotThrow(() => validateConfig());
+  assert.throws(() => applyConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected' }), /fundingRuntimeGuard/);
+  assert.equal(COMMON.risk.fundingBufferHorizon, 'max');
+  const restore = applyConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true });
+  assert.doesNotThrow(() => validateConfig());
+  restore();
+});

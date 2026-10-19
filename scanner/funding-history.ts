@@ -7,7 +7,8 @@ import { maxAbsFundingRate } from '../packages/core/sizing.ts';
 // GET /fapi/v1/fundingRate: limit tối đa 1000 (30 ngày × chu kỳ 1 giờ = 720 kỳ, đủ một trang); chung hạn mức 500 lệnh gọi / 5 phút / IP
 // với fundingInfo (backtest/data.ts, tài liệu Binance đối chiếu 2026-10-19) → trần maxCalls mỗi lần quét, nhớ kết quả theo mã.
 // Không tải được (lỗi mạng, lịch sử rỗng/toàn 0, vượt trần) → NÉM LỖI có lý do: run-scan dùng mức thận trọng và ghi chú lên kết quả.
-export const FUNDING_HISTORY_MAX_CALLS = 300; // < 500 lệnh/5 phút, chừa cho fundingInfo và lần quét kế tiếp — đề xuất, chưa backtest
+// Giả định: tối đa 2 lần quét trong 5 phút → 2 × 200 + fundingInfo (1/lần quét) < 500 lệnh/5 phút. Quét dày hơn thì phải giảm trần này.
+export const FUNDING_HISTORY_MAX_CALLS = 200; // đề xuất, chưa backtest
 
 export function createFundingMaxAbsLoader(o: { get: (path: string) => Promise<unknown>; now: number; maxCalls?: number }) {
   const memo = new Map<string, Promise<number>>();

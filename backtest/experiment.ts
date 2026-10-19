@@ -12,8 +12,8 @@
 // TIÊU CHÍ NHẬN (rà soát C1, I1, I4): cấp DANH MỤC trên cùng lịch ngày D — cận dưới CI Bonferroni (bootstrap khối ngày) của
 // Δ R/ngày VÀ Δ lợi suất vốn/ngày > 0, kỳ vọng R toàn bộ tăng, sụt giảm lớn nhất % và chuỗi thua dài nhất KHÔNG tệ hơn gốc, ≥ 30 lệnh.
 // ΔR theo cặp (cùng signalId) chỉ là chẩn đoán phụ: biến thể lọc bỏ lệnh thì ΔR theo cặp ≈ 0 theo cấu tạo.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CONFIG } from '../packages/core/config.ts';
@@ -35,6 +35,30 @@ import {
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 export const LOG_PATH = 'docs/verification/nhat-ky-thu.md';
+const LOCK_PATH = 'output/experiments/.nhat-ky-thu.lock'; // git-ignore; khóa đếm k + ghi dòng giữa các tiến trình chạy song song
+
+// Khóa tệp (tạo độc quyền 'wx'): chờ tới timeoutMs nếu tiến trình khác đang giữ; luôn xóa khóa khi xong (kể cả lỗi). Khóa còn sót sau khi
+// tiến trình chết → hết thời gian chờ thì báo lỗi nêu đường dẫn (xóa tay), không tự cướp khóa.
+export async function withLogLock<T>(lockPath: string, fn: () => Promise<T>, timeoutMs = 30 * 60_000): Promise<T> {
+  const p = resolvePath(REPO_ROOT, lockPath);
+  mkdirSync(dirname(p), { recursive: true });
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      closeSync(openSync(p, 'wx'));
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      if (Date.now() > until) throw new Error(`khóa nhật ký ${p} bị giữ quá ${timeoutMs} ms — nếu không còn tiến trình nào chạy, xóa tay tệp này`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync(p, { force: true });
+  }
+}
 const CAPITAL = 10_000;
 // Phép kiểm quy nguyên nhân có độ nâng (tỉ lệ bật ở lệnh thua ÷ ở lệnh không thua) < mức này bị loại khỏi xếp nhóm — đề xuất, chưa backtest
 export const MIN_LIFT = 1.25;
@@ -80,7 +104,7 @@ const list: Variant[] = [
   wired('f1-funding-fix', null, 'F1 sửa định cỡ: đệm funding theo thời gian giữ DỰ KIẾN (Swing 168 giờ, Lướt nhanh 8 giờ) + chốt chặn funding khi chạy (siết SL/đóng để lỗ thật ≤ 2%)',
     'đệm theo thời gian giữ tối đa (504 giờ) ép rủi ro thật trung vị còn ~1%/lệnh; ràng buộc 2% giữ bằng chốt chặn khi chạy (B8b)', {},
     { 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true },
-    { notTrial: 'sửa định cỡ về đúng 2%/lệnh người dùng chốt, không đổi luật vào/thoát; ràng buộc lỗ ≤ 2% giữ bằng chốt chặn funding' }),
+    { notTrial: 'thay đổi định cỡ — chờ người dùng duyệt; 1R trung vị Swing 0,652% → 0,806% vốn; D Swing −4,88% → −7,22%, DD 16,69 → 20,30%; Lướt nhanh −60,19% → −67,19%, chuỗi thua 19 → 40; lỗ thật lớn nhất 1,914% / 1,968%; bot chỉ dùng được khi B8b nối chốt chặn' }),
   wired('tp1-any-strength', null, 'TP1 tại vùng đầu tiên bất kể độ mạnh (B3b)', 'Task 4: biến thể chọn TP1, tính vào k Bonferroni', {},
     { 'COMMON.zones.tp1SkipWeak': false }),
   // #1: một giá trị duy nhất k = 0,10 (quy tắc ngón tay cái của nghiên cứu: tổng chi phí ≤ 0,10R) — không thử thêm 0,15 (Bonferroni)
@@ -227,17 +251,23 @@ export type DecideInput = {
   notTrial?: string; // lý do không tính là lần thử → gốc mới, không áp tiêu chí nhận
   baseline: boolean; trades: number; rPerDayAdjLo: number; retPerDayAdjLo: number; expectancy: number; baseExpectancy: number;
   dd: number; baseDd: number; streak: number; baseStreak: number;
+  expectancyCiLo?: number; expectancyCiHi?: number; // CI khối ngày của kỳ vọng biến thể — để ghi dấu tuyệt đối khi "đạt"
 };
 export function decide(a: DecideInput): string {
   if (a.baseline) return 'gốc (đối chứng)';
-  if (a.notTrial !== undefined) return `sửa định cỡ, không tính là thử — gốc mới (${a.notTrial})`;
+  if (a.notTrial !== undefined) return `không tính là thử, gốc của các lần thử sau — ${a.notTrial}`;
   if (a.trades < 30) return `không kết luận được (< 30 lệnh: ${a.trades})`;
   if (!(a.rPerDayAdjLo > 0)) return 'không nhận (cận dưới CI Bonferroni của Δ R/ngày ≤ 0)';
   if (!(a.retPerDayAdjLo > 0)) return 'không nhận (cận dưới CI Bonferroni của Δ lợi suất/ngày ≤ 0)';
   if (!(a.expectancy > a.baseExpectancy)) return 'không nhận (kỳ vọng R toàn bộ không tăng)';
   if (a.dd > a.baseDd) return 'không nhận (DD tệ hơn gốc)';
   if (a.streak > a.baseStreak) return 'không nhận (chuỗi thua dài hơn gốc)';
-  return 'đạt tiêu chí D (luật vào lệnh/bộ lọc: chờ người dùng duyệt)';
+  // Rà soát Task 8 (Quan trọng 4): tiêu chí so với gốc cho qua cả biến thể "lỗ ít hơn gốc đang lỗ" → ghi dấu tuyệt đối của chính biến thể
+  const e = vn(a.expectancy, 3);
+  const ci = a.expectancyCiHi !== undefined && a.expectancyCiHi < 0 ? 'CI trên < 0' : a.expectancyCiLo !== undefined && a.expectancyCiLo > 0 ? 'CI dưới > 0' : 'CI chứa 0';
+  if (!(a.expectancy > 0)) return `đạt tiêu chí D so với gốc nhưng bản thân vẫn âm (${e}R, ${ci}) — không đề xuất bật`;
+  if (ci !== 'CI dưới > 0') return `đạt tiêu chí D so với gốc; bản thân dương nhưng ${ci} (${e}R) — chờ người dùng duyệt`;
+  return `đạt tiêu chí D; bản thân dương (${e}R, ${ci}) — luật vào lệnh/bộ lọc: chờ người dùng duyệt`;
 }
 
 // ---------------------------------------------------------------- định dạng --------------------------------------------------------
@@ -306,6 +336,7 @@ function regimeTagger(btcDaily: readonly Candle[]) {
 
 const randomInterval: Record<Mode, Interval> = { swing: '1h', fast: '15m' };
 
+type SharedBase = Omit<Shared, 'k'>;
 type Shared = {
   base: string; // gốc so sánh + cấu hình nền (biến thể đã nhận trước đó; mặc định 'baseline')
   cacheDir: string; boot: { resamples: number; seed: number; alpha: number }; k: number; randomReps: number;
@@ -324,7 +355,7 @@ export function readEffective(name: string, mode: Mode): RunSpec {
 }
 
 // Lấy kết quả mô phỏng vào outDir: chép từ --from-output (kiểm kỳ D + chính sách) hoặc chạy mô phỏng (biến thể đã nối)
-async function materialize(v: Variant, mode: Mode, src: string | undefined, outDir: string, sh: Shared): Promise<void> {
+async function materialize(v: Variant, mode: Mode, src: string | undefined, outDir: string, sh: SharedBase): Promise<void> {
   mkdirSync(outDir, { recursive: true });
   if (src !== undefined) {
     const from = resolvePath(REPO_ROOT, src);
@@ -371,9 +402,30 @@ function attribute(mode: Mode, filled: readonly TradeRecord[], sh: Shared) {
 }
 
 // ---------------------------------------------------------------- một chế độ ---------------------------------------------------------
-async function runMode(v: Variant, mode: Mode, src: string | undefined, sh: Shared): Promise<LogRow> {
+// Quyết định của MỘT chế độ, trong khóa nhật ký: k = số lần thử ĐÃ ghi trong nhật ký lúc quyết định + lần này (rà soát Task 8, Quan trọng 1:
+// trước đây k đếm lúc tiến trình bắt đầu → các lần chạy song song không thấy nhau). Khóa giữ từ lúc đếm k tới lúc ghi dòng.
+// redecide: không mô phỏng, quyết định lại từ đầu ra có sẵn (vd. với k cuối) — gốc phải khớp effective.json.
+async function runMode(v: Variant, mode: Mode, src: string | undefined, sh0: SharedBase, o: { redecide: boolean; resamples: number }): Promise<void> {
   const outDir = resolvePath(REPO_ROOT, 'output/experiments', v.name, mode);
-  await materialize(v, mode, src, outDir, sh);
+  if (o.redecide) {
+    const ef = join(outDir, 'effective.json');
+    if (!existsSync(ef)) throw new Error(`--redecide: chưa có đầu ra ${outDir}`);
+    const base = (JSON.parse(readFileSync(ef, 'utf8')) as { base?: string }).base ?? 'baseline';
+    if (base !== sh0.base) throw new Error(`--redecide: đầu ra ${v.name}/${mode} chạy với gốc "${base}", không phải "${sh0.base}"`);
+  } else {
+    await materialize(v, mode, src, outDir, sh0);
+  }
+  const logPath = join(REPO_ROOT, LOG_PATH);
+  await withLogLock(LOCK_PATH, async () => {
+    const k = countTrials(existsSync(logPath) ? readFileSync(logPath, 'utf8') : LOG_HEADER, v.name, [mode]);
+    const sh: Shared = { ...sh0, k, boot: { ...sh0.boot, resamples: resamplesFor(k, o.resamples) } };
+    const row = formatLogRow(await decideMode(v, mode, outDir, sh));
+    writeFileSync(logPath, upsertLogRow(existsSync(logPath) ? readFileSync(logPath, 'utf8') : LOG_HEADER, row));
+    console.log(`\nĐã ghi ${v.name}/${mode} vào ${LOG_PATH} (k lúc quyết định = ${k})`);
+  });
+}
+
+async function decideMode(v: Variant, mode: Mode, outDir: string, sh: Shared): Promise<LogRow> {
   const run = readRun(outDir);
   const at = (s: string | null, fallback: string) => Date.parse(s ?? fallback);
   const trades: StatTrade[] = run.trades.map((r) => ({ ...r, regime: sh.regimeAt(at(r.entryTime, r.placedAt)), variant: v.name }));
@@ -437,7 +489,7 @@ async function runMode(v: Variant, mode: Mode, src: string | undefined, sh: Shar
     decision: decide({
       ...(v.notTrial !== undefined ? { notTrial: v.notTrial } : {}), baseline: v.name === 'baseline', trades: s.trades, rPerDayAdjLo: portfolio?.rPerDay.ciAdj.lo ?? NaN, retPerDayAdjLo: portfolio?.retPerDay.ciAdj.lo ?? NaN,
       expectancy: s.expectancyR, baseExpectancy: base?.expectancy ?? NaN, dd: run.summary.maxDdPct, baseDd: base?.dd ?? NaN,
-      streak: s.longestLosingStreak, baseStreak: base?.streak ?? NaN,
+      streak: s.longestLosingStreak, baseStreak: base?.streak ?? NaN, expectancyCiLo: s.expectancyCIBlock.lo, expectancyCiHi: s.expectancyCIBlock.hi,
     }),
   };
 }
@@ -487,6 +539,7 @@ async function main() {
     variant: { type: 'string' }, modes: { type: 'string', default: 'swing,fast' }, 'from-output': { type: 'string' }, period: { type: 'string', default: 'dev' },
     resamples: { type: 'string', default: '5000' }, seed: { type: 'string', default: '20261019' }, 'random-reps': { type: 'string', default: '200' },
     dir: { type: 'string', default: 'data/cache' }, list: { type: 'boolean', default: false }, base: { type: 'string', default: 'baseline' },
+    redecide: { type: 'boolean', default: false },
   } });
   if (o.list) {
     for (const v of list) console.log(`${v.wired ? 'ĐÃ NỐI ' : 'CHƯA NỐI'} ${v.name.padEnd(20)} ${v.change}${v.hooks.length > 0 ? '\n           cần: ' + v.hooks.join('\n                ') : ''}`);
@@ -497,7 +550,8 @@ async function main() {
   const v = VARIANTS[o.variant];
   if (v === undefined) throw new Error(`không có biến thể "${o.variant}" — xem --list`);
   const fromOutput = o['from-output'] === undefined ? {} : parseFromOutput(o['from-output']);
-  if (Object.keys(fromOutput).length === 0) requireWired(v.name);
+  if (Object.keys(fromOutput).length === 0 && !o.redecide) requireWired(v.name);
+  if (Object.keys(fromOutput).length > 0 && (o.base !== 'baseline' || o.redecide)) throw new Error('--from-output chỉ đi với gốc "baseline" và không đi với --redecide (effective.json ghi gốc baseline)');
   const modes = o.modes!.split(',').map((m) => m.trim());
   for (const m of modes) if (m !== 'swing' && m !== 'fast') throw new Error(`--modes chỉ nhận swing,fast — nhận "${m}"`);
   for (const m of modes) if (v.modes !== undefined && !v.modes.includes(m as Mode)) throw new Error(`biến thể "${v.name}" chỉ áp dụng cho ${v.modes.join(', ')}`);
@@ -506,24 +560,17 @@ async function main() {
   if (base !== 'baseline' && VARIANTS[base] === undefined) throw new Error(`--base: không có biến thể "${base}"`);
   const num = (x: string, name: string) => { const n = Number(x); if (!(n > 0 && Number.isInteger(n))) throw new Error(`--${name} không hợp lệ: "${x}"`); return n; };
 
-  const logPath = join(REPO_ROOT, LOG_PATH);
-  const logText = existsSync(logPath) ? readFileSync(logPath, 'utf8') : LOG_HEADER;
-  const k = countTrials(logText, v.name, modes);
-  const boot = { resamples: resamplesFor(k, num(o.resamples!, 'resamples')), seed: num(o.seed!, 'seed'), alpha: 0.05 };
+  const resamples = num(o.resamples!, 'resamples');
+  const boot = { resamples, seed: num(o.seed!, 'seed'), alpha: 0.05 }; // số lần lấy mẫu lại nâng theo k lúc quyết định (runMode)
   const cacheDir = o.dir!;
   const btcDaily = loadCandles(cacheDir, 'BTCUSDT', '1d', DEV_PERIOD.start - 300 * DAY, DEV_PERIOD.end).candles;
-  const sh: Shared = {
-    base, cacheDir, boot, k, randomReps: num(o['random-reps']!, 'random-reps'), data: createData(cacheDir), regimeAt: regimeTagger(btcDaily),
+  const sh: SharedBase = {
+    base, cacheDir, boot, randomReps: num(o['random-reps']!, 'random-reps'), data: createData(cacheDir), regimeAt: regimeTagger(btcDaily),
     events: parseEvents(JSON.parse(readFileSync(join(REPO_ROOT, 'data/events/events.json'), 'utf8'))),
     btc: loadCandles(cacheDir, 'BTCUSDT', '5m', DEV_PERIOD.start, DEV_PERIOD.end).candles, // cú sốc BTC đo trên nến 5m
   };
 
-  // Đọc lại nhật ký NGAY trước khi ghi từng dòng: nhiều lần chạy song song (mỗi chế độ một tiến trình) không ghi đè dòng của nhau
-  for (const mode of modes as Mode[]) {
-    const row = formatLogRow(await runMode(v, mode, fromOutput[mode], sh));
-    writeFileSync(logPath, upsertLogRow(existsSync(logPath) ? readFileSync(logPath, 'utf8') : LOG_HEADER, row));
-  }
-  console.log(`\nĐã ghi output/experiments/${v.name}/ và ghi ${modes.length} dòng vào ${LOG_PATH} (k = ${k})`);
+  for (const mode of modes as Mode[]) await runMode(v, mode, fromOutput[mode], sh, { redecide: o.redecide!, resamples });
 }
 
 if (import.meta.main) {

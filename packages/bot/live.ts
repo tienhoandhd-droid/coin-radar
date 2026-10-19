@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { COMMON, CONFIG } from '../core/config.ts';
+import { configProblems } from '../core/config-validate.ts';
 import { PROTECTION_CONFIG } from './protections.ts';
 
 // Khóa cứng chế độ live (B5 vòng 1, thiết kế mục "An toàn tiền"): cấu hình TRẦN live (vốn tối đa bot dùng, đòn bẩy tối đa,
@@ -61,12 +62,22 @@ export function armFileContent(c: LiveCaps, now: number): string {
 
 export type RunMode = 'paper' | 'demo' | 'live';
 
+// F1 (kế hoạch 2 Task 8): bot chỉ được dùng đệm funding 'expected' khi ĐÃ nối chốt chặn funding khi chạy (B8b: gọi
+// packages/core/funding-guard.ts sau mỗi kỳ funding, lockedLoss từ nhật ký). Việc B8b đặt cờ này = true kèm test. Tới lúc đó bot demo/live
+// từ chối khởi động nếu cấu hình là 'expected' → cấu hình khóa cho bot phải giữ 'max' (đệm theo thời gian giữ tối đa).
+export const BOT_FUNDING_GUARD_WIRED = false;
+
 // live CHỈ khi đủ: chế độ cấu hình 'live' + BINANCE_ENV=live + trần live hợp lệ + file kích hoạt (do arm-live.ts ghi) có băm
 // khớp trần hiện tại. Không có token/cờ nào thay được file kích hoạt. BINANCE_ENV=live với chế độ khác → từ chối chạy.
 export function resolveRunMode(a: { configMode: unknown; env: Readonly<Record<string, string | undefined>>; capsRaw: unknown; armRaw: string | null }):
   { ok: true; mode: 'paper' | 'demo' } | { ok: true; mode: 'live'; caps: LiveCaps } | { ok: false; problems: string[] } {
   const raw = a.configMode === undefined || a.configMode === null || a.configMode === '' ? 'paper' : a.configMode;
   if (raw !== 'paper' && raw !== 'demo' && raw !== 'live') return { ok: false, problems: [`Chế độ "${String(raw)}" không hợp lệ (paper | demo | live)`] };
+  const cfgProblems = configProblems();
+  if (cfgProblems.length > 0) return { ok: false, problems: cfgProblems };
+  if (raw !== 'paper' && COMMON.risk.fundingBufferHorizon === 'expected' && !BOT_FUNDING_GUARD_WIRED) {
+    return { ok: false, problems: [`Đệm funding "expected" cần chốt chặn funding khi chạy của bot (B8b) — chưa nối, từ chối chạy ${raw}; đặt COMMON.risk.fundingBufferHorizon = "max"`] };
+  }
   const be = a.env.BINANCE_ENV;
   const problems: string[] = [];
   if (be === 'live' && raw !== 'live') problems.push(`BINANCE_ENV=live (key tiền thật) nhưng chế độ là ${raw} — từ chối chạy`);

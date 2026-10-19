@@ -182,3 +182,12 @@ test('#2 nguồn nến 1H theo khung của chế độ: Lướt nhanh mặc đ�
   assert.equal(hourlySource(CONFIG.swing), 'fetch');
   assert.equal(hourlySource({ ...CONFIG.fast, trendInterval: '4h', entryInterval: '1h' }), 'entry');
 });
+
+test('Task 8: bật luật cần funding (#5/#8) mà lần quét không có fundingMean → cảnh báo cấp lần quét (mọi tín hiệu liên quan bị chặn)', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  assert.deepEqual((await runScan(input())).warnings, []);
+  await withConfigOverride({ 'COMMON.entryRules.fundingXsPct': 70 }, async () => {
+    const r = await runScan(input());
+    assert.match(r.warnings.join(' '), /#8.*thiếu funding TB/);
+  });
+});

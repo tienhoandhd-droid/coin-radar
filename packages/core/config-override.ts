@@ -1,4 +1,5 @@
 import { CONFIG, COMMON } from './config.ts';
+import { validateConfig } from './config-validate.ts';
 
 // Ghi đè cấu hình tạm thời cho MỘT lần chạy (kế hoạch 2, Task 8 — hook H0): lõi, máy quét và planner đọc CONFIG/COMMON lúc gọi, nên
 // bộ mô phỏng/khung thử áp các tùy chọn đang thử bằng cách sửa đúng hai đối tượng này rồi trả lại giá trị cũ khi xong.
@@ -43,9 +44,16 @@ export function applyConfigOverride(o: ConfigOverride | undefined): () => void {
     return { ...s, value };
   });
   for (const s of slots) s.obj[s.key] = s.value;
-  return () => {
+  const restore = () => {
     for (const s of [...slots].reverse()) s.obj[s.key] = s.old;
   };
+  try {
+    validateConfig(); // ràng buộc giữa các khóa (vd. F1: 'expected' cần chốt chặn funding) — sai thì trả lại như cũ rồi báo lỗi
+  } catch (e) {
+    restore();
+    throw e;
+  }
+  return restore;
 }
 
 export async function withConfigOverride<T>(o: ConfigOverride | undefined, fn: () => Promise<T>): Promise<T> {

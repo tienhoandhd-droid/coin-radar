@@ -123,3 +123,16 @@ test('arm-live: gõ sai / trần không hợp lệ → từ chối, không ghi f
   assert.equal((await armLive({ ...h.args, readLine: async () => { asked = true; return LIVE_ARM_PHRASE; } })).ok, false);
   assert.equal(asked, false, 'trần sai thì không hỏi xác nhận');
 });
+
+test('F1: bot demo/live TỪ CHỐI khởi động với đệm funding "expected" khi chốt chặn funding của bot (B8b) chưa nối; paper vẫn chạy', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  const { BOT_FUNDING_GUARD_WIRED } = await import('./live.ts');
+  assert.equal(BOT_FUNDING_GUARD_WIRED, false);
+  await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true }, async () => {
+    const r = resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.problems.join(' '), /B8b/);
+    assert.deepEqual(resolveRunMode({ configMode: 'paper', env: {}, capsRaw: null, armRaw: null }), { ok: true, mode: 'paper' });
+  });
+  assert.deepEqual(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null }), { ok: true, mode: 'demo' });
+});

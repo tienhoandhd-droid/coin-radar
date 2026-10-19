@@ -53,7 +53,8 @@ export type ScanResult = {
   universeSize: number;
   inScope: number; // số hợp đồng thuộc phạm vi mô hình P-G1
   results: Analysis[]; // đã áp applyTopRank
-  entryBlocks: Map<string, string>; // Task 8: mã → lý do KHÔNG vào lệnh mới theo COMMON.entryRules (core/entry-filters.ts); bot/mô phỏng bỏ qua tín hiệu này
+  entryBlocks: Map<string, string>;
+  warnings: string[]; // cảnh báo cấp lần quét (máy quét in đầu bản in) // Task 8: mã → lý do KHÔNG vào lệnh mới theo COMMON.entryRules (core/entry-filters.ts); bot/mô phỏng bỏ qua tín hiệu này
   errors: Array<{ symbol: string; error: string }>;
   banned: boolean; // Binance chặn (418/429) → đã dừng giữa chừng
 };
@@ -171,5 +172,10 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
 
   const ranked = applyTopRank(results, ranks);
   const entryBlocksMap = entryBlocks(ranked, { mode, regime: regime.regime, ...(input.fundingMean ? { fundingMean: input.fundingMean } : {}) });
-  return { regime, breaker, btcReclaim, ranks, universeSize: universe.length, inScope, results: ranked, entryBlocks: entryBlocksMap, errors, banned };
+  const warnings: string[] = [];
+  const ER = COMMON.entryRules;
+  if (input.fundingMean === undefined && (ER.shortAsym || ER.fundingXsPct !== null)) {
+    warnings.push(`Luật vào lệnh ${[ER.shortAsym ? '#5' : null, ER.fundingXsPct !== null ? '#8' : null].filter((x) => x !== null).join(', ')} đang bật nhưng lần quét này thiếu funding TB (fundingMean) — mọi tín hiệu liên quan bị chặn`);
+  }
+  return { regime, breaker, btcReclaim, ranks, universeSize: universe.length, inScope, results: ranked, entryBlocks: entryBlocksMap, warnings, errors, banned };
 }

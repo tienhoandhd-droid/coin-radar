@@ -270,8 +270,8 @@ export function createReplay(o: ReplayOptions) {
       fundingMean: (symbol, days) => {
         const f = fundingRows(symbol);
         if (f === null) return null;
-        const inWin = f.filter((r) => r.fundingTime > t - days * DAY && r.fundingTime <= t);
-        return inWin.length === 0 ? null : meanFundingRate(inWin, t, days);
+        const from = t - days * DAY;
+        return f.some((r) => r.fundingTime > from && r.fundingTime <= t) ? meanFundingRate(f, t, days) : null; // không có kỳ nào → null
       },
       klines: (symbol, interval, limit) => {
         if (!(interval in INTERVAL_MS)) throw new Error(`khung không hỗ trợ: ${interval}`);

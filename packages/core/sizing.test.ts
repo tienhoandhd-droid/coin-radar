@@ -40,7 +40,7 @@ test('F1: tùy chọn đệm funding theo thời gian giữ DỰ KIẾN (funding
   const { withConfigOverride } = await import('./config-override.ts');
   assert.equal(COMMON.risk.fundingBufferHorizon, 'max');
   assert.equal(fundingSettlements('swing', 8), 63);
-  await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected' }, async () => {
+  await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true }, async () => {
     assert.equal(fundingSettlements('swing', 8), 21); // 168 / 8
     assert.equal(fundingSettlements('fast', 8), 1); // 8 / 8
   });
