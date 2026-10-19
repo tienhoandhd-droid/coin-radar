@@ -466,11 +466,15 @@ test('M1 dữ liệu thật SOLUSDT 4H (rà soát cuối 1c): cờ giảm 3 nế
   // 500 nến 4H Binance tới 2026-09-01 20:00 UTC. Trước khi sửa: đường dưới (dốc lên) kéo dài 104,04 → 105,43, limit Short 104,92
   // nằm TRÊN đỉnh cờ 104,11, sát SL 105,42, vẫn "ready". ATR(1H) tại nến phá lấy từ dữ liệu 1H thật lúc đó.
   const c = parseKlines(JSON.parse(readFileSync(new URL('./fixtures/solusdt-4h.json', import.meta.url), 'utf8')), Number.MAX_SAFE_INTEGER);
-  const flag = trackPatterns('SOLUSDT', c, '4h', ['flag']).find((t) => t.geometry.kind === 'bear_flag' && isTracked(t.result) && t.result.state === 'breakout');
+  const flag = trackPatterns('SOLUSDT', c, '4h', ['flag']).find((t) => t.geometry.kind === 'bear_flag' && t.result.breakoutLine !== null && r6(t.result.breakoutLine) === 104.044);
   assert.ok(flag, 'fixture phải có cờ giảm đã phá');
   const bi = flag.result.breakoutIndex!;
   assert.equal(r6(flag.result.breakoutLine!), 104.044);
-  const r = buildPatternPlan({ ...args(), patternId: flag.id, geometry: flag.geometry, state: flag.result, candles: c, atr: flag.atr,
+  // B3: giá đã chạm T_ngắn tính từ mức phá cố định → target_hit, không còn được theo dõi / lập lệnh
+  assert.equal(flag.result.state, 'target_hit');
+  assert.equal(isTracked(flag.result), false);
+  // Kể cả ép trạng thái 'breakout', kế hoạch tính từ mức phá cố định cũng bị bỏ
+  const r = buildPatternPlan({ ...args(), patternId: flag.id, geometry: flag.geometry, state: { ...flag.result, state: 'breakout' }, candles: c, atr: flag.atr,
     atr1h: 0.9969957896813947, zones: [], capital: 1000, stepSize: 0.001 });
   // Tính từ mức phá cố định 104,044: giá 99,93 đã qua T_ngắn 102,32 (cờ: mức phá + ½ quãng tới T_đủ) → bỏ, không còn "ready"
   assert.equal(r.status, 'rejected');
@@ -482,4 +486,26 @@ test('M1 dữ liệu thật SOLUSDT 4H (rà soát cuối 1c): cờ giảm 3 nế
     assert.ok(p.limitPrice >= p.marketPrice);
   }
   assert.ok(c.length - 1 - bi >= 3);
+});
+
+test('B3 độ mới: tín hiệu MỚI chỉ khi nến phá là nến đóng cuối; nến sau → đã phát lúc closeTime nến phá, còn hạn (10 − tuổi) nến', () => {
+  const fresh = ready(args());
+  assert.equal(fresh.fresh, true);
+  assert.equal(fresh.signalAgeBars, 0);
+  assert.equal(fresh.firstSignalTime, T0 + 31 * H4 - 1);
+  assert.equal(fresh.expiresInBars, COMMON.patterns.maxSignalAgeBars);
+  const old = ready(args({ candles: candles(110.5, 'long', [k(0, 111, 110.2, 110.6), k(0, 111, 110.2, 110.6)]) }));
+  assert.equal(old.fresh, false);
+  assert.equal(old.signalAgeBars, 2);
+  assert.equal(old.firstSignalTime, T0 + 31 * H4 - 1);
+  assert.equal(old.expiresInBars, COMMON.patterns.maxSignalAgeBars - 2);
+});
+
+test('B3 độ mới khi phải chờ thêm 1 nến (nến phá quá dài): lần lập kế hoạch đầu (nến phá + 1) là MỚI', () => {
+  const big = [...candles(105).slice(0, 30), k(30, 110.8, 107, 110.5)];
+  const p = ready(args({ candles: [...big, k(31, 110.8, 110.2, 110.5)] }));
+  assert.equal(p.fresh, true);
+  assert.equal(p.signalAgeBars, 0);
+  assert.equal(p.firstSignalTime, T0 + 32 * H4 - 1);
+  assert.equal(p.expiresInBars, COMMON.patterns.maxSignalAgeBars - 1);
 });

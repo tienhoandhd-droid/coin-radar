@@ -114,7 +114,7 @@ test('3.2 phần trailing bằng 0 do gộp: không in "= 0 coin", nói rõ gộ
 });
 
 // ---------- Kế hoạch 1c: in kế hoạch mô hình và khối "Mô hình đang theo dõi" ----------
-import { patternPlanLines, trackedLines } from './plan-print.ts';
+import { patternPlanLines, trackedLines, oldPatternSignalLine } from './plan-print.ts';
 import { buildPatternPlan, type PatternPlan, type PatternPlanArgs } from '../packages/core/patterns/pattern-plan.ts';
 import type { PatternGeometry } from '../packages/core/patterns/types.ts';
 import type { Candle } from '../packages/core/types.ts';
@@ -241,4 +241,13 @@ test('không có Hạng A: nói thẳng là 0, vẫn in lời cảnh báo; khôn
   assert.match(none, new RegExp(GRADE_A_DISCLAIMER.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')));
   const onlyA = gradedReportLines([item('AAAUSDT', 'short', 82, [])], false).join('\n');
   assert.doesNotMatch(onlyA, /Hạng B/);
+});
+
+test('B3 tín hiệu mô hình cũ: một dòng "đã phát lúc …, còn hạn n nến", không in lại kế hoạch', () => {
+  const p = patternPlan(110.5, {}, [pk(31, 111, 110.2, 110.6), pk(32, 111, 110.2, 110.6)]);
+  assert.equal(p.fresh, false);
+  const line = oldPatternSignalLine(ph, p);
+  assert.equal(line, 'BTCUSDT — LONG theo mô hình chữ nhật 4H | điểm 74 | đã phát lúc 1970-01-06 03:59 UTC, còn hạn 8 nến — không in lại kế hoạch (thêm --show-old để xem)');
+  assert.match(patternPlanLines(ph, p, 0.01)[0]!, /\| đã phát lúc 1970-01-06 03:59 UTC, còn hạn 8 nến \(in lại theo --show-old\)$/);
+  assert.match(patternPlanLines(ph, patternPlan(110.5), 0.01)[0]!, /\| TÍN HIỆU MỚI$/);
 });

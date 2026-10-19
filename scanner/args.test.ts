@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { parseScanArgs } from './args.ts';
 
 test('mặc định: swing, vốn 1000, không giới hạn', () => {
-  assert.deepEqual(parseScanArgs({}), { mode: 'swing', capital: 1000, limit: null, showB: false });
+  assert.deepEqual(parseScanArgs({}), { mode: 'swing', capital: 1000, limit: null, showB: false, showOld: false });
 });
 test('giá trị hợp lệ', () => {
-  assert.deepEqual(parseScanArgs({ mode: 'fast', capital: '2500.5', limit: '20' }), { mode: 'fast', capital: 2500.5, limit: 20, showB: false });
+  assert.deepEqual(parseScanArgs({ mode: 'fast', capital: '2500.5', limit: '20' }), { mode: 'fast', capital: 2500.5, limit: 20, showB: false, showOld: false });
 });
 test('--capital sai → lỗi tiếng Việt kèm ví dụ', () => {
   for (const bad of ['abc', '', '0', '-5', '1e3', '1,000', ' 100', 'Infinity', '0.0']) {
@@ -29,4 +29,9 @@ test('--mode sai → lỗi', () => {
 test('--show-b: bật in đủ kế hoạch Hạng B', () => {
   assert.equal(parseScanArgs({ showB: true }).showB, true);
   assert.equal(parseScanArgs({}).showB, false);
+});
+
+test('--show-old: in lại kế hoạch của tín hiệu mô hình đã phát ở lần quét trước', () => {
+  assert.equal(parseScanArgs({ showOld: true }).showOld, true);
+  assert.equal(parseScanArgs({}).showOld, false);
 });

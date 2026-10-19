@@ -5,7 +5,7 @@ import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
 import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, type CostTier, type Target, type FillRow } from '../plan.ts';
 import type { MultiMonthContext } from './context.ts';
-import { patternStopLevel, breakoutLevel, type StateResult } from './state.ts';
+import { patternStopLevel, breakoutLevel, patternTargets, type StateResult } from './state.ts';
 import type { PatternGeometry, PatternKind } from './types.ts';
 
 // Kế hoạch lệnh theo mô hình biểu đồ (báo cáo "Mô hình biểu đồ cho BTC", mục (2) đệm cắt lỗ, (3), (4)).
@@ -22,6 +22,10 @@ export type PatternPlan = {
   patternId: string; // id ổn định của mô hình (patternId: theo openTime 2 pivot đầu) — để nhận ra "cùng mô hình/cùng lần phá" giữa các lần quét
   breakoutTime: number; // openTime (ms) nến phá của khung nhận diện
   signalTime: number; // closeTime (ms) nến đóng cuối của khung nhận diện lúc lập kế hoạch
+  firstSignalTime: number; // closeTime (ms) nến mà tín hiệu được phát LẦN ĐẦU: nến phá, hoặc nến phá + 1 khi phải chờ thêm 1 nến
+  signalAgeBars: number; // số nến khung nhận diện kể từ lần phát đầu (0 = phát ở chính lần quét này)
+  fresh: boolean; // tín hiệu MỚI (signalAgeBars = 0); cũ → máy quét chỉ in "đã phát lúc …" (trừ --show-old)
+  expiresInBars: number; // còn hạn bao nhiêu nến trước khi signalStale (maxSignalAgeBars − tuổi tính từ nến phá)
   kind: PatternKind;
   timeframe: string;
   side: Side;
@@ -169,7 +173,9 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
 
   // ---- Chờ thêm 1 nến khi nến phá quá dài (biên độ > 3×ATR 1H) ----
   const range = c[bi]!.high - c[bi]!.low;
-  if (range > P.waitRangeAtr1h * a.atr1h) {
+  const waitOne = range > P.waitRangeAtr1h * a.atr1h;
+  const firstBar = waitOne ? bi + 1 : bi; // nến lần đầu lập được kế hoạch
+  if (waitOne) {
     const where = side === 'long' ? 'trên' : 'dưới';
     if (bi === last) {
       return { status: 'wait_confirm', plan: null,
@@ -232,18 +238,11 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   }
 
   // ---- Mục tiêu (mục 3) ----
-  let tShortRaw: number;
-  let tFullRaw: number;
-  if (isFlag(g.kind)) {
-    const base = side === 'long' ? g.stopRef.up : g.stopRef.down; // đáy cờ (Long) / đỉnh cờ (Short)
-    tFullRaw = base + dir * P.flagPoleRatio * g.height;
-    if (dir * (tFullRaw - line) <= 0) return reject(`Mục tiêu cờ T_đủ ${fp(tFullRaw)} không vượt đường phá ${fp(line)} — không lập lệnh`);
-    tShortRaw = line + P.flagShortFraction * (tFullRaw - line);
-  } else {
-    const ratio = (P.targetRatio as Partial<Record<PatternKind, number>>)[g.kind] ?? P.defaultTargetRatio;
-    tShortRaw = line + dir * g.height * ratio;
-    tFullRaw = line + dir * g.height;
-  }
+  // Cùng hàm mục tiêu với máy trạng thái (target_hit), từ mức phá cố định
+  const tg = patternTargets(g, s.side, line);
+  const tShortRaw = tg.short;
+  const tFullRaw = tg.full;
+  if (isFlag(g.kind) && dir * (tFullRaw - line) <= 0) return reject(`Mục tiêu cờ T_đủ ${fp(tFullRaw)} không vượt đường phá ${fp(line)} — không lập lệnh`);
   const targetShort = snapToTick(tShortRaw, tick, toward);
   const targetFull = snapToTick(tFullRaw, tick, toward);
   const ref = entryType === 'limit' ? limitPrice! : marketPrice; // TP phải nằm phía trước giá vào xa nhất
@@ -506,6 +505,10 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
     patternId: a.patternId,
     breakoutTime: c[bi]!.openTime,
     signalTime: c[last]!.closeTime,
+    firstSignalTime: c[firstBar]!.closeTime,
+    signalAgeBars: last - firstBar,
+    fresh: last === firstBar,
+    expiresInBars: COMMON.patterns.maxSignalAgeBars - (last - bi),
     kind: g.kind,
     timeframe: g.timeframe,
     side,

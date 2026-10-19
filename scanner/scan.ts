@@ -8,7 +8,7 @@ import { inPatternScope } from '../packages/core/gates.ts';
 import { CONFIG, COMMON } from '../packages/core/config.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
 import { parseScanArgs, type ScanArgs } from './args.ts';
-import { planLines, patternPlanLines, trackedLines, gradedReportLines, type GradedItem } from './plan-print.ts';
+import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, type GradedItem } from './plan-print.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
 
 const { values } = parseArgs({ options: {
@@ -16,10 +16,11 @@ const { values } = parseArgs({ options: {
   limit: { type: 'string' },
   capital: { type: 'string', default: '1000' },
   'show-b': { type: 'boolean' },
+  'show-old': { type: 'boolean' },
 } });
 let args: ScanArgs;
 try {
-  args = parseScanArgs({ mode: values.mode, capital: values.capital, limit: values.limit, showB: values['show-b'] });
+  args = parseScanArgs({ mode: values.mode, capital: values.capital, limit: values.limit, showB: values['show-b'], showOld: values['show-old'] });
 } catch (error) {
   console.error(`Lỗi tham số: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -152,11 +153,16 @@ for (const a of scoped) {
 
 const qualified = final.filter((a) => a.label.startsWith('Đạt') && (a.plan !== null || a.patternSignal !== null));
 const gradeA = qualified.filter((a) => a.grade?.grade === 'A').length;
-console.log(`\nKế hoạch lệnh các hợp đồng Đạt tiêu chí (${qualified.length}, trong đó theo mô hình: ${qualified.filter((a) => a.patternSignal !== null).length}) | Hạng A: ${gradeA} | Hạng B: ${qualified.length - gradeA}${args.showB ? ' | --show-b: in đủ Hạng B' : ''}`);
+const oldSignals = qualified.filter((a) => a.patternSignal !== null && !a.patternSignal.fresh).length;
+console.log(`\nKế hoạch lệnh các hợp đồng Đạt tiêu chí (${qualified.length}, trong đó theo mô hình: ${qualified.filter((a) => a.patternSignal !== null).length}, tín hiệu mô hình đã phát ở lần quét trước: ${oldSignals}) | Hạng A: ${gradeA} | Hạng B: ${qualified.length - gradeA}${args.showB ? ' | --show-b: in đủ Hạng B' : ''}${args.showOld ? ' | --show-old: in lại kế hoạch tín hiệu cũ' : ''}`);
 const graded: GradedItem[] = qualified.map((a) => {
   if (a.grade === null) throw new Error(`${a.symbol}: tín hiệu Đạt tiêu chí nhưng chưa được chấm hạng`);
   const head = { symbol: a.symbol, score: a.best.score, riskTier: a.risk.tier };
-  const lines = a.patternSignal !== null ? patternPlanLines(head, a.patternSignal, tickOf(a.symbol)) : planLines(head, a.plan!, tickOf(a.symbol));
+  // Tín hiệu mô hình CŨ (không phát ở lần quét này): chỉ một dòng "đã phát lúc …", trừ khi --show-old
+  const ps = a.patternSignal;
+  const lines = ps !== null
+    ? (ps.fresh || args.showOld ? patternPlanLines(head, ps, tickOf(a.symbol)) : [oldPatternSignalLine(head, ps)])
+    : planLines(head, a.plan!, tickOf(a.symbol));
   const notes = a.flags.filter((f) => /cùng chiều|xung đột/.test(f));
   if (notes.length > 0) lines.push(`  Ghi chú: ${notes.join('; ')}`);
   return { symbol: a.symbol, side: a.best.side, score: a.best.score, grade: a.grade, lines };

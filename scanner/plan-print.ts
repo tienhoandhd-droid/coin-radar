@@ -86,7 +86,8 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   const cancel = `hủy sau ${p.limitExpiryBars} nến (${p.limitExpiryHours} giờ) chưa khớp${p.cancelIfTp1First ? ' hoặc khi giá chạm TP1 trước' : ''}`;
   const P = COMMON.patterns.plan;
   const lines: string[] = [];
-  lines.push(`${head.symbol} — ${long ? 'LONG' : 'SHORT'} theo mô hình ${KIND_NAME[p.kind]} ${tf} | điểm ${dec(head.score)} | rủi ro ${head.riskTier}`);
+  const age = p.fresh ? 'TÍN HIỆU MỚI' : `đã phát lúc ${utc(p.firstSignalTime)}, còn hạn ${p.expiresInBars} nến (in lại theo --show-old)`;
+  lines.push(`${head.symbol} — ${long ? 'LONG' : 'SHORT'} theo mô hình ${KIND_NAME[p.kind]} ${tf} | điểm ${dec(head.score)} | rủi ro ${head.riskTier} | ${age}`);
   lines.push(`  Mức phá (cố định tại nến phá ${utc(p.breakoutTime)}): ${px(p.breakoutLine)} | A = ATR(14) ${tf} = ${px(p.atr)} | d = ${num(p.distanceAtr, 2)}×A | T_ngắn ${px(p.targetShort)} / T_đủ ${px(p.targetFull)}`);
 
   const row0 = p.fillTable[0]!;
@@ -137,6 +138,11 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
   lines.push(`  Dừng theo thời gian: chưa đạt +1R sau ${p.timeStopHours} giờ thì đóng; giữ tối đa ${p.maxHoldHours} giờ`);
   if (p.notes.length > 0) lines.push(`  Ghi chú: ${p.notes.join('; ')}`);
   return lines;
+}
+
+// Tín hiệu mô hình CŨ (đã phát ở lần quét trước, chưa hết hạn): một dòng, không in lại kế hoạch đầy đủ (B3).
+export function oldPatternSignalLine(head: { symbol: string; score: number }, p: PatternPlan): string {
+  return `${head.symbol} — ${p.side === 'long' ? 'LONG' : 'SHORT'} theo mô hình ${KIND_NAME[p.kind]} ${p.timeframe.toUpperCase()} | điểm ${dec(head.score)} | đã phát lúc ${utc(p.firstSignalTime)}, còn hạn ${p.expiresInBars} nến — không in lại kế hoạch (thêm --show-old để xem)`;
 }
 
 // ---------- Hạng A / Hạng B (Task 8) ----------

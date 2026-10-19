@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateState, patternId, dedupePatterns, breakoutLevel, type StateResult } from './state.ts';
+import { evaluateState, patternId, dedupePatterns, breakoutLevel, patternTargets, type StateResult } from './state.ts';
 import { detectRectangles } from './detect-range.ts';
 import { detectDoubles } from './detect-double.ts';
 import { detectTriangles } from './detect-triangle.ts';
@@ -25,7 +25,7 @@ const timed = (c: Candle[]): Candle[] => c.map((x, i) => ({ ...x, openTime: i * 
 function rect(over: Partial<PatternGeometry> = {}): PatternGeometry {
   return {
     kind: 'rectangle', timeframe: '1d', pivots: [], startIndex: 0, endIndex: 20,
-    upper: () => 110, lower: () => 100, breakoutSide: 'both', height: 10,
+    upper: () => 110, lower: () => 100, breakoutSide: 'both', height: 20, // h = 20 (không phải 10) để T_ngắn = 120/90 nằm xa các nến thử, không chạm target_hit
     stopRef: { up: 104, down: 106 }, quality: 1, notes: [], ...over,
   };
 }
@@ -270,22 +270,21 @@ test('I2: inBreakoutWindow máy đọc được: null nếu không phải tam gi
   assert.equal(run(g, [bar(105)]).inBreakoutWindow, null); // chưa phá
 });
 
-const ASOF = 189; // tại nến này bản phát đầu đã failed nhưng bản phát lại vẫn cho breakout (repro của review; mức dừng có đệm từ vòng sửa 2 nên lùi từ 160)
-test('C2: cùng patternId nhiều hình học cờ → giữ trạng thái của hình học phát ĐẦU TIÊN (failed không bị ghi đè)', () => {
-  const c = series();
-  const a = atr(c, COMMON.patterns.atrPeriod);
-  const id = `X|1h|bear_flag|${129 * HOUR}|${144 * HOUR}`;
-  const same = geometriesOf(c).map(({ g }) => g).filter((g) => patternId('X', g, c) === id).sort((x, y) => x.endIndex - y.endIndex);
-  assert.ok(same.length >= 3, `cần ≥3 bản phát lại cùng id, có ${same.length}`);
-  const recs = same.map((g) => ({ id, geometry: g, result: evaluateState(g, c, a, TF, ASOF) }));
-  const firstState = recs[0]!.result.state;
-  assert.equal(firstState, 'failed');
-  // (từ M1 — mức phá cố định — bản phát lại tại ASOF là retested thay vì breakout; vẫn là trạng thái sống mâu thuẫn với failed)
-  assert.ok(recs.some((r) => r.result.state === 'breakout' || r.result.state === 'retested'), 'repro: bản phát lại cho thấy trạng thái sống mâu thuẫn');
-  const kept = dedupePatterns(recs);
-  assert.equal(kept.length, 1);
-  assert.equal(kept[0]!.geometry.endIndex, same[0]!.endIndex);
-  assert.equal(kept[0]!.result.state, 'failed');
+test('C2: cùng patternId nhiều hình học → giữ trạng thái của hình học phát ĐẦU TIÊN (trạng thái kết thúc không bị bản phát lại ghi đè)', () => {
+  // (Chuỗi tổng hợp cũ không còn tạo được mâu thuẫn này từ khi có mức phá cố định + target_hit, nên kiểm trực tiếp bằng bản ghi tay.)
+  const res = (state: StateResult['state']): StateResult => ({ state, breakoutIndex: 30, side: 'down', breakoutLine: 100, distanceAtr: null, retest: null, notes: [], signalStale: false, inBreakoutWindow: null });
+  const id = 'X|1h|bear_flag|1|2';
+  for (const terminal of ['failed', 'target_hit'] as const) {
+    const recs = [
+      { id, geometry: rect({ kind: 'bear_flag', endIndex: 29 }), result: res('breakout') },
+      { id, geometry: rect({ kind: 'bear_flag', endIndex: 25 }), result: res(terminal) },
+      { id, geometry: rect({ kind: 'bear_flag', endIndex: 31 }), result: res('retested') },
+    ];
+    const kept = dedupePatterns(recs);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0]!.geometry.endIndex, 25);
+    assert.equal(kept[0]!.result.state, terminal);
+  }
 });
 
 test('dedupe không để active chồng cửa sổ thay thế... xếp hạng breakout > pending > armed', () => {
@@ -338,9 +337,9 @@ function series2(): Candle[] {
   leg(120, 124, 2); // phá lên
   push(127, 1.5, 125.5); // nến đệm: râu KHÔNG chạm đường phá (để nến liền trước retest không tự chạm)
   push(125, 1.5, 120.2); // retest ở bi+2: râu chạm lại đường phá (~120) nhưng đóng ngoài
-  leg(125, 135, 6);
-  for (let i = 0; i < 14; i++) push(135 + (i % 2), 1);
-  leg(135, 112, 6); // quay đầu thủng sâu vào trong sau > 10 nến
+  leg(125, 127, 6); // đi tiếp nhưng KHÔNG chạm T_ngắn (= mức phá 120 + h×0,5 ≈ 130) để còn failed muộn, không thành target_hit
+  for (let i = 0; i < 14; i++) push(127 + (i % 2), 1);
+  leg(127, 112, 6); // quay đầu thủng sâu vào trong sau > 10 nến
   for (let i = 0; i < 6; i++) push(112 + (i % 2), 1);
   return timed(c);
 }
@@ -382,7 +381,7 @@ test('chạy toàn bộ == chạy tăng dần từng nến (không look-ahead), 
   const s2 = checkReplay(series2(), 50);
   const s3 = checkReplay(mirrorSeries(series2()), 50);
   const all = new Set([...s1, ...s2, ...s3]);
-  for (const st of ['armed', 'breakout_pending', 'breakout', 'retested', 'failed', 'expired', 'invalidated']) {
+  for (const st of ['armed', 'breakout_pending', 'breakout', 'retested', 'failed', 'target_hit', 'expired', 'invalidated']) {
     assert.ok(all.has(st), `bài replay chưa phủ trạng thái ${st}; có: ${[...all].join(',')}`);
   }
 });
@@ -452,4 +451,19 @@ test('M1 sau phá, máy trạng thái dùng MỨC PHÁ CỐ ĐỊNH tại nến 
   assert.notEqual(alive.state, 'failed');
   assert.equal(alive.breakoutLine, L);
   assert.ok(Math.abs(alive.distanceAtr! - (L - (L + 0.9)) / 2) < 1e-9);
+});
+
+test('B3 target_hit: sau phá, giá chạm T_ngắn (tính từ mức phá cố định, cùng hàm patternTargets với kế hoạch) → kết thúc, không lập lệnh mới', () => {
+  // chữ nhật 100–110, h = 10, p mặc định 0,5 → T_ngắn = 115 (Long), T_đủ = 120
+  const r10 = rect({ height: 10 });
+  assert.deepEqual(patternTargets(r10, 'up', 110), { short: 115, full: 120 });
+  assert.deepEqual(patternTargets(r10, 'down', 100), { short: 95, full: 90 });
+  const hit = run(r10, [bar(111), bar(114, 115, 113)]);
+  assert.equal(hit.state, 'target_hit');
+  assert.equal(hit.breakoutIndex, 24);
+  assert.equal(run(r10, [bar(111), bar(114, 114.9, 113)]).state, 'breakout');
+  // chạm mục tiêu ngay ở nến phá không tính (chỉ các nến SAU nến phá)
+  assert.equal(run(r10, [bar(111, 115.5, 110.5)]).state, 'breakout');
+  // Short đối xứng
+  assert.equal(run(r10, [bar(99), bar(96, 97, 95)]).state, 'target_hit');
 });

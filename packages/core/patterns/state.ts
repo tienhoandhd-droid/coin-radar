@@ -2,7 +2,8 @@ import type { Candle } from '../types.ts';
 import { COMMON } from '../config.ts';
 import type { PatternGeometry } from './types.ts';
 
-export type PatternState = 'forming' | 'armed' | 'breakout_pending' | 'breakout' | 'retested' | 'failed' | 'expired' | 'invalidated';
+// target_hit: sau phá, giá đã chạm T_ngắn (patternTargets từ mức phá cố định) — lần phá này đã "chạy xong", không lập lệnh mới.
+export type PatternState = 'forming' | 'armed' | 'breakout_pending' | 'breakout' | 'retested' | 'failed' | 'target_hit' | 'expired' | 'invalidated';
 
 export type StateResult = {
   state: PatternState;
@@ -46,6 +47,20 @@ export function breakoutLevel(g: PatternGeometry, side: 'up' | 'down', breakoutI
   const v = side === 'up' ? g.upper(breakoutIndex) : g.lower(breakoutIndex);
   if (!Number.isFinite(v)) throw new Error(`breakoutLevel: mức phá không hợp lệ tại nến ${breakoutIndex}: ${v}`);
   return v;
+}
+
+// MỘT hàm mục tiêu cho kế hoạch lệnh (T_ngắn/T_đủ, trước làm tròn tick) và máy trạng thái (target_hit), tính từ MỨC PHÁ CỐ ĐỊNH.
+// Cờ: T_đủ = đáy cờ (Long) / đỉnh cờ (Short) ± cán × flagPoleRatio; T_ngắn = mức phá + flagShortFraction × (T_đủ − mức phá).
+// Loại khác: T_ngắn = mức phá ± h × p (p theo loại, Bulkowski), T_đủ = mức phá ± h. Đề xuất, chưa backtest.
+export function patternTargets(g: PatternGeometry, side: 'up' | 'down', level: number): { short: number; full: number } {
+  const P = COMMON.patterns.plan;
+  const dir = side === 'up' ? 1 : -1;
+  if (g.kind === 'bull_flag' || g.kind === 'bear_flag') {
+    const full = (side === 'up' ? g.stopRef.up : g.stopRef.down) + dir * P.flagPoleRatio * g.height;
+    return { short: level + P.flagShortFraction * (full - level), full };
+  }
+  const ratio = (P.targetRatio as Partial<Record<PatternGeometry['kind'], number>>)[g.kind] ?? P.defaultTargetRatio;
+  return { short: level + dir * g.height * ratio, full: level + dir * g.height };
 }
 
 const EPS = 1e-9; // sai số làm tròn khi so với apex tính bằng số thực
@@ -102,6 +117,7 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
   let bi = -1;
   let stopLevel = NaN; // mức dừng (cùng hàm với kế hoạch lệnh), tính một lần tại nến phá
   let level = NaN; // mức phá cố định (breakoutLevel), tính một lần tại nến phá
+  let target = NaN; // T_ngắn (patternTargets) từ mức phá cố định; NaN khi mục tiêu không vượt mức phá (kế hoạch sẽ bỏ)
   // Sau phá: khoảng cách đóng cửa ngoài MỨC PHÁ CỐ ĐỊNH (×đơn vị giá), dương = ngoài mô hình.
   const outsideLevel = (sd: 'up' | 'down', i: number) => (sd === 'up' ? c[i]!.close - level : level - c[i]!.close);
   let retested = false;
@@ -125,6 +141,8 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
           bi = i;
           stopLevel = patternStopLevel(g, c, atr, hit, i).level;
           level = breakoutLevel(g, hit, i);
+          const t = patternTargets(g, hit, level).short;
+          target = (hit === 'up' ? t > level : t < level) ? t : NaN;
           pending = null;
           continue;
         }
@@ -143,6 +161,10 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
     const hitStop = side === 'up' ? c[i]!.low <= stopLevel : c[i]!.high >= stopLevel;
     if (inside > cfg.failAtr * a || hitStop) {
       return out('failed', { breakoutIndex: bi, side, breakoutLine: level, notes: breakoutNotes(), inBreakoutWindow: windowOk() });
+    }
+    // Chạm T_ngắn ở nến SAU nến phá (râu) → target_hit. Xét sau failed: nến chạm cả SL lẫn mục tiêu tính là failed (thận trọng).
+    if (Number.isFinite(target) && (side === 'up' ? c[i]!.high >= target : c[i]!.low <= target)) {
+      return out('target_hit', { breakoutIndex: bi, side, breakoutLine: level, notes: breakoutNotes(), inBreakoutWindow: windowOk() });
     }
     if (!retested && i - bi <= cfg.retestBars) {
       const wickDist = side === 'up' ? c[i]!.low - level : level - c[i]!.high; // râu chạm lại mức phá: <= retestAtr×A
@@ -186,7 +208,7 @@ export function evaluateState(g: PatternGeometry, full: Candle[], fullAtr: numbe
 
 // Thứ hạng ưu tiên: đang có lệnh (breakout/retested) > chờ xác nhận > armed > còn lại (kết thúc/forming).
 const RANK: Record<PatternState, number> = {
-  retested: 3, breakout: 3, breakout_pending: 2, armed: 1, forming: 0, failed: 0, expired: 0, invalidated: 0,
+  retested: 3, breakout: 3, breakout_pending: 2, armed: 1, forming: 0, failed: 0, target_hit: 0, expired: 0, invalidated: 0,
 };
 
 // Bước 1: cùng id (patternId) → chỉ giữ bản hình học phát ĐẦU TIÊN (endIndex nhỏ nhất); các bản phát lại sau (vd. cờ vẽ lại
