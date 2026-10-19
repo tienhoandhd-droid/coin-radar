@@ -283,3 +283,36 @@ test('B5: dấu "unprotected" lưu qua khởi động lại; tự xóa khi lện
   writeFileSync(snapPath, JSON.stringify(snap));
   assert.deepEqual(restore({ dir, warn: () => {} }).unprotected, {});
 });
+
+// ---- B8b: sự kiện mới của vòng đời bot ----------------------------------------------------------------------------------
+test('B8b nhật ký: stop_tightened (chốt chặn funding) đổi SL của lệnh; trade_outcome + equity bền qua khởi động lại', () => {
+  const dir = tmp();
+  const ck = clock();
+  const j = openJournal({ dir, now: ck.now });
+  const t = plannedTrade();
+  j.append({ type: 'signal_accepted', trade: t });
+  j.append({ type: 'stop_tightened', signalId: t.signalId, stop: 98.5, reason: 'funding' });
+  assert.equal(j.state().trades[t.signalId]!.plan.stop, 98.5);
+  const o = { signalId: t.signalId, symbol: 'AAAUSDT', side: 'long' as const, closedAt: NOW, realizedPnl: -12.5, pastTp1: false };
+  j.append({ type: 'trade_outcome', outcome: o });
+  j.append({ type: 'equity', peak: 1200, day: '2026-10-19', dayStartEquity: 1100 });
+  const r = restore({ dir });
+  assert.equal(r.trades[t.signalId]!.plan.stop, 98.5);
+  assert.deepEqual(r.outcomes, [o]);
+  assert.deepEqual(r.equity, { peak: 1200, day: '2026-10-19', dayStartEquity: 1100 });
+  // lệnh lạ → bỏ qua kèm cảnh báo, không ném
+  const warns: string[] = [];
+  const j2 = openJournal({ dir, now: ck.now, warn: (m) => warns.push(m) });
+  j2.append({ type: 'stop_tightened', signalId: 'khong-co', stop: 1, reason: 'x' });
+  assert.ok(warns.some((w) => /khong-co/.test(w)));
+});
+
+test('B8b nhật ký: outcomes chỉ giữ 7 ngày gần nhất (đủ cho cầu chì 24 giờ + tóm tắt ngày)', () => {
+  const dir = tmp();
+  const ck = clock();
+  const j = openJournal({ dir, now: ck.now });
+  const mk = (closedAt: number) => ({ signalId: `s${closedAt}`, symbol: 'AAAUSDT', side: 'long' as const, closedAt, realizedPnl: 1, pastTp1: true });
+  j.append({ type: 'trade_outcome', outcome: mk(NOW - 8 * 86_400_000) });
+  j.append({ type: 'trade_outcome', outcome: mk(NOW - 3_600_000) });
+  assert.deepEqual(j.state().outcomes.map((x) => x.closedAt), [NOW - 3_600_000]);
+});

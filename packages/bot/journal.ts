@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { redact } from '../binance/redact.ts';
 import { advanceSignalState, type SignalIdentity, type SignalState } from '../core/signal.ts';
 import type { AttributedFill, ExPosition, Fill, LegRole, LegState, LegStatus, TradeState } from './reconcile.ts';
+import type { TradeOutcome } from './protections.ts';
 
 // Nhật ký bot (B4, thiết kế D5): JSONL CHỈ GHI THÊM `journal-YYYY-MM-DD.jsonl` (ngày UTC) + ảnh chụp định kỳ `snapshot.json`.
 // Mọi lệnh gửi đi được ghi TRƯỚC khi gửi (order_intent) và SAU khi có phản hồi (order_result).
@@ -34,7 +35,14 @@ export type JournalState = {
   // Mã có vị thế mà lượt trước KHÔNG đặt được lệnh dừng (bị khóa giữa chừng, không xác nhận được) — lượt sau xử lý TRƯỚC.
   // Tự xóa khi lệnh dừng (SL/BE) của mã được sàn nhận hoặc lệnh đóng.
   unprotected: Record<string, { signalId: string | null; since: number; reason: string }>;
+  // B8b: kết quả các lệnh đã đóng (PnL sau phí + funding từ userTrades/income) — cầu chì 5 lệnh thua/24h, cooldown, tóm tắt ngày.
+  // Chỉ giữ OUTCOME_KEEP_MS gần nhất. Nhật ký cũ không có → [].
+  outcomes: TradeOutcome[];
+  // B8b: đỉnh vốn + vốn đầu ngày UTC (cầu chì lỗ ngày / cảnh báo sụt) — bền qua khởi động lại. null = chưa đo lần nào.
+  equity: { peak: number; day: string; dayStartEquity: number } | null;
 };
+
+export const OUTCOME_KEEP_MS = 7 * 86_400_000;
 
 // algoStatus (tài liệu tra cứu mục 4): NEW, CANCELED, TRIGGERING, TRIGGERED, FINISHED, REJECTED, EXPIRED
 export type JournalEventBody =
@@ -55,10 +63,14 @@ export type JournalEventBody =
   | { type: 'protection_tripped'; name: string; reason: string }
   | { type: 'protection_reset'; name: string; by: string; baseline?: number }
   | { type: 'signal_state'; symbol: string; state: SignalState | null }
+  // B8b chốt chặn funding (packages/core/funding-guard.ts): siết SL của lệnh (chỉ siết) — lần đối chiếu sau dùng mức này
+  | { type: 'stop_tightened'; signalId: string; stop: number; reason: string }
+  | { type: 'trade_outcome'; outcome: TradeOutcome }
+  | { type: 'equity'; peak: number; day: string; dayStartEquity: number }
   | { type: 'note'; text: string };
 export type JournalEvent = { seq: number; at: number } & JournalEventBody;
 
-export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {} });
+export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null });
 
 export function journalFileName(at: number): string {
   return `journal-${new Date(at).toISOString().slice(0, 10)}.jsonl`;
@@ -76,6 +88,8 @@ const ALGO_STATUS: Record<string, LegStatus> = {
 export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaultWarn): JournalState {
   s.seq = e.seq;
   s.unprotected ??= {}; // ảnh chụp cũ (trước B5 vòng 1) không có trường này
+  s.outcomes ??= []; // ảnh chụp cũ (trước B8b)
+  s.equity ??= null;
   const tradeOf = (signalId: string): TradeState | null => {
     const t = s.trades[signalId];
     if (t === undefined) warn(`sự kiện #${e.seq} (${e.type}) tham chiếu lệnh ${signalId} không có trong nhật ký — bỏ qua`);
@@ -203,6 +217,20 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
       if (e.state === null) delete s.prevSignals[e.symbol];
       else s.prevSignals[e.symbol] = { ...e.state };
       break;
+    case 'stop_tightened': {
+      const t = tradeOf(e.signalId);
+      if (t !== null) t.plan.stop = e.stop;
+      break;
+    }
+    case 'trade_outcome': {
+      const t = s.trades[e.outcome.signalId];
+      if (t !== undefined) t.outcomeRecorded = true;
+      s.outcomes = [...s.outcomes.filter((o) => o.signalId !== e.outcome.signalId), { ...e.outcome }].filter((o) => o.closedAt > e.at - OUTCOME_KEEP_MS);
+      break;
+    }
+    case 'equity':
+      s.equity = { peak: e.peak, day: e.day, dayStartEquity: e.dayStartEquity };
+      break;
     case 'note':
       break;
     default:
@@ -265,6 +293,8 @@ function restoreFull(dir: string, warn: Warn): { state: JournalState; tornLine: 
       if (snap.version !== 1 || typeof snap.state?.seq !== 'number') throw new Error(`phiên bản/cấu trúc lạ`);
       state = snap.state;
       state.unprotected ??= {}; // ảnh chụp cũ
+      state.outcomes ??= [];
+      state.equity ??= null;
       snapshotAt = snap.at;
     } catch (e) {
       warn(`ảnh chụp ${snapPath} không đọc được (${e instanceof Error ? e.message : String(e)}) — phát lại toàn bộ nhật ký`);

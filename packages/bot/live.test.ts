@@ -124,15 +124,15 @@ test('arm-live: gõ sai / trần không hợp lệ → từ chối, không ghi f
   assert.equal(asked, false, 'trần sai thì không hỏi xác nhận');
 });
 
-test('F1: bot demo/live TỪ CHỐI khởi động với đệm funding "expected" khi chốt chặn funding của bot (B8b) chưa nối; paper vẫn chạy', async () => {
+test('F1 (B8b): đệm funding "expected" chỉ được phép cho demo/live khi chốt chặn funding của bot ĐANG CHẠY (fundingGuardActive); paper luôn chạy', async () => {
   const { withConfigOverride } = await import('../core/config-override.ts');
-  const { BOT_FUNDING_GUARD_WIRED } = await import('./live.ts');
-  assert.equal(BOT_FUNDING_GUARD_WIRED, false);
   await withConfigOverride({ 'COMMON.risk.fundingBufferHorizon': 'expected', 'COMMON.risk.fundingRuntimeGuard': true }, async () => {
-    const r = resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null });
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.match(r.problems.join(' '), /B8b/);
-    assert.deepEqual(resolveRunMode({ configMode: 'paper', env: {}, capsRaw: null, armRaw: null }), { ok: true, mode: 'paper' });
+    const off = resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null, fundingGuardActive: false });
+    assert.equal(off.ok, false);
+    if (!off.ok) assert.match(off.problems.join(' '), /chốt chặn funding/);
+    assert.deepEqual(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null, fundingGuardActive: true }), { ok: true, mode: 'demo' });
+    assert.deepEqual(resolveRunMode({ configMode: 'paper', env: {}, capsRaw: null, armRaw: null, fundingGuardActive: false }), { ok: true, mode: 'paper' });
   });
-  assert.deepEqual(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null }), { ok: true, mode: 'demo' });
+  // 'max' (mặc định): không phụ thuộc chốt chặn
+  assert.deepEqual(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null, fundingGuardActive: false }), { ok: true, mode: 'demo' });
 });

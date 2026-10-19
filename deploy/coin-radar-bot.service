@@ -1,0 +1,29 @@
+# Coin Radar bot — dịch vụ systemd của NGƯỜI DÙNG (không cần root). Hướng dẫn đầy đủ: docs/runbook-bot.md
+# Cài:   mkdir -p ~/.config/systemd/user && cp deploy/coin-radar-bot.service ~/.config/systemd/user/
+#        systemctl --user daemon-reload && systemctl --user enable --now coin-radar-bot
+# Tệp này KHÔNG chứa secret. Key Binance / token Telegram chỉ nằm trong .env (chmod 600, đã git-ignore).
+[Unit]
+Description=Coin Radar bot (Binance USDⓈ-M Futures) — chế độ paper/demo/live theo .env
+After=network-online.target
+Wants=network-online.target
+# Lỗi liên tục (cấu hình sai, key sai…) → ngừng tự chạy lại sau 5 lần trong 10 phút, chờ người xử lý
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/coin-radar
+# .env phải có quyền 600 (chmod 600 ~/coin-radar/.env); demo/live từ chối chạy nếu quyền rộng hơn
+EnvironmentFile=%h/coin-radar/.env
+# Đường dẫn node tuyệt đối (systemd không đọc PATH của nvm). Kiểm bằng: which node — sửa dòng dưới nếu khác
+ExecStart=%h/.nvm/versions/node/v24.21.0/bin/node packages/bot/main.ts
+# Chỉ tự chạy lại khi bot dừng vì lỗi (mã thoát ≠ 0); tắt bằng systemctl stop thì KHÔNG chạy lại
+Restart=on-failure
+RestartSec=30
+# SIGTERM → bot tắt có kế hoạch: hủy lệnh vào còn treo, ghi ảnh chụp nhật ký, báo Telegram
+KillSignal=SIGTERM
+TimeoutStopSec=90
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

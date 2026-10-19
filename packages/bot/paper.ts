@@ -897,6 +897,12 @@ export function createPaperExchange(opts: PaperOptions) {
       }
       commit();
     },
+    // Mốc giá cuối đã xét của mã (nhịp mark hoặc nến đã quét); null = chưa có giá nào. Khởi động lại: nơi gọi nạp nến khoảng tắt máy
+    // có openTime > mốc này TRƯỚC khi nạp mark trực tiếp (nến cũ hơn đã được xét — nạp lại có thể khớp limit hai lần).
+    lastPriceTime(symbol: string): number | null {
+      const S = st.symbols[symbol];
+      return S === undefined || S.lastPriceTime === 0 ? null : S.lastPriceTime;
+    },
     inject(rule: PaperInjection): void {
       injections.push({ ...rule, left: rule.times ?? 1 });
     },

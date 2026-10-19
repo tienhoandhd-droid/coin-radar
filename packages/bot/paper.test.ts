@@ -550,3 +550,13 @@ test('tương đương lõi mô phỏng — Short: LIMIT chờ khớp giữa n�
   assert.equal(rec.reason, 'stop_loss');
   assert.ok(rec.funding > 0);
 });
+
+test('B8b: lastPriceTime(symbol) — mốc giá cuối đã xét (để main.ts chỉ nạp nến khoảng tắt máy SAU mốc này, trước khi nạp mark)', () => {
+  const { ex, mark, clock } = setup();
+  assert.equal(ex.lastPriceTime(C.symbol), null);
+  mark(100);
+  assert.equal(ex.lastPriceTime(C.symbol), clock.t);
+  const bar: Candle = { openTime: clock.t + 1, closeTime: clock.t + 60_000, open: 100, high: 101, low: 99, close: 100, volume: 1, quoteVolume: 100, takerBuyQuote: 50 };
+  ex.feedKline(C.symbol, bar);
+  assert.ok(ex.lastPriceTime(C.symbol)! >= bar.openTime);
+});

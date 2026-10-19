@@ -1,6 +1,6 @@
 import { COMMON } from '../core/config.ts';
 import { snapToTick, tickDecimals } from '../core/price.ts';
-import type { Contract, Side } from '../core/types.ts';
+import type { Contract, Mode, Side } from '../core/types.ts';
 import {
   builders, makeClientId,
   type StopLossInput, type StopPurpose, type TakeProfitInput, type TrailingInput,
@@ -66,6 +66,13 @@ export type TradeState = {
   trailingActivated: boolean; // ALGO_UPDATE.ia = true của lệnh trailing
   // true: lần thay lệnh dừng trước bị sàn từ chối khi lệnh dừng cũ còn sống (stop_replace_rejected) → từ đó thay theo cancel_then_place
   stopReplaceFallback?: boolean;
+  // B8b (main.ts ghi lúc nhận tín hiệu; nhật ký cũ có thể thiếu): vốn lúc vào lệnh (chốt chặn funding: lỗ ≤ 2% vốn LÚC VÀO),
+  // rủi ro + notional theo planner (danh mục canOpen), chế độ (khung nến cooldown)
+  equityAtEntry?: number;
+  riskAmount?: number;
+  notional?: number;
+  mode?: Mode;
+  outcomeRecorded?: boolean; // đã ghi trade_outcome (PnL sau phí + funding) — không tính lại
 };
 
 // Trạng thái thật trên sàn (REST: positionRisk v3, openOrders, openAlgoOrders, userTrades)
