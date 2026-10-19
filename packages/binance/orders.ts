@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { entryLegProblems, exitPartProblems } from '../core/filters.ts';
+import { entryLegProblems, exitPartProblems, isStepMultiple } from '../core/filters.ts';
 import { snapToTick, tickDecimals } from '../core/price.ts';
 import { COMMON } from '../core/config.ts';
 import type { Contract, Side } from '../core/types.ts';
-import type { RequestOpts, SignedResult } from './signed.ts';
+import type { Kind, RequestOpts, SignedResult } from './signed.ts';
 
 // Lệnh thường + lệnh điều kiện (Algo Order) + thiết lập tài khoản cho bot.
 // Nguồn DUY NHẤT cho tên endpoint/tham số/enum/giới hạn: docs/reference/binance-usdm-api.md (mục 2, 3, 4).
@@ -57,11 +57,16 @@ export function assertR1(req: RequestOpts): void {
 // ---- Kết quả ------------------------------------------------------------------------------------
 // Luôn là kết quả của bộ phân loại (signed.ts). sent=false: bị từ chối TẠI CHỖ, request chưa hề rời máy.
 // kind 'unknown_status' trả kèm clientId để nơi gọi TRA LẠI (queryOrder/queryAlgo) — module không tự gửi lại.
-export type OrderResult = SignedResult & { clientId: string | null; sent: boolean };
+// kind 'stop_rejected' (CHỈ placeStopLoss): lệnh dừng KHÔNG nằm trên sàn vì bị từ chối (tại chỗ hoặc bởi sàn, vd -2025
+// MAX_OPEN_ORDER_EXCEEDED, -4045 MAX_STOP_ORDER_EXCEEDED, -4142 STRATEGY_INVALID_TRIGGER_PRICE) → nơi gọi PHẢI đóng market + Telegram khẩn.
+// Các kind khác của SL (banned/clock/retryable) cũng nghĩa là chưa có dừng trên sàn: nơi gọi xử lý như chưa đặt được.
+export type OrderResult = Omit<SignedResult, 'kind'> & { kind: Kind | 'stop_rejected'; clientId: string | null; sent: boolean };
 
-type Built = { ok: true; req: RequestOpts; clientId: string | null } | { ok: false; problems: string[] };
+type Built = { ok: true; req: RequestOpts; clientId: string | null } | { ok: false; problems: string[]; clientId: string | null };
 
-const fail = (...problems: string[]): Built => ({ ok: false, problems });
+const fail = (...problems: string[]): Built => ({ ok: false, problems, clientId: null });
+// Từ chối tại chỗ nhưng vẫn trả mã client đã tính → log/Telegram truy được chân lệnh
+const failId = (clientId: string, problems: string[]): Built => ({ ok: false, problems, clientId });
 const okReq = (req: RequestOpts, clientId: string | null = null): Built => ({ ok: true, req, clientId });
 
 const isPos = (x: number) => typeof x === 'number' && Number.isFinite(x) && x > 0;
@@ -78,22 +83,42 @@ function tryId(parts: ClientIdParts): { id: string } | { problem: string } {
   }
 }
 
-// MAX_NUM_ORDERS "counts both algo orders and normal orders" (mục 3.3) → kiểm cho mọi lệnh đặt mới
-function countProblems(openCount: number, c: Contract): string[] {
+// MAX_NUM_ORDERS "counts both algo orders and normal orders" (mục 3.3). `need` = số lệnh sắp đặt cần chỗ.
+// Lệnh vào giữ chỗ cho CẢ bộ lệnh (bracketSlots); TP/trailing kiểm 1 chỗ; SL KHÔNG kiểm (luôn gửi, sàn là trọng tài).
+function countProblems(openCount: number, need: number, c: Contract): string[] {
   if (!Number.isInteger(openCount) || openCount < 0) return [`openCount ${openCount} phải là số nguyên ≥ 0`];
-  return openCount + 1 > c.maxNumOrders ? [`Đã có ${openCount} lệnh mở trên ${c.symbol}; thêm 1 lệnh sẽ vượt MAX_NUM_ORDERS ${c.maxNumOrders}`] : [];
+  if (!Number.isInteger(need) || need < 1) return [`Số chỗ cần giữ ${need} phải là số nguyên ≥ 1`];
+  return openCount + need > c.maxNumOrders
+    ? [`Đã có ${openCount} lệnh mở trên ${c.symbol}; cần thêm ${need} lệnh sẽ vượt MAX_NUM_ORDERS ${c.maxNumOrders}`] : [];
+}
+
+// Số lệnh của cả bộ: các chân vào + SL + TP1 (nếu có) + trailing (nếu có) + dừng sàn hòa vốn (khi needsBreakevenFloor)
+export function bracketSlots(b: { entryLegs: number; tp1: boolean; trailing: boolean; breakevenFloor: boolean }): number {
+  if (!Number.isInteger(b.entryLegs) || b.entryLegs < 1) throw new Error(`entryLegs ${b.entryLegs} phải là số nguyên ≥ 1`);
+  return b.entryLegs + 1 + (b.tp1 ? 1 : 0) + (b.trailing ? 1 : 0) + (b.breakevenFloor ? 1 : 0);
+}
+
+// Khối lượng thoát (khớp bằng market) phải là bội của CẢ LOT_SIZE.stepSize và MARKET_LOT_SIZE.stepSize
+function exitQty(qty: number, c: Contract): { qty: number; step: number; problems: string[] } {
+  const step = Math.max(c.stepSize, c.marketStepSize);
+  const q = snapToTick(qty, step, 'down');
+  const off = [c.stepSize, c.marketStepSize].filter((s) => !isStepMultiple(q, s));
+  return { qty: q, step, problems: off.length > 0 ? [`Khối lượng thoát ${q} không theo bước ${off.join(' / ')}`] : [] };
 }
 
 const closeSide = (side: Side) => (side === 'long' ? 'SELL' : 'BUY'); // lệnh thoát ngược chiều vị thế
 const openSide = (side: Side) => (side === 'long' ? 'BUY' : 'SELL');
 
 // ---- Lệnh vào (/fapi/v1/order) -----------------------------------------------------------------
-type EntryBase = { contract: Contract; side: Side; qty: number; id: ClientIdParts; openCount: number };
+// reserveSlots: số lệnh của cả bộ còn phải đặt, GỒM lệnh vào này — dùng bracketSlots(...). Không đủ chỗ → từ chối lệnh vào,
+// để không bao giờ có vị thế mở mà SL bị MAX_NUM_ORDERS chặn.
+type EntryBase = { contract: Contract; side: Side; qty: number; id: ClientIdParts; openCount: number; reserveSlots: number };
 export type EntryInput =
   | (EntryBase & { kind: 'market'; refPrice: number }) // refPrice: giá tham chiếu để kiểm MIN_NOTIONAL (nên dùng giá xấu nhất dự kiến)
   | (EntryBase & { kind: 'limit'; limitPrice: number; expireAt?: number }); // expireAt (ms): có → GTD; không → GTC (hiệu lực 1 năm)
 
 const GTD_MIN_AHEAD_MS = 600_000; // tài liệu: goodTillDate phải > hiện tại + 600 giây
+const GTD_SAFETY_MS = 10_000; // [Đề xuất] đệm cho lệch giờ máy/sàn và độ trễ mạng (giờ ở đây là giờ máy, chưa trừ offset)
 const GTD_MAX = 253402300799000; // tài liệu: goodTillDate < 253402300799000
 
 function buildEntry(a: EntryInput, nowMs: number): Built {
@@ -108,7 +133,7 @@ function buildEntry(a: EntryInput, nowMs: number): Built {
   const step = market ? c.marketStepSize : c.stepSize;
   const qty = snapToTick(a.qty, step, 'down');
   const price = market ? rawPrice : snapToTick(rawPrice, c.tickSize, a.side === 'long' ? 'down' : 'up');
-  const problems = [...entryLegProblems({ kind: a.kind, price, qty }, c), ...countProblems(a.openCount, c)];
+  const problems = [...entryLegProblems({ kind: a.kind, price, qty }, c), ...countProblems(a.openCount, a.reserveSlots, c)];
   if (price <= 0) problems.push(`Giá limit sau làm tròn tick = ${price}`);
 
   const params: Record<string, string> = {
@@ -123,8 +148,8 @@ function buildEntry(a: EntryInput, nowMs: number): Built {
     } else {
       // Tài liệu: phần ms của goodTillDate bị bỏ qua → gửi giây tròn (làm tròn xuống) rồi mới kiểm mốc 600 s
       const gtd = Math.floor(a.expireAt / 1000) * 1000;
-      if (!Number.isFinite(gtd) || gtd <= nowMs + GTD_MIN_AHEAD_MS) {
-        problems.push('Hạn tự hủy (GTD) phải cách hiện tại hơn 600 giây (tài liệu); hạn ngắn hơn bot phải tự hủy');
+      if (!Number.isFinite(gtd) || gtd <= nowMs + GTD_MIN_AHEAD_MS + GTD_SAFETY_MS) {
+        problems.push('Hạn tự hủy (GTD) phải cách hiện tại hơn 600 giây (tài liệu) + 10 giây đệm; hạn ngắn hơn bot phải tự hủy');
       } else if (gtd >= GTD_MAX) {
         problems.push(`goodTillDate phải < ${GTD_MAX}`);
       }
@@ -132,7 +157,7 @@ function buildEntry(a: EntryInput, nowMs: number): Built {
       params.goodTillDate = String(gtd);
     }
   }
-  if (problems.length > 0) return fail(...problems);
+  if (problems.length > 0) return failId(idr.id, problems);
   return okReq({ method: 'POST', path: ORDER_PATH, params, createsOrder: true }, idr.id);
 }
 
@@ -149,35 +174,39 @@ function sideProblem(what: string, side: Side, entry: number, price: number, pro
   return above === wantAbove && price !== entry ? [] : [`${what} ${price} sai phía giá vào ${entry} (vị thế ${side})`];
 }
 
-export type StopLossInput = {
-  contract: Contract; side: Side; entryPrice: number; triggerPrice: number;
-  // priceProtect (mục 4.2): mặc định sàn là false; ở đây bắt nơi gọi chọn TƯỜNG MINH vì nó ảnh hưởng việc SL có kích hoạt hay không
-  priceProtect: boolean;
-  id: ClientIdParts; openCount: number;
-};
+// Dùng cho SL ban đầu, dừng sàn hòa vốn (D10, leg BE) và dời SL (hủy + đặt lại, mục 4.5).
+// markPrice = giá MARK hiện tại: điều kiện thật của sàn (SL đã ở phía sai so với mark → kích hoạt ngay, -2021/-4142).
+// Không kiểm theo giá vào: dừng hòa vốn nằm phía LỜI của giá vào là hợp lệ.
+export type StopLossInput = { contract: Contract; side: Side; markPrice: number; triggerPrice: number; id: ClientIdParts };
 
 // SL: STOP_MARKET closePosition=true (đóng toàn bộ vị thế). Tài liệu: closePosition không dùng cùng quantity và reduceOnly.
+// priceProtect CỐ ĐỊNH false: với true, sàn KHÔNG kích hoạt khi |MARK − CONTRACT| > triggerProtect (mục 4.2) — đúng lúc sập
+// giá, khi vị thế isolated cần đóng nhất; MARK_PRICE đã chống râu nến. Khớp xấu hơn còn hơn không đóng.
+// KHÔNG kiểm MAX_NUM_ORDERS tại chỗ: số đếm cũ/sai không bao giờ được là lý do dừng không lên sàn; lệnh vào đã giữ chỗ.
 function buildStopLoss(a: StopLossInput): Built {
   const c = a.contract;
   const idr = tryId(a.id);
   if ('problem' in idr) return fail(idr.problem);
-  if (!isPos(a.entryPrice) || !isPos(a.triggerPrice)) return fail(`Giá vào ${a.entryPrice} / giá dừng ${a.triggerPrice} không hợp lệ`);
-  // Hướng an toàn: về phía giá vào (Long LÊN, Short XUỐNG) → lỗ không bao giờ lớn hơn kế hoạch
+  if (!isPos(a.markPrice) || !isPos(a.triggerPrice)) return failId(idr.id, [`Giá mark ${a.markPrice} / giá dừng ${a.triggerPrice} không hợp lệ`]);
+  // Làm tròn: Long LÊN, Short XUỐNG — SL ban đầu về phía giá vào (lỗ ≤ kế hoạch), dừng hòa vốn ra xa giá vào (không dưới hòa vốn)
   const trigger = snapToTick(a.triggerPrice, c.tickSize, a.side === 'long' ? 'up' : 'down');
-  const problems = [...sideProblem('Giá dừng', a.side, a.entryPrice, trigger, false), ...countProblems(a.openCount, c)];
-  if (problems.length > 0) return fail(...problems);
+  // Long (SELL stop) cần trigger < mark; Short (BUY stop) cần trigger > mark
+  const wrong = a.side === 'long' ? trigger >= a.markPrice : trigger <= a.markPrice;
+  if (wrong) return failId(idr.id, [`Giá dừng ${trigger} đã ở phía sai giá mark ${a.markPrice} (vị thế ${a.side}) — sẽ kích hoạt ngay`]);
   return okReq(algoRequest({
     symbol: c.symbol, side: closeSide(a.side), type: 'STOP_MARKET', triggerPrice: fmt(trigger, c.tickSize),
-    closePosition: 'true', priceProtect: a.priceProtect ? 'true' : 'false', clientAlgoId: idr.id,
+    closePosition: 'true', priceProtect: 'false', clientAlgoId: idr.id,
   }), idr.id);
 }
 
 export type TakeProfitInput = {
-  contract: Contract; side: Side; entryPrice: number; triggerPrice: number; qty: number; priceProtect: boolean;
+  contract: Contract; side: Side; entryPrice: number; triggerPrice: number; qty: number;
   id: ClientIdParts; openCount: number;
 };
 
-// TP: TAKE_PROFIT_MARKET reduceOnly + quantity (chốt một phần)
+// TP: TAKE_PROFIT_MARKET reduceOnly + quantity (chốt một phần).
+// priceProtect CỐ ĐỊNH true (khác mặc định false của sàn): TP không kích hoạt lúc giá lệch thì không nguy hiểm (SL/trailing vẫn còn),
+// và tránh bán vào sổ lệnh đang méo.
 function buildTakeProfit(a: TakeProfitInput): Built {
   const c = a.contract;
   const idr = tryId(a.id);
@@ -187,13 +216,12 @@ function buildTakeProfit(a: TakeProfitInput): Built {
   // Giá: ra XA giá vào (Long LÊN, Short XUỐNG) — giữ nguyên bảo đảm lời ròng TP1 của kế hoạch.
   // Khối lượng: XUỐNG theo bước lớn hơn của LOT_SIZE/MARKET_LOT_SIZE (khớp bằng market); phần lẻ còn lại vẫn có SL closePosition.
   const trigger = snapToTick(a.triggerPrice, c.tickSize, a.side === 'long' ? 'up' : 'down');
-  const step = Math.max(c.stepSize, c.marketStepSize);
-  const qty = snapToTick(a.qty, step, 'down');
-  const problems = [...sideProblem('Giá chốt lời', a.side, a.entryPrice, trigger, true), ...exitPartProblems([qty], c), ...countProblems(a.openCount, c)];
-  if (problems.length > 0) return fail(...problems);
+  const { qty, step, problems: stepProblems } = exitQty(a.qty, c);
+  const problems = [...sideProblem('Giá chốt lời', a.side, a.entryPrice, trigger, true), ...exitPartProblems([qty], c), ...stepProblems, ...countProblems(a.openCount, 1, c)];
+  if (problems.length > 0) return failId(idr.id, problems);
   return okReq(algoRequest({
     symbol: c.symbol, side: closeSide(a.side), type: 'TAKE_PROFIT_MARKET', triggerPrice: fmt(trigger, c.tickSize),
-    quantity: fmt(qty, step), reduceOnly: 'true', priceProtect: a.priceProtect ? 'true' : 'false', clientAlgoId: idr.id,
+    quantity: fmt(qty, step), reduceOnly: 'true', priceProtect: 'true', clientAlgoId: idr.id,
   }), idr.id);
 }
 
@@ -217,11 +245,10 @@ function buildTrailing(a: TrailingInput): Built {
   if (cb < min || cb > max) return fail(`callbackRate ${a.callbackPct} (làm tròn ${cb}) ngoài khoảng tài liệu [${min}; ${max}]`);
   // activatePrice ra XA giá vào (Long LÊN, Short XUỐNG): mức dừng lúc kích hoạt = activate × (1 ∓ cb%) không lùi về phía giá vào
   const activate = snapToTick(a.activatePrice, c.tickSize, a.side === 'long' ? 'up' : 'down');
-  const step = Math.max(c.stepSize, c.marketStepSize);
-  const qty = snapToTick(a.qty, step, 'down');
-  const problems = [...sideProblem('Giá kích hoạt trailing', a.side, a.entryPrice, activate, true), ...exitPartProblems([qty], c), ...countProblems(a.openCount, c)];
-  if (problems.length > 0) return fail(...problems);
-  // priceProtect: tài liệu chỉ nêu cho STOP_MARKET/TAKE_PROFIT_MARKET → không gửi cho trailing
+  const { qty, step, problems: stepProblems } = exitQty(a.qty, c);
+  const problems = [...sideProblem('Giá kích hoạt trailing', a.side, a.entryPrice, activate, true), ...exitPartProblems([qty], c), ...stepProblems, ...countProblems(a.openCount, 1, c)];
+  if (problems.length > 0) return failId(idr.id, problems);
+  // priceProtect: tài liệu chỉ nêu cho STOP_MARKET/TAKE_PROFIT_MARKET → không gửi cho trailing (theo mặc định của sàn)
   return okReq(algoRequest({
     symbol: c.symbol, side: closeSide(a.side), type: 'TRAILING_STOP_MARKET', quantity: fmt(qty, step), reduceOnly: 'true',
     activatePrice: fmt(activate, c.tickSize), callbackRate: String(cb), clientAlgoId: idr.id,
@@ -309,7 +336,7 @@ export function createOrders(deps: { api: SignedApi; now?: () => number }) {
 
   async function send(b: Built): Promise<OrderResult> {
     if (!b.ok) {
-      return { kind: 'rejected', code: null, msg: `Từ chối tại chỗ (chưa gửi): ${b.problems.join('; ')}`, status: 0, body: null, orderCount: NO_COUNT, clientId: null, sent: false };
+      return { kind: 'rejected', code: null, msg: `Từ chối tại chỗ (chưa gửi): ${b.problems.join('; ')}`, status: 0, body: null, orderCount: NO_COUNT, clientId: b.clientId, sent: false };
     }
     assertR1(b.req);
     const r = await deps.api.request(b.req);
@@ -336,7 +363,11 @@ export function createOrders(deps: { api: SignedApi; now?: () => number }) {
 
   return {
     placeEntry: (a: EntryInput) => send(buildEntry(a, now())),
-    placeStopLoss: (a: StopLossInput) => send(buildStopLoss(a)),
+    // Mọi từ chối (tại chỗ hoặc từ sàn) của lệnh dừng → 'stop_rejected': nơi gọi đóng market + Telegram khẩn
+    placeStopLoss: async (a: StopLossInput): Promise<OrderResult> => {
+      const r = await send(buildStopLoss(a));
+      return r.kind === 'rejected' ? { ...r, kind: 'stop_rejected' } : r;
+    },
     placeTakeProfit: (a: TakeProfitInput) => send(buildTakeProfit(a)),
     placeTrailing: (a: TrailingInput) => send(buildTrailing(a)),
     cancelOrder: (symbol: string, ref: OrderRef) => send(builders.cancelOrder(symbol, ref)),
