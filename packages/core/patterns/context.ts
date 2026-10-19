@@ -124,9 +124,11 @@ export function contextFlags(c4h: Candle[], c1d: Candle[]): ContextFlags {
   const price = c4h[c4h.length - 1]!.close;
   const P = COMMON.patterns;
 
-  // Vai-đầu-vai: ưu tiên đã xác nhận, rồi khung lớn, rồi mới nhất.
+  // Vai-đầu-vai: ưu tiên đã xác nhận, rồi khung lớn, rồi mới nhất. Giữ thêm bản tốt nhất của TỪNG khung
+  // để phát hiện 4H và 1D đã xác nhận NGƯỢC nhau (khi đó chặn cả hai chiều, ghi "xung đột bối cảnh").
   let hs: HsContext | null = null;
   let hsRank = -1;
+  const confirmedByTf = new Map<string, HsContext>();
   for (const [tf, c, key] of [['1d', c1d, '1d'], ['4h', c4h, '4h']] as const) {
     if (c.length === 0) continue;
     const a = atr(c, P.atrPeriod);
@@ -135,11 +137,8 @@ export function contextFlags(c4h: Candle[], c1d: Candle[]): ContextFlags {
     for (const g of detectHeadShoulders(c, pv, a, e, tf)) {
       const st = hsStatus(c, g, c.length - 1);
       if (st.state !== 'forming' && st.state !== 'confirmed') continue;
-      const rank = (st.state === 'confirmed' ? 4_000_000 : 0) + (tf === '1d' ? 2_000_000 : 0) + g.endIndex;
-      if (rank <= hsRank) continue;
-      hsRank = rank;
       const top = g.kind === 'head_shoulders';
-      hs = {
+      const item: HsContext = {
         kind: g.kind as HsContext['kind'],
         timeframe: tf,
         state: st.state,
@@ -147,11 +146,26 @@ export function contextFlags(c4h: Candle[], c1d: Candle[]): ContextFlags {
         head: g.pivots[2]!.price,
         endIndex: g.endIndex,
       };
+      if (st.state === 'confirmed') {
+        const prev = confirmedByTf.get(tf);
+        if (!prev || g.endIndex > prev.endIndex) confirmedByTf.set(tf, item);
+      }
+      const rank = (st.state === 'confirmed' ? 4_000_000 : 0) + (tf === '1d' ? 2_000_000 : 0) + g.endIndex;
+      if (rank <= hsRank) continue;
+      hsRank = rank;
+      hs = item;
     }
   }
-  if (hs) {
+  const hs1d = confirmedByTf.get('1d');
+  const hs4h = confirmedByTf.get('4h');
+  const nameOf = (x: HsContext) => (x.kind === 'head_shoulders' ? 'vai-đầu-vai đỉnh' : 'vai-đầu-vai ngược');
+  if (hs1d && hs4h && hs1d.kind !== hs4h.kind) {
+    block.long = true;
+    block.short = true;
+    notes.push(`xung đột bối cảnh: ${nameOf(hs4h)} 4H và ${nameOf(hs1d)} 1D cùng đã xác nhận → chặn cả Long và Short mới`);
+  } else if (hs) {
     const top = hs.kind === 'head_shoulders';
-    const name = top ? 'vai-đầu-vai đỉnh' : 'vai-đầu-vai ngược';
+    const name = nameOf(hs);
     if (hs.state === 'confirmed') {
       if (top) block.long = true;
       else block.short = true;

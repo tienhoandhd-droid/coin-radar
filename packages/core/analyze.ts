@@ -3,12 +3,37 @@ import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
 import { buildPlan, tp1R, maxSafeLeverage, type TradePlan, type CostTier } from './plan.ts';
-import { evaluateGates, ratePer8h, fundingNote, type GateResult } from './gates.ts';
+import { evaluateGates, ratePer8h, fundingNote, inPatternScope, dailyTrend, patternTrendGate, contextGate, type GateResult } from './gates.ts';
 import { eventWindow, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
 import { COMMON, CONFIG } from './config.ts';
 import { btcHourlySide, type Regime } from './regime.ts';
 import type { Candle, Contract, Mode, PremiumIndex, Side } from './types.ts';
+import { contextFlags, type ContextFlags } from './patterns/context.ts';
+import { trackPatterns, isTracked, type PatternTf, type TrackedPattern } from './patterns/track.ts';
+import { buildPatternPlan, type PatternPlan } from './patterns/pattern-plan.ts';
+import type { PatternKind } from './patterns/types.ts';
+import type { PatternState } from './patterns/state.ts';
+
+// Nến cho phần mô hình biểu đồ (kế hoạch 1c), chỉ bắt buộc với hợp đồng trong phạm vi P-G1.
+// c4h / c1d: bối cảnh (vai-đầu-vai, vùng nhiều tháng, coil) và nhận diện Swing; c1h: ATR(1H) tại nến phá.
+export type PatternData = { c4h: Candle[]; c1d: Candle[]; c1h: Candle[]; btcSma200ReclaimedAt: number | null };
+
+// Một mô hình đang theo dõi (đã khử trùng, chưa kết thúc, tín hiệu chưa cũ). hidden = Lướt nhanh: chỉ ghi nhận, không phát lệnh.
+export type PatternInfo = {
+  id: string;
+  kind: PatternKind;
+  timeframe: string;
+  state: PatternState;
+  side: 'up' | 'down' | null; // chiều đã phá / đang chờ xác nhận; null khi chưa phá
+  upper: number; // biên trên tại nến cuối
+  lower: number; // biên dưới tại nến cuối
+  breakoutLine: number | null; // giá đường phá tại nến phá
+  height: number;
+  pivots: Array<{ time: number; price: number; kind: 'high' | 'low' }>; // time = openTime của nến pivot (để đối chiếu dữ liệu thô)
+  notes: string[];
+  hidden: boolean;
+};
 
 export type AnalyzeInput = {
   mode: Mode;
@@ -30,6 +55,7 @@ export type AnalyzeInput = {
   events: MacroEvent[];
   capital: number;
   riskPct: number;
+  patternData: PatternData | null; // null = không tải (hợp đồng ngoài phạm vi P-G1); trong phạm vi mà null → ném lỗi
 };
 
 export type Label = 'Đạt tiêu chí Long' | 'Đạt tiêu chí Short' | 'Theo dõi' | 'Không đạt';
@@ -45,7 +71,41 @@ export type Analysis = {
   plan: TradePlan | null;
   risk: { tier: RiskTier; notes: string[] };
   flags: string[];
+  patternScope: { ok: boolean; note: string };
+  context: ContextFlags | null; // bối cảnh mô hình; null khi ngoài phạm vi P-G1
+  patterns: PatternInfo[];
+  patternSignal: PatternPlan | null; // kế hoạch lệnh theo mô hình khi tín hiệu được phát là tín hiệu mô hình
 };
+
+// Một hợp đồng × chế độ chỉ một tín hiệu. Cùng chiều → dùng tín hiệu mô hình; ngược chiều → không phát cả hai.
+export function arbitrate(zoneSide: Side | null, patternSide: Side | null): { use: 'zone' | 'pattern' | null; note: string | null } {
+  const name = (x: Side) => (x === 'long' ? 'Long' : 'Short');
+  if (zoneSide === null && patternSide === null) return { use: null, note: null };
+  if (patternSide === null) return { use: 'zone', note: null };
+  if (zoneSide === null) return { use: 'pattern', note: null };
+  if (zoneSide === patternSide) {
+    return { use: 'pattern', note: `Tín hiệu vùng và tín hiệu mô hình cùng chiều ${name(zoneSide)} → dùng kế hoạch theo mô hình (một tín hiệu mỗi hợp đồng)` };
+  }
+  return { use: null, note: `xung đột: tín hiệu vùng ${name(zoneSide)} ngược tín hiệu mô hình ${name(patternSide)} → không phát cả hai` };
+}
+
+// Mức rủi ro của hợp đồng (R-01) — tách riêng để máy quét biết trước hợp đồng có thuộc phạm vi P-G1 không (để tải thêm nến).
+export function contractRisk(a: { daily: Candle[]; price: number; contract: Contract; liquidityRankPct: number; now: Date }): { tier: RiskTier; notes: string[] } {
+  const dailyAtr = last(atr(a.daily, 14));
+  const closesWindow = a.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
+  let peak = -Infinity;
+  let maxDd = 0;
+  for (const c of closesWindow) { peak = Math.max(peak, c); maxDd = Math.max(maxDd, (1 - c / peak) * 100); }
+  return riskTier({
+    dailyAtrPct: (dailyAtr / a.price) * 100,
+    ageDays: (a.now.getTime() - a.contract.onboardDate) / 86_400_000,
+    liquidityRank: a.liquidityRankPct,
+    maxDrawdown90Pct: maxDd,
+  });
+}
+
+const FRAME_HOURS: Record<PatternTf, number> = { '15m': 0.25, '1h': 1, '4h': 4, '1d': 24 };
+const KIND_ORDER: Record<string, number> = { '1d': 0, '4h': 1, '1h': 2, '15m': 3 };
 
 const label4 = (iv: string) => iv.toUpperCase(); // '15m' → '15M', '4h' → '4H'
 
@@ -73,16 +133,7 @@ export function analyze(i: AnalyzeInput): Analysis {
     atr: atrEntry, tickSize: i.contract.tickSize,
   });
   const price = last(i.entry.map((k) => k.close));
-  const closesWindow = i.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
-  let peak = -Infinity;
-  let maxDd = 0;
-  for (const c of closesWindow) { peak = Math.max(peak, c); maxDd = Math.max(maxDd, (1 - c / peak) * 100); }
-  const risk = riskTier({
-    dailyAtrPct: (dailyAtr / price) * 100,
-    ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
-    liquidityRank: i.liquidityRankPct,
-    maxDrawdown90Pct: maxDd,
-  });
+  const risk = contractRisk({ daily: i.daily, price, contract: i.contract, liquidityRankPct: i.liquidityRankPct, now: i.now });
   // P-01: rủi ro mỗi lệnh tối đa 0,25% cho Lướt nhanh và coin rủi ro Cao/Rất cao
   const capRisk = i.mode === 'fast' || risk.tier === 'Cao' || risk.tier === 'Rất cao';
   const riskPct = capRisk ? Math.min(i.riskPct, COMMON.highRiskTierPct) : i.riskPct;
@@ -119,28 +170,123 @@ export function analyze(i: AnalyzeInput): Analysis {
   if (ev.flag) flags.push(`G-07 ${ev.flag}`);
   const h = i.hourly;
   const move1hPct = h.length >= 2 ? (last(h.map((k) => k.close)) / h[h.length - 2]!.close - 1) * 100 : 0;
-  const stopDistPct = plan.riskPerUnit / plan.entry;
-  const gates = evaluateGates({
-    mode: i.mode, side: best.side, score: best.score, regime: i.regime, btcHourly: i.mode === 'fast' ? btcHourlySide(i.btcTrend) : null, rsZ: best.rsZ, riskTier: risk.tier, breakerTripped: i.breakerTripped, breakerNote: i.breakerNote,
-    warmupBars: Math.min(i.trend.length, i.entry.length), coverage: best.coverage,
-    liquidityRankPct: i.liquidityRankPct, spreadPct: i.spreadPct,
-    move1hPct, volumeZ1h: volumeZ(h, 20),
-    ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
-    eventBlocked: ev.blocked,
-    stopDistPct: stopDistPct * 100, stopDistAtr: plan.riskPerUnit / dailyAtr,
-    liquidationOk: maxSafeLeverage(stopDistPct, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops) >= 1,
-    fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
-    minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,
-    planValid: plan.valid, planNote: plan.invalidReason ?? plan.stopReason,
-  });
-
-  const allPass = gates.every((g) => g.pass);
-  const label: Label = allPass && best.score >= COMMON.qualifyScore
-    ? (best.side === 'long' ? 'Đạt tiêu chí Long' : 'Đạt tiêu chí Short')
-    : best.score >= COMMON.watchScore ? 'Theo dõi' : 'Không đạt';
-
-  return {
-    symbol: i.contract.symbol, mode: i.mode, price, label, best, long: L, short: S, gates,
-    plan: label.startsWith('Đạt') ? plan : null, risk, flags,
+  // Cổng hiện có cho một chiều + một kế hoạch (vùng hoặc mô hình) — dùng chung để tín hiệu mô hình qua đủ các cổng như tín hiệu vùng.
+  const gatesFor = (s: SideScore, p: { riskPerUnit: number; entry: number; valid: boolean; note: string }): GateResult[] => {
+    const stopDistPct = p.riskPerUnit / p.entry;
+    return evaluateGates({
+      mode: i.mode, side: s.side, score: s.score, regime: i.regime, btcHourly: i.mode === 'fast' ? btcHourlySide(i.btcTrend) : null, rsZ: s.rsZ, riskTier: risk.tier, breakerTripped: i.breakerTripped, breakerNote: i.breakerNote,
+      warmupBars: Math.min(i.trend.length, i.entry.length), coverage: s.coverage,
+      liquidityRankPct: i.liquidityRankPct, spreadPct: i.spreadPct,
+      move1hPct, volumeZ1h: volumeZ(h, 20),
+      ageDays: (i.now.getTime() - i.contract.onboardDate) / 86_400_000,
+      eventBlocked: ev.blocked,
+      stopDistPct: stopDistPct * 100, stopDistAtr: p.riskPerUnit / dailyAtr,
+      liquidationOk: maxSafeLeverage(stopDistPct, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops) >= 1,
+      fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
+      minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,
+      planValid: p.valid, planNote: p.note,
+    });
   };
+
+  // ---- Mô hình biểu đồ (kế hoạch 1c): chỉ cho hợp đồng trong phạm vi P-G1 ----
+  const patternScope = inPatternScope(risk.tier, i.liquidityRankPct);
+  let context: ContextFlags | null = null;
+  const patterns: PatternInfo[] = [];
+  const candidates: Array<{ plan: PatternPlan; gates: GateResult[]; score: SideScore }> = [];
+  if (patternScope.ok) {
+    const pd = i.patternData;
+    if (pd === null) throw new Error(`${i.contract.symbol} thuộc phạm vi mô hình (P-G1) nhưng không có dữ liệu mô hình (nến 4H/1D/1H)`);
+    context = contextFlags(pd.c4h, pd.c1d);
+    if (context.coil) flags.push(`P-C2 coil (nén biến động 4H) — chỉ báo, không phải tín hiệu`);
+    const daily = dailyTrend(i.mode === 'swing' ? i.trend : pd.c1d);
+    const candlesFor = (tf: PatternTf): Candle[] =>
+      tf === '4h' ? pd.c4h : tf === '1d' ? pd.c1d : tf === '1h' ? (i.mode === 'fast' ? i.trend : pd.c1h) : i.entry;
+    const hidden = i.mode === 'fast';
+    const tracked: Array<{ t: TrackedPattern; c: Candle[]; tf: PatternTf }> = [];
+    for (const f of COMMON.patterns.frames[i.mode]) {
+      const c = candlesFor(f.tf);
+      for (const t of trackPatterns(i.contract.symbol, c, f.tf, f.kinds)) if (isTracked(t.result)) tracked.push({ t, c, tf: f.tf });
+    }
+    tracked.sort((x, y) => KIND_ORDER[x.tf]! - KIND_ORDER[y.tf]! || x.t.geometry.endIndex - y.t.geometry.endIndex);
+    const atr1hAll = atr(pd.c1h, 14);
+    for (const { t, c, tf } of tracked) {
+      const g = t.geometry;
+      const r = t.result;
+      const lastIdx = c.length - 1;
+      const info: PatternInfo = {
+        id: t.id, kind: g.kind, timeframe: tf, state: r.state, side: r.side,
+        upper: g.upper(lastIdx), lower: g.lower(lastIdx), breakoutLine: r.breakoutLine, height: g.height,
+        pivots: g.pivots.map((p) => ({ time: c[p.index]!.openTime, price: p.price, kind: p.kind })),
+        notes: [...g.notes, ...r.notes], hidden,
+      };
+      patterns.push(info);
+      if (hidden || (r.state !== 'breakout' && r.state !== 'retested') || r.side === null || r.breakoutIndex === null) continue;
+      const side: Side = r.side === 'up' ? 'long' : 'short';
+      const pg2 = patternTrendGate({ kind: g.kind, side, daily, regime: i.regime, btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, now: i.now.getTime() });
+      info.notes.push(pg2.note);
+      if (!pg2.pass) continue;
+      // ATR(1H) tại nến 1H đóng cùng lúc (hoặc ngay trước) nến phá của khung nhận diện
+      const breakClose = c[r.breakoutIndex]!.closeTime;
+      let j = -1;
+      for (let q = pd.c1h.length - 1; q >= 0; q--) if (pd.c1h[q]!.closeTime <= breakClose) { j = q; break; }
+      const atr1h = j >= 0 ? atr1hAll[j]! : NaN;
+      if (!Number.isFinite(atr1h) || atr1h <= 0 || breakClose - pd.c1h[j]!.closeTime >= FRAME_HOURS[tf] * 3_600_000) {
+        info.notes.push('Kế hoạch mô hình: bỏ — thiếu ATR(1H) tại nến phá (dữ liệu 1H không phủ tới nến phá)');
+        continue;
+      }
+      const res = buildPatternPlan({
+        mode: i.mode, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
+        btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct),
+        tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
+      });
+      if (res.status !== 'ready' || res.plan === null) {
+        info.notes.push(`Kế hoạch mô hình: ${res.status === 'wait_confirm' ? 'chờ xác nhận' : 'bỏ'} — ${res.reason}`);
+        continue;
+      }
+      const pp = res.plan;
+      const sideScore = side === 'long' ? L : S;
+      const gs = [
+        ...gatesFor(sideScore, { riskPerUnit: Math.max(pp.riskPerUnit, pp.riskAtr * pp.atr), entry: pp.entry, valid: pp.valid, note: pp.invalidReason ?? pp.stopReason }),
+        { code: 'P-G1', pass: true, note: patternScope.note }, pg2, contextGate(context, side),
+      ];
+      const failed = gs.filter((x) => !x.pass);
+      if (failed.length > 0) {
+        info.notes.push(`Kế hoạch mô hình: lập được nhưng cổng trượt — ${failed.map((x) => `${x.code} (${x.note})`).join('; ')}`);
+        continue;
+      }
+      if (sideScore.score < COMMON.qualifyScore) {
+        info.notes.push(`Kế hoạch mô hình: lập được, qua cổng nhưng điểm ${side === 'long' ? 'Long' : 'Short'} ${sideScore.score} < ${COMMON.qualifyScore}`);
+        continue;
+      }
+      info.notes.push(`Kế hoạch mô hình: đủ điều kiện (TP1 ${pp.tp1NetR.toFixed(2).replace('.', ',')}R sau phí)`);
+      candidates.push({ plan: pp, gates: gs, score: sideScore });
+    }
+  }
+  let pattern: (typeof candidates)[number] | null = null;
+  if (candidates.length > 0) {
+    if (new Set(candidates.map((x) => x.plan.side)).size > 1) {
+      flags.push('xung đột: các mô hình đủ điều kiện ngược chiều nhau → không phát tín hiệu mô hình');
+    } else {
+      pattern = candidates.reduce((b, x) => (x.plan.tp1NetR > b.plan.tp1NetR ? x : b));
+    }
+  }
+
+  // ---- Tín hiệu theo vùng (như 1b) + bối cảnh P-C1 ----
+  const zoneGates = [
+    ...gatesFor(best, { riskPerUnit: plan.riskPerUnit, entry: plan.entry, valid: plan.valid, note: plan.invalidReason ?? plan.stopReason }),
+    contextGate(context, best.side),
+  ];
+  const zoneOk = zoneGates.every((g) => g.pass) && best.score >= COMMON.qualifyScore;
+  const pick = arbitrate(zoneOk ? best.side : null, pattern ? pattern.plan.side : null);
+  if (pick.note) flags.push(pick.note);
+  const qualified = (side: Side): Label => (side === 'long' ? 'Đạt tiêu chí Long' : 'Đạt tiêu chí Short');
+  const fallback: Label = best.score >= COMMON.watchScore ? 'Theo dõi' : 'Không đạt';
+  const base = { symbol: i.contract.symbol, mode: i.mode, price, long: L, short: S, risk, flags, patternScope, context, patterns };
+  if (pick.use === 'pattern' && pattern) {
+    return { ...base, label: qualified(pattern.plan.side), best: pattern.score, gates: pattern.gates, plan: null, patternSignal: pattern.plan };
+  }
+  if (pick.use === 'zone') {
+    return { ...base, label: qualified(best.side), best, gates: zoneGates, plan, patternSignal: null };
+  }
+  return { ...base, label: fallback, best, gates: zoneGates, plan: null, patternSignal: null };
 }

@@ -91,3 +91,17 @@ export function btcHourlySide(btcHourly: Candle[]): { side: Side | null; note: s
   const where = side === 'long' ? 'trên' : side === 'short' ? 'dưới' : 'đúng bằng';
   return { side, note: `BTC 1H ${now.toFixed(0)} ${where} SMA200 1H ${s200.toFixed(0)}` };
 }
+
+// Thời điểm (closeTime, ms) của nến NGÀY gần nhất mà BTC đóng trên SMA200 trong khi nến trước đó đóng ≤ SMA200
+// (lấy lại SMA200 sau khi ở dưới). Không có lần cắt lên nào (hoặc thiếu dữ liệu) → null. Chỉ dùng nến đã đóng được truyền vào.
+export function btcSma200ReclaimedAt(btcDaily: Candle[]): number | null {
+  const closes = btcDaily.map((k) => k.close);
+  const s200 = sma(closes, 200);
+  for (let i = closes.length - 1; i >= 1; i--) {
+    const now = s200[i]!;
+    const prev = s200[i - 1]!;
+    if (!Number.isFinite(now) || !Number.isFinite(prev)) return null;
+    if (closes[i]! > now && closes[i - 1]! <= prev) return btcDaily[i]!.closeTime;
+  }
+  return null;
+}

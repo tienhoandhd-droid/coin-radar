@@ -120,3 +120,22 @@ test('btcHourlySide: đúng 200 nến vẫn đọc được SMA200; 199 nến �
   assert.equal(r.side, null);
   assert.match(r.note, /Thiếu dữ liệu BTC 1H \(199\/200/);
 });
+
+import { btcSma200ReclaimedAt } from './regime.ts';
+
+test('ngày BTC lấy lại SMA200: nến ngày gần nhất đóng trên SMA200 sau khi nến trước đóng dưới', () => {
+  // 250 nến giảm rồi 30 nến tăng mạnh: cắt lên SMA200 ở đâu đó trong đoạn tăng
+  const closes = [...Array.from({ length: 250 }, (_, i) => 400 - i), ...Array.from({ length: 30 }, (_, i) => 151 + i * 10)];
+  const c = series(closes).map((k, i) => ({ ...k, closeTime: i * 1000 + 999 }));
+  const at = btcSma200ReclaimedAt(c);
+  assert.ok(at !== null);
+  const i = (at! - 999) / 1000;
+  const sma200 = (j: number) => closes.slice(j - 199, j + 1).reduce((s, x) => s + x, 0) / 200;
+  assert.ok(closes[i]! > sma200(i) && closes[i - 1]! <= sma200(i - 1), `nến ${i}`);
+  for (let j = i + 1; j < closes.length; j++) assert.ok(closes[j]! > sma200(j), 'sau đó không cắt xuống lại');
+});
+
+test('ngày BTC lấy lại SMA200: luôn trên SMA200 hoặc thiếu dữ liệu → null', () => {
+  assert.equal(btcSma200ReclaimedAt(series(up)), null);
+  assert.equal(btcSma200ReclaimedAt(series(up.slice(0, 150))), null);
+});

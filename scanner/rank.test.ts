@@ -21,6 +21,7 @@ const mk = (symbol: string, score: number, side: 'long' | 'short' = 'long', gate
     label: gatesPass && score >= 70 ? (side === 'long' ? 'Đạt tiêu chí Long' : 'Đạt tiêu chí Short') : 'Theo dõi',
     best: mkSide(side, score), long: mkSide('long', side === 'long' ? score : 0), short: mkSide('short', side === 'short' ? score : 0),
     gates: [{ code: 'G-02', pass: gatesPass, note: '' }], plan: null, risk: { tier: 'Vừa', notes: [] }, flags: [],
+    patternScope: { ok: false, note: '' }, context: null, patterns: [], patternSignal: null,
   };
 };
 const sameGroup = (list: Analysis[]) => new Map(list.map((a, i) => [a.symbol, i / 1000])); // mọi mã cùng nhóm thanh khoản cao
@@ -65,4 +66,12 @@ test('D4: các nhóm thanh khoản xếp hạng độc lập', () => {
   const ranks = new Map([...a.map((x) => [x.symbol, 0.05] as const), ...b.map((x) => [x.symbol, 0.9] as const)]);
   const out = applyTopRank([...a, ...b], ranks);
   assert.deepEqual(out.filter((x) => x.label.startsWith('Đạt')).map((x) => x.symbol).sort(), ['H9', 'W9']);
+});
+
+test('applyTopRank: hạ nhãn thì bỏ cả kế hoạch mô hình', () => {
+  const list = Array.from({ length: 20 }, (_, i) => ({ ...mk(`S${i}`, 70 + i), patternSignal: { side: 'long' } as unknown as Analysis['patternSignal'] }));
+  const out = applyTopRank(list, sameGroup(list));
+  const demoted = out.filter((a) => a.label === 'Theo dõi');
+  assert.ok(demoted.length > 0);
+  assert.ok(demoted.every((a) => a.patternSignal === null && a.plan === null));
 });

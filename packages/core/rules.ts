@@ -5,6 +5,7 @@ export type Rule = { code: string; title: string; evidence: Evidence; status: Ru
 const REPORT = 'reports/Bộ nguyên tắc phân tích coin.md';
 const FINAL_REVIEW = '.superpowers/sdd/2026-10-19-ke-hoach-1-loi-cham-diem/final-review.md';
 const REVIEW = 'reports/Phản biện bộ nguyên tắc.md';
+const PATTERNS = 'reports/Mô hình biểu đồ cho BTC.md';
 
 export const RULES: readonly Rule[] = [
   { code: 'G-01', title: 'Hướng lệnh theo chế độ thị trường; cầu dao không bật', evidence: 'evidence', status: 'active', source: REPORT },
@@ -37,6 +38,12 @@ export const RULES: readonly Rule[] = [
   { code: 'P-07', title: 'Chi phí funding dự kiến trừ vào R', evidence: 'industry', status: 'active', source: REVIEW },
   { code: 'R-01', title: 'Mức rủi ro theo ATR% ngày, tuổi, thanh khoản, sụt giảm', evidence: 'evidence', status: 'active', source: REPORT },
   { code: 'R-02', title: 'Chế độ thị trường BTC SMA200 + cầu dao biến động', evidence: 'evidence', status: 'active', source: REPORT },
+  // Kế hoạch 1c — mô hình biểu đồ (mức căn cứ theo báo cáo mục (1) và phần "BTC/ETH ít biến động")
+  { code: 'P-G1', title: 'Mô hình chỉ cho coin rủi ro Thấp/Vừa và thanh khoản nhóm cao (suy luận, chưa có số liệu)', evidence: 'industry', status: 'active', source: PATTERNS },
+  { code: 'P-G2', title: 'Mô hình Swing chỉ phá thuận xu hướng 1D; tam giác cân phá xuống khi thị trường Lên không Short; hai đỉnh Short cần 1D dưới SMA20 và ngoài 30 ngày sau khi BTC lấy lại SMA200', evidence: 'evidence', status: 'active', source: PATTERNS },
+  { code: 'P-C1', title: 'Bối cảnh: vai-đầu-vai đã xác nhận chặn lệnh ngược; cấm Long sát dưới biên trên / Short sát trên biên dưới vùng nhiều tháng chưa phá', evidence: 'industry', status: 'active', source: PATTERNS },
+  { code: 'P-C2', title: 'Cờ "coil" (nén biến động) — chỉ báo, không là điều kiện', evidence: 'industry', status: 'display', source: PATTERNS },
+  { code: 'P-S1', title: 'Tín hiệu phá vỡ mô hình 4H/1D (chữ nhật, cờ, tam giác, hai đỉnh/hai đáy) với kế hoạch lệnh riêng; Lướt nhanh chỉ ghi nhận', evidence: 'industry', status: 'active', source: PATTERNS },
 ];
 
 export function ruleByCode(code: string): Rule {

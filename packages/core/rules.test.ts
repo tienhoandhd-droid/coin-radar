@@ -24,3 +24,9 @@ test('trọng số điểm mỗi chế độ cộng đúng 100', () => {
     assert.equal(w.trend + w.relativeStrength + w.momentum + w.flow + w.path, 100, mode);
   }
 });
+
+test('kế hoạch 1c: có mã cổng mô hình P-G1, P-G2, bối cảnh P-C1, coil P-C2 (chỉ hiển thị), tín hiệu P-S1', () => {
+  for (const code of ['P-G1', 'P-G2', 'P-C1', 'P-C2', 'P-S1']) assert.equal(ruleByCode(code).code, code);
+  assert.equal(ruleByCode('P-C2').status, 'display');
+  assert.match(ruleByCode('P-G2').source, /Mô hình biểu đồ cho BTC/);
+});

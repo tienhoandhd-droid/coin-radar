@@ -112,3 +112,83 @@ test('3.2 phần trailing bằng 0 do gộp: không in "= 0 coin", nói rõ gộ
   assert.match(t, /TP2: chốt 30% — gộp vào TP3/);
   assert.match(t, /3 coin = TP1 2 \/ TP2 gộp vào TP3 \/ TP3 1/);
 });
+
+// ---------- Kế hoạch 1c: in kế hoạch mô hình và khối "Mô hình đang theo dõi" ----------
+import { patternPlanLines, trackedLines } from './plan-print.ts';
+import { buildPatternPlan, type PatternPlan, type PatternPlanArgs } from '../packages/core/patterns/pattern-plan.ts';
+import type { PatternGeometry } from '../packages/core/patterns/types.ts';
+import type { Candle } from '../packages/core/types.ts';
+
+const H4 = 4 * 3600_000;
+const pk = (i: number, high: number, low: number, close: number): Candle =>
+  ({ openTime: i * H4, closeTime: (i + 1) * H4 - 1, open: close, high, low, close, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 });
+function patternPlan(close: number, over: Partial<PatternGeometry> = {}, extra: Candle[] = []): PatternPlan {
+  const c = Array.from({ length: 30 }, (_, i) => pk(i, 105.5, 104.5, 105));
+  c.push(pk(30, close + 0.3, 109.9, close), ...extra);
+  const g: PatternGeometry = { kind: 'rectangle', timeframe: '4h', pivots: [], startIndex: 0, endIndex: 20, upper: () => 110, lower: () => 100,
+    breakoutSide: 'both', height: 10, stopRef: { up: 109, down: 101 }, quality: 1, notes: [], ...over };
+  const z = (low: number, high: number) => ({ low, high, strength: 2, touches: 2, sources: ['t'] });
+  const a: PatternPlanArgs = { mode: 'swing', geometry: g, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1,
+    state: { state: 'breakout', breakoutIndex: 30, side: 'up', breakoutLine: 110, distanceAtr: 0, retest: null, notes: [], signalStale: false, inBreakoutWindow: null },
+    zones: [z(118, 118.5), z(121, 122), z(126, 127)], multiMonth: null, btcSma200ReclaimedAt: null,
+    capital: 10_000, riskPct: 0.5, costTier: 'high', tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8 };
+  const r = buildPatternPlan(a);
+  if (r.status !== 'ready' || !r.plan) throw new Error(`fixture không ready: ${r.reason}`);
+  return r.plan;
+}
+const ph = { symbol: 'BTCUSDT', score: 74, riskTier: 'Thấp' };
+
+test('kế hoạch mô hình chia 2 chân: in từng chân + khối lượng mỗi chân, TP cho "chỉ market" và "khớp cả hai", luật sau TP1', () => {
+  const p = patternPlan(111.4);
+  assert.equal(p.entryType, 'split');
+  const t = patternPlanLines(ph, p, 0.01).join('\n');
+  assert.match(t, /BTCUSDT — LONG theo mô hình chữ nhật 4H \| điểm 74 \| rủi ro Thấp/);
+  assert.match(t, /Kiểu vào lệnh: CHIA 2 CHÂN/);
+  assert.match(t, /Chân 1 — MARKET 50%: giá hiện tại 111,40 \(không mua cao hơn 111,49\): 9,607 coin/);
+  assert.match(t, /Chân 2 — LIMIT 50%: 110,25, hủy sau 10 nến \(40 giờ\) chưa khớp hoặc khi giá chạm TP1 trước: 9,608 coin/);
+  assert.match(t, /TP1: 115,00 chốt 50% — khớp cả hai chân 9,607 coin; chỉ khớp chân market 4,803 coin/);
+  assert.match(t, /Sau TP1 → SL về/);
+  assert.match(t, /nếu chỉ khớp chân market/);
+  assert.ok(t.includes(p.afterTp1Reason), 'phải in nguyên văn luật sau TP1');
+  assert.match(t, /Khớp 111,40 \(giá hiện tại\): market 9,607 \+ limit 9,608 = 19,215 coin/);
+  assert.doesNotMatch(t, /NaN|undefined|Infinity/);
+});
+
+test('kế hoạch mô hình market 100%: một chân, dòng "Sau TP1 → SL về" một luật', () => {
+  const p = patternPlan(110.5, { stopRef: { up: 108.5, down: 101 } });
+  assert.equal(p.entryType, 'market');
+  const t = patternPlanLines(ph, p, 0.01).join('\n');
+  assert.match(t, /Kiểu vào lệnh: VÀO TRỰC TIẾP 100%/);
+  assert.doesNotMatch(t, /Chân 2/);
+  assert.match(t, /TP1: [\d,]+ chốt 50% = [\d,]+ coin/);
+  assert.match(t, new RegExp(`Sau TP1 → SL về ${p.afterTp1Stop.toFixed(2).replace('.', ',')}`));
+  assert.doesNotMatch(t, /NaN|undefined|Infinity/);
+});
+
+test('kế hoạch mô hình chỉ limit: nói rõ chỉ 50% khối lượng, không vào trực tiếp', () => {
+  const p = patternPlan(112.5);
+  assert.equal(p.entryType, 'limit');
+  const t = patternPlanLines(ph, p, 0.01).join('\n');
+  assert.match(t, /Kiểu vào lệnh: CHỈ ĐẶT LIMIT 50% khối lượng tại 110,25/);
+  assert.doesNotMatch(t, /MARKET/);
+});
+
+test('đường phá nghiêng: in độ dốc trong luật sau TP1', () => {
+  const p = patternPlan(110.5, { kind: 'bull_flag', breakoutSide: 'up', height: 30, stopRef: { up: 108, down: 110 },
+    upper: (i: number) => 110 - 0.1 * (i - 30), lower: (i: number) => 108 - 0.1 * (i - 30) },
+  [pk(31, 110.1, 109.6, 109.85), pk(32, 110.1, 109.6, 109.85), pk(33, 110.1, 109.6, 109.85)]);
+  const t = patternPlanLines(ph, p, 0.01).join('\n');
+  assert.match(t, /đường phá nghiêng/);
+  assert.match(t, /Đường phá: 110,00 tại nến phá; hiện tại 109,70/);
+});
+
+test('khối "Mô hình đang theo dõi": loại, khung, trạng thái, đường phá, chiều cao; ẩn ghi rõ', () => {
+  const lines = trackedLines([
+    { id: 'x', kind: 'rectangle', timeframe: '4h', state: 'breakout', side: 'up', upper: 110.5, lower: 99.5, breakoutLine: 110.5, height: 11, pivots: [], notes: ['P-G2 qua'], hidden: false },
+    { id: 'y', kind: 'bull_flag', timeframe: '1h', state: 'armed', side: null, upper: 120.123, lower: 118.2, breakoutLine: null, height: 9, pivots: [], notes: [], hidden: true },
+  ], 0.1);
+  const t = lines.join('\n');
+  assert.match(t, /chữ nhật 4H — breakout \(phá lên\) \| đường phá 110,5 \| chiều cao 11,0/);
+  assert.match(t, /P-G2 qua/);
+  assert.match(t, /cờ tăng 1H — armed \| biên trên 120,1 \/ biên dưới 118,2 \| chiều cao 9,0 \| ẩn \(Lướt nhanh: chỉ ghi nhận\)/);
+});

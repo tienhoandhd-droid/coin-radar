@@ -1,7 +1,9 @@
 import { regimeCheck, type Regime } from './regime.ts';
 import { COMMON, CONFIG } from './config.ts';
 import type { RiskTier } from './risk.ts';
-import type { Mode, Side } from './types.ts';
+import type { Candle, Mode, Side } from './types.ts';
+import { sma } from './indicators.ts';
+import type { PatternKind } from './patterns/types.ts';
 
 export type GateResult = { code: string; pass: boolean; note: string };
 export type GateContext = {
@@ -103,4 +105,80 @@ export function evaluateGates(c: GateContext): GateResult[] {
     },
     { code: 'G-12', pass: c.planValid, note: c.planNote },
   ];
+}
+
+// ---------- Kế hoạch 1c: cổng mô hình biểu đồ ----------
+
+const DAY_MS = 86_400_000;
+
+// P-G1: chỉ chạy mô hình (tín hiệu + bối cảnh) cho coin rủi ro Thấp/Vừa VÀ thanh khoản nhóm cao.
+export function inPatternScope(tier: RiskTier, liquidityRankPct: number): { ok: boolean; note: string } {
+  const tierOk = tier === 'Thấp' || tier === 'Vừa';
+  const liqOk = liquidityRankPct <= COMMON.costTierRank.high;
+  const rank = `hạng thanh khoản ${Math.round(liquidityRankPct * 100)}%`;
+  if (tierOk && liqOk) return { ok: true, note: `P-G1: trong phạm vi mô hình (rủi ro ${tier}, ${rank})` };
+  const why: string[] = [];
+  if (!tierOk) why.push(`rủi ro ${tier}`);
+  if (!liqOk) why.push(`${rank} > ${Math.round(COMMON.costTierRank.high * 100)}% (không thuộc nhóm thanh khoản cao)`);
+  return { ok: false, note: `P-G1: ngoài phạm vi mô hình — ${why.join('; ')}` };
+}
+
+export type DailyTrend = { trend: 'up' | 'down' | 'sideways'; closeBelowSma20: boolean; note: string };
+
+// Xu hướng 1D của hợp đồng theo đúng ba điều kiện S-01 (giá/SMA20, giá/SMA50, SMA20/SMA50): đủ cả ba cùng chiều mới là up/down.
+export function dailyTrend(daily: Candle[]): DailyTrend {
+  const S = COMMON.score;
+  const closes = daily.map((k) => k.close);
+  const n = closes.length;
+  const fast = sma(closes, S.smaFast)[n - 1];
+  const slow = sma(closes, S.smaSlow)[n - 1];
+  if (n === 0 || fast === undefined || slow === undefined || !Number.isFinite(fast) || !Number.isFinite(slow)) {
+    return { trend: 'sideways', closeBelowSma20: false, note: `Thiếu dữ liệu 1D (${n}/${S.smaSlow} nến) — coi là đi ngang` };
+  }
+  const p = closes[n - 1]!;
+  const upAll = p > fast && p > slow && fast > slow;
+  const downAll = p < fast && p < slow && fast < slow;
+  const trend = upAll ? 'up' : downAll ? 'down' : 'sideways';
+  const name = trend === 'up' ? 'tăng' : trend === 'down' ? 'giảm' : 'đi ngang';
+  const f6 = (x: number) => String(Number(x.toPrecision(6))).replace('.', ',');
+  return { trend, closeBelowSma20: p < fast, note: `1D ${name} (đóng ${f6(p)}, SMA${S.smaFast} ${f6(fast)}, SMA${S.smaSlow} ${f6(slow)})` };
+}
+
+// P-G2: mô hình Swing chỉ phá thuận xu hướng 1D (báo cáo mục (1)).
+//  - chữ nhật / cờ / tam giác: xu hướng 1D phải cùng chiều lệnh; tam giác cân phá xuống khi thị trường Lên → không Short;
+//  - hai đáy (Long): 1D không còn giảm; hai đỉnh (Short): 1D đã đóng dưới SMA20 VÀ không trong 30 ngày sau khi BTC lấy lại SMA200.
+export function patternTrendGate(a: { kind: PatternKind; side: Side; daily: DailyTrend; regime: Regime; btcSma200ReclaimedAt: number | null; now: number }): GateResult {
+  const sideTxt = a.side === 'long' ? 'Long' : 'Short';
+  const fail = (why: string): GateResult => ({ code: 'P-G2', pass: false, note: `P-G2 trượt: ${why} — ${a.daily.note}` });
+  const pass = (why: string): GateResult => ({ code: 'P-G2', pass: true, note: `P-G2 qua: ${why} — ${a.daily.note}` });
+  if (a.kind === 'double_top') {
+    if (a.side !== 'short') return fail('hai đỉnh chỉ cho Short');
+    if (!a.daily.closeBelowSma20) return fail(`hai đỉnh Short cần 1D đã đóng dưới SMA${COMMON.score.smaFast}`);
+    const days = COMMON.patterns.plan.reversalShortBlockDays;
+    if (a.btcSma200ReclaimedAt !== null && a.now - a.btcSma200ReclaimedAt < days * DAY_MS) {
+      const ago = Math.floor((a.now - a.btcSma200ReclaimedAt) / DAY_MS);
+      return fail(`hai đỉnh Short trong ${days} ngày sau khi BTC lấy lại SMA200 (mới ${ago} ngày)`);
+    }
+    return pass(`hai đỉnh Short: 1D đóng dưới SMA${COMMON.score.smaFast}, ngoài ${days} ngày sau khi BTC lấy lại SMA200`);
+  }
+  if (a.kind === 'double_bottom') {
+    if (a.side !== 'long') return fail('hai đáy chỉ cho Long');
+    return a.daily.trend === 'down' ? fail('hai đáy Long khi 1D vẫn đang giảm') : pass('hai đáy Long: 1D không còn giảm');
+  }
+  if (a.kind === 'sym_triangle' && a.side === 'short' && a.regime === 'up') {
+    return fail('tam giác cân phá xuống trong thị trường Lên → không Short');
+  }
+  const want = a.side === 'long' ? 'up' : 'down';
+  return a.daily.trend === want
+    ? pass(`${sideTxt} cùng chiều xu hướng 1D`)
+    : fail(`${sideTxt} không cùng chiều xu hướng 1D`);
+}
+
+// P-C1: bối cảnh (vai-đầu-vai, vùng nhiều tháng) chặn lệnh MỚI theo chiều. null = hợp đồng ngoài phạm vi mô hình (P-G1).
+export function contextGate(ctx: { block: { long: boolean; short: boolean }; notes: string[] } | null, side: Side): GateResult {
+  if (ctx === null) return { code: 'P-C1', pass: true, note: 'Bối cảnh mô hình: ngoài phạm vi P-G1, không đánh giá' };
+  const blocked = side === 'long' ? ctx.block.long : ctx.block.short;
+  const sideTxt = side === 'long' ? 'Long' : 'Short';
+  if (blocked) return { code: 'P-C1', pass: false, note: `Bối cảnh chặn ${sideTxt}: ${ctx.notes.join('; ')}` };
+  return { code: 'P-C1', pass: true, note: ctx.notes.length > 0 ? `Bối cảnh không chặn ${sideTxt}: ${ctx.notes.join('; ')}` : 'Không có bối cảnh chặn' };
 }

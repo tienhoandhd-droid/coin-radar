@@ -153,3 +153,79 @@ test('G-12: note lấy từ lý do của kế hoạch', () => {
   assert.equal(g.note, 'TP1 chỉ 0,6R');
   assert.equal(evaluateGates(ok).find((x) => x.code === 'G-12')!.pass, true);
 });
+
+// ---------- Kế hoạch 1c: cổng mô hình P-G1 / P-G2 / P-C1 ----------
+import { inPatternScope, dailyTrend, patternTrendGate, contextGate } from './gates.ts';
+import type { Candle } from './types.ts';
+
+const dk = (i: number, close: number): Candle => ({ openTime: i * 86_400_000, closeTime: (i + 1) * 86_400_000 - 1, open: close, high: close + 0.5, low: close - 0.5, close, volume: 1, quoteVolume: close, takerBuyQuote: close / 2 });
+const daysUp = Array.from({ length: 80 }, (_, i) => dk(i, 100 + i));
+const daysDown = Array.from({ length: 80 }, (_, i) => dk(i, 300 - i));
+const daysFlat = Array.from({ length: 80 }, (_, i) => dk(i, 100 + (i % 2)));
+
+test('P-G1: chỉ rủi ro Thấp/Vừa VÀ thanh khoản nhóm cao (≤ costTierRank.high)', () => {
+  assert.equal(inPatternScope('Thấp', 0.05).ok, true);
+  assert.equal(inPatternScope('Vừa', 0.2).ok, true);
+  assert.equal(inPatternScope('Cao', 0.05).ok, false);
+  assert.equal(inPatternScope('Rất cao', 0.0).ok, false);
+  assert.equal(inPatternScope('Thấp', 0.21).ok, false);
+  assert.match(inPatternScope('Cao', 0.05).note, /rủi ro Cao/);
+  assert.match(inPatternScope('Thấp', 0.3).note, /thanh khoản/);
+});
+
+test('xu hướng 1D theo S-01: giá/SMA20/SMA50 cùng chiều; thiếu dữ liệu → đi ngang kèm lý do', () => {
+  assert.equal(dailyTrend(daysUp).trend, 'up');
+  assert.equal(dailyTrend(daysDown).trend, 'down');
+  assert.equal(dailyTrend(daysFlat).trend, 'sideways');
+  assert.equal(dailyTrend(daysDown).closeBelowSma20, true);
+  assert.equal(dailyTrend(daysUp).closeBelowSma20, false);
+  const short = dailyTrend(daysUp.slice(0, 30));
+  assert.equal(short.trend, 'sideways');
+  assert.match(short.note, /Thiếu dữ liệu 1D/);
+});
+
+const NOW = Date.UTC(2026, 9, 19);
+const tg = (over: Partial<Parameters<typeof patternTrendGate>[0]>) => patternTrendGate({
+  kind: 'rectangle', side: 'long', daily: dailyTrend(daysUp), regime: 'up', btcSma200ReclaimedAt: null, now: NOW, ...over,
+});
+
+test('P-G2: chữ nhật/cờ/tam giác chỉ phá cùng chiều xu hướng 1D', () => {
+  assert.equal(tg({}).code, 'P-G2');
+  assert.equal(tg({}).pass, true);
+  assert.equal(tg({ side: 'short' }).pass, false);
+  assert.equal(tg({ daily: dailyTrend(daysFlat) }).pass, false);
+  assert.equal(tg({ kind: 'bear_flag', side: 'short', daily: dailyTrend(daysDown), regime: 'down' }).pass, true);
+  assert.equal(tg({ kind: 'asc_triangle', daily: dailyTrend(daysDown) }).pass, false);
+});
+
+test('P-G2: tam giác cân phá xuống trong thị trường Lên → không Short, dù 1D đang giảm', () => {
+  const g = tg({ kind: 'sym_triangle', side: 'short', daily: dailyTrend(daysDown), regime: 'up' });
+  assert.equal(g.pass, false);
+  assert.match(g.note, /tam giác cân phá xuống trong thị trường Lên/);
+  assert.equal(tg({ kind: 'sym_triangle', side: 'short', daily: dailyTrend(daysDown), regime: 'sideways' }).pass, true);
+});
+
+test('P-G2: hai đỉnh Short cần 1D đóng dưới SMA20 và ngoài 30 ngày sau khi BTC lấy lại SMA200', () => {
+  const dd = dailyTrend(daysDown);
+  assert.equal(tg({ kind: 'double_top', side: 'short', daily: dd }).pass, true);
+  assert.equal(tg({ kind: 'double_top', side: 'short', daily: dailyTrend(daysUp) }).pass, false);
+  const recent = tg({ kind: 'double_top', side: 'short', daily: dd, btcSma200ReclaimedAt: NOW - 10 * 86_400_000 });
+  assert.equal(recent.pass, false);
+  assert.match(recent.note, /30 ngày sau khi BTC lấy lại SMA200/);
+  assert.equal(tg({ kind: 'double_top', side: 'short', daily: dd, btcSma200ReclaimedAt: NOW - 31 * 86_400_000 }).pass, true);
+});
+
+test('P-G2: hai đáy Long chỉ cần 1D không còn giảm', () => {
+  assert.equal(tg({ kind: 'double_bottom', daily: dailyTrend(daysFlat) }).pass, true);
+  assert.equal(tg({ kind: 'double_bottom', daily: dailyTrend(daysDown) }).pass, false);
+});
+
+test('P-C1: bối cảnh chặn đúng chiều; ngoài phạm vi thì qua kèm ghi chú', () => {
+  const block = { long: true, short: false };
+  assert.equal(contextGate({ block, notes: ['vai-đầu-vai đỉnh 1d'] }, 'long').pass, false);
+  assert.match(contextGate({ block, notes: ['vai-đầu-vai đỉnh 1d'] }, 'long').note, /vai-đầu-vai đỉnh 1d/);
+  assert.equal(contextGate({ block, notes: [] }, 'short').pass, true);
+  const out = contextGate(null, 'long');
+  assert.equal(out.pass, true);
+  assert.match(out.note, /ngoài phạm vi/);
+});

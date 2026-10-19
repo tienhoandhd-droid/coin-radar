@@ -171,6 +171,15 @@ export const COMMON = {
       afterTp1StopAtr: 0.5, // khoảng lùi khỏi đường phá cho SL sau TP1 (×A), đúng ngưỡng failed — đề xuất, chưa backtest
       reversalShortBlockDays: 30, // Short hai đỉnh / vai-đầu-vai: không vào trực tiếp trong số ngày này sau khi BTC lấy lại SMA200 ngày — đề xuất, chưa backtest
     },
+    // Khung và loại mô hình nhận diện theo chế độ (báo cáo mục (1)): Swing 4H đủ 4 loại, 1D hai đỉnh/hai đáy + tam giác;
+    // Lướt nhanh chỉ GHI NHẬN (ẩn) trên 1H (chữ nhật, cờ, hai đỉnh/đáy làm bối cảnh) và 15m (chữ nhật, cờ) — đề xuất, chưa backtest
+    frames: {
+      swing: [{ tf: '4h', kinds: ['rectangle', 'double', 'triangle', 'flag'] }, { tf: '1d', kinds: ['double', 'triangle'] }],
+      fast: [{ tf: '1h', kinds: ['rectangle', 'double', 'flag'] }, { tf: '15m', kinds: ['rectangle', 'flag'] }],
+    },
+    // Số nến tải thêm cho hợp đồng trong phạm vi mô hình (P-G1): 1H để đo ATR(1H) tại nến phá (Swing), 4H/1D cho bối cảnh (Lướt nhanh).
+    // 1D 300 nến để EMA200 của vai-đầu-vai 1D có giá trị — đề xuất, chưa backtest
+    fetchBars: { h1: 300, h4: 500, d1: 300 },
     maxSignalAgeBars: 10, // breakout/retested cũ hơn mức này (nến khung nhận diện) → signalStale, không lập kế hoạch lệnh — đề xuất, chưa backtest
     state: {
       confirmAtr: { '15m': 0.5, '1h': 0.5, '4h': 0.25, '1d': 0.25 }, // đóng cửa vượt đường phá ≥ mức này (×A) mới là phá vỡ; 0 đến mức này → breakout_pending — đề xuất, chưa backtest

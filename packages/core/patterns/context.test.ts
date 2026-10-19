@@ -241,3 +241,19 @@ test('chống look-ahead: coil chạy trên tiền tố == chạy cả chuỗi t
   }
   assert.ok(ons > 0, 'dữ liệu thử phải có lúc coil bật');
 });
+
+test('contextFlags: vai-đầu-vai 4H và 1D đã xác nhận NGƯỢC nhau → chặn cả hai chiều, ghi "xung đột bối cảnh"', () => {
+  const pts: [number, number][] = [[0, 100], [20, 110], [30, 102], [45, 120], [60, 102], [70, 110], [85, 95], [100, 100]];
+  const pre = Array.from({ length: 220 }, (_, i) => k(60 + i * 0.18 + 0.5, 60 + i * 0.18 - 0.5, 60 + i * 0.18));
+  const shift = 99.6 - 100;
+  const c = pre.concat(wave(pts).map((x) => k(x.high + shift, x.low + shift, x.close + shift)));
+  const m = c.map((x) => k(300 - x.low, 300 - x.high));
+  const r = contextFlags(c, m); // 4H: vai-đầu-vai đỉnh; 1D: vai-đầu-vai ngược
+  assert.equal(r.block.long, true);
+  assert.equal(r.block.short, true);
+  assert.ok(r.notes.some((n) => /xung đột bối cảnh/.test(n)), r.notes.join(' | '));
+  // cùng chiều (hai khung cùng là đỉnh) → không xung đột, chỉ chặn Long
+  const same = contextFlags(c, c);
+  assert.equal(same.block.short, false);
+  assert.ok(!same.notes.some((n) => /xung đột/.test(n)));
+});

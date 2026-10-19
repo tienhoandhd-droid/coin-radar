@@ -22,7 +22,10 @@ const base: AnalyzeInput = {
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false,
   now: new Date('2026-10-19T12:00:00Z'), events: [], capital: 1000, riskPct: 0.5,
+  patternData: null,
 };
+// TESTUSDT ở base thuộc phạm vi mô hình (rủi ro Thấp/Vừa, hạng thanh khoản 5%) → phải có dữ liệu mô hình.
+base.patternData = { c4h: base.entry, c1d: base.daily, c1h: base.hourly, btcSma200ReclaimedAt: null };
 
 test('xu hướng tăng rõ, thị trường lên → Đạt tiêu chí Long, có kế hoạch', () => {
   const a = analyze(base);
@@ -175,4 +178,104 @@ test('Task 3: đà tăng một mạch, không có đáy/đỉnh nào → không 
   assert.equal(g.pass, false, g.note);
   assert.ok(!a.label.startsWith('Đạt'));
   assert.equal(a.plan, null);
+});
+
+// ---------- Kế hoạch 1c: mô hình biểu đồ trong analyze ----------
+import { arbitrate } from './analyze.ts';
+
+const H4 = 4 * 3600_000;
+const H1 = 3600_000;
+function k4(i: number, close: number): Candle {
+  return { openTime: i * H4, closeTime: (i + 1) * H4 - 1, open: close, high: close + 0.5, low: close - 0.5, close, volume: 1, quoteVolume: close, takerBuyQuote: close / 2 };
+}
+function wave4(pts: [number, number][]): Candle[] {
+  const out: Candle[] = [];
+  for (let s = 0; s < pts.length - 1; s++) {
+    const [i0, p0] = pts[s]!;
+    const [i1, p1] = pts[s + 1]!;
+    for (let i = i0; i < i1; i++) out.push(k4(i, p0 + ((p1 - p0) * (i - i0)) / (i1 - i0)));
+  }
+  const [il, pl] = pts[pts.length - 1]!;
+  out.push(k4(il, pl));
+  return out;
+}
+// Chữ nhật 100..110 trên 4H (đỉnh 30/50, đáy 40/60), nến cuối (chỉ số 67) phá lên đóng 112
+const rect4h = [...wave4([[0, 90], [30, 110], [40, 100], [50, 110], [60, 100], [66, 108]]), k4(67, 112)];
+const h1For = (c4: Candle[]) => Array.from({ length: c4.length * 4 }, (_, j) => {
+  const c = c4[Math.floor(j / 4)]!.close;
+  return { openTime: j * H1, closeTime: (j + 1) * H1 - 1, open: c, high: c + 0.3, low: c - 0.3, close: c, volume: 1, quoteVolume: c, takerBuyQuote: c / 2 };
+});
+
+test('P-G1: hợp đồng trong phạm vi mà thiếu dữ liệu mô hình → ném lỗi, không im lặng bỏ qua', () => {
+  assert.throws(() => analyze({ ...base, patternData: null }), /dữ liệu mô hình/);
+});
+
+test('P-G1: ngoài phạm vi (thanh khoản không thuộc nhóm cao) → không chạy mô hình, P-C1 qua kèm ghi chú', () => {
+  const a = analyze({ ...base, liquidityRankPct: 0.3, patternData: null });
+  assert.equal(a.patternScope.ok, false);
+  assert.deepEqual(a.patterns, []);
+  assert.equal(a.patternSignal, null);
+  const g = a.gates.find((x) => x.code === 'P-C1')!;
+  assert.equal(g.pass, true);
+  assert.match(g.note, /ngoài phạm vi/);
+});
+
+test('Swing trong phạm vi: chữ nhật 4H phá lên được theo dõi, ghi P-G2 và kết quả lập kế hoạch', () => {
+  const a = analyze({ ...base, patternData: { c4h: rect4h, c1d: base.daily, c1h: h1For(rect4h), btcSma200ReclaimedAt: null } });
+  assert.equal(a.patternScope.ok, true);
+  const r = a.patterns.find((p) => p.kind === 'rectangle' && p.timeframe === '4h');
+  assert.ok(r, JSON.stringify(a.patterns));
+  assert.equal(r.state, 'breakout');
+  assert.equal(r.breakoutLine, 110.5);
+  assert.equal(r.hidden, false);
+  assert.ok(r.pivots.length >= 4 && r.pivots.every((p) => Number.isFinite(p.time) && Number.isFinite(p.price)));
+  assert.ok(r.notes.some((n) => /^P-G2/.test(n)), r.notes.join(' | '));
+  assert.ok(r.notes.some((n) => /^Kế hoạch mô hình/.test(n)), r.notes.join(' | '));
+});
+
+test('Lướt nhanh: mô hình 1H/15m chỉ ghi nhận (ẩn), không bao giờ có tín hiệu mô hình', () => {
+  const fast = { ...base, mode: 'fast' as const, trend: rect4h.map((c, i) => ({ ...c, openTime: i * H1, closeTime: (i + 1) * H1 - 1 })), btcTrend: up(500, 0.1) };
+  const a = analyze(fast);
+  assert.ok(a.patterns.length > 0, 'phải có mô hình 1H được ghi nhận');
+  assert.ok(a.patterns.every((p) => p.hidden && (p.timeframe === '1h' || p.timeframe === '15m')));
+  assert.equal(a.patternSignal, null);
+});
+
+test('Bối cảnh: vai-đầu-vai đỉnh 1D đã xác nhận → P-C1 chặn Long, không Đạt tiêu chí Long', () => {
+  const kk = (high: number, low: number, close = (high + low) / 2): Candle => ({ openTime: 0, closeTime: 0, open: close, high, low, close, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 });
+  const pts: [number, number][] = [[0, 100], [20, 110], [30, 102], [45, 120], [60, 102], [70, 110], [85, 95], [100, 100]];
+  const pre = Array.from({ length: 220 }, (_, i) => kk(60 + i * 0.18 + 0.5, 60 + i * 0.18 - 0.5, 60 + i * 0.18));
+  const hs: Candle[] = [];
+  for (let s = 0; s < pts.length - 1; s++) {
+    const [i0, p0] = pts[s]!;
+    const [i1, p1] = pts[s + 1]!;
+    for (let i = i0; i < i1; i++) { const cl = p0 + ((p1 - p0) * (i - i0)) / (i1 - i0) - 0.4; hs.push(kk(cl + 0.5, cl - 0.5, cl)); }
+  }
+  hs.push(kk(100.1, 99.1, 99.6));
+  const a = analyze({ ...base, patternData: { ...base.patternData!, c1d: pre.concat(hs) } });
+  const g = a.gates.find((x) => x.code === 'P-C1')!;
+  assert.equal(a.best.side, 'long');
+  assert.equal(g.pass, false, g.note);
+  assert.match(g.note, /vai-đầu-vai đỉnh/);
+  assert.ok(!a.label.startsWith('Đạt'));
+  assert.equal(a.plan, null);
+});
+
+test('Một tín hiệu mỗi hợp đồng × chế độ: cùng chiều → dùng mô hình; ngược chiều → không phát cả hai, ghi "xung đột"', () => {
+  assert.deepEqual(arbitrate('long', null), { use: 'zone', note: null });
+  assert.deepEqual(arbitrate(null, 'short'), { use: 'pattern', note: null });
+  assert.deepEqual(arbitrate(null, null), { use: null, note: null });
+  const same = arbitrate('long', 'long');
+  assert.equal(same.use, 'pattern');
+  assert.match(same.note!, /cùng chiều/);
+  const opp = arbitrate('long', 'short');
+  assert.equal(opp.use, null);
+  assert.match(opp.note!, /xung đột/);
+});
+
+test('mã cổng mới P-G1/P-G2/P-C1 có trong danh mục; mọi cổng của analyze có mã hợp lệ', async () => {
+  const { ruleByCode } = await import('./rules.ts');
+  for (const code of ['P-G1', 'P-G2', 'P-C1', 'P-C2', 'P-S1']) ruleByCode(code);
+  const a = analyze({ ...base, patternData: { c4h: rect4h, c1d: base.daily, c1h: h1For(rect4h), btcSma200ReclaimedAt: null } });
+  for (const g of a.gates) ruleByCode(g.code);
 });

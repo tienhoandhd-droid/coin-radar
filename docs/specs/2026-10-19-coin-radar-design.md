@@ -246,6 +246,26 @@ thanh khoản và spread, sụt giảm lớn nhất 90 ngày, tuổi hợp đồ
 nhận biết bằng dữ liệu (nếu tự phát hiện được), hành động với tín hiệu mới, hành động với lệnh đang mở, mức
 căn cứ.
 
+### 3.11 Mô hình biểu đồ (kế hoạch 1c, nguồn `reports/Mô hình biểu đồ cho BTC.md`)
+
+Mô hình **lọc lệnh và bổ sung tín hiệu**, không thay hệ vùng S/R. Mọi ngưỡng ở `COMMON.patterns` (`packages/core/config.ts`), đề xuất, chưa backtest. Mã cổng/nguyên tắc trong `packages/core/rules.ts`.
+
+| Mã | Quy tắc |
+|---|---|
+| P-G1 | Chỉ chạy mô hình (tín hiệu **và** bối cảnh) cho hợp đồng rủi ro **Thấp/Vừa** VÀ hạng thanh khoản ≤ `costTierRank.high` (nhóm cao). Máy quét tính mức rủi ro trước, chỉ hợp đồng trong phạm vi mới tải thêm nến (Swing: 300 nến 1H; Lướt nhanh: 500 nến 4H; 1D luôn 300 nến) |
+| Khung | Swing: 4H chữ nhật, hai đỉnh/hai đáy, tam giác, cờ; 1D hai đỉnh/hai đáy, tam giác. Lướt nhanh: 1H chữ nhật, hai đỉnh/đáy, cờ; 15m chữ nhật, cờ — **chỉ ghi nhận (ẩn), không bao giờ phát nhãn “Đạt” từ mô hình** |
+| Theo dõi | Mỗi khung: chạy bộ nhận diện trên nến đã đóng; cùng id chỉ giữ bản phát sớm nhất; tính trạng thái tại nến cuối; khử trùng mỗi (loại, khung). In các mô hình chưa kết thúc và chưa cũ (forming / armed / chờ xác nhận / breakout / retested) |
+| P-G2 | Swing: chữ nhật/cờ/tam giác chỉ phá **cùng chiều xu hướng 1D** (đủ 3 điều kiện S-01: giá/SMA20, giá/SMA50, SMA20/SMA50); tam giác cân phá xuống khi thị trường Lên → không Short; hai đáy Long khi 1D không còn giảm; hai đỉnh Short khi 1D đã đóng dưới SMA20 **và** ngoài 30 ngày sau ngày BTC lấy lại SMA200 ngày (tính từ nến ngày BTC: ngày gần nhất đóng trên SMA200 sau khi nến trước đóng ≤ SMA200) |
+| P-C1 | Bối cảnh (vai-đầu-vai 4H/1D đã xác nhận, vùng nhiều tháng 1D) chặn Long/Short **mới** cho mọi tín hiệu (vùng và mô hình) của hợp đồng trong phạm vi. Vai-đầu-vai 4H và 1D đã xác nhận ngược nhau → chặn cả hai chiều, ghi “xung đột bối cảnh” |
+| P-C2 | Coil (nén biến động) chỉ là cờ báo |
+| P-S1 | Tín hiệu mô hình chỉ khi trạng thái breakout/retested chưa cũ (tam giác phá ngoài cửa sổ 50–80% → không), qua P-G2, kế hoạch mô hình hợp lệ (mục (2)–(4) báo cáo: SL mức mô hình ± 0,5×A, R ≤ 3×A, TP1 ≥ 1R sau phí — cờ 1,5R), qua **đủ các cổng hiện có** G-01…G-12 tính bằng số của kế hoạch mô hình, P-C1, và điểm phía đó ≥ 70 |
+| Một tín hiệu | Mỗi hợp đồng × chế độ một tín hiệu: vùng và mô hình cùng chiều → dùng kế hoạch mô hình (ghi chú); ngược chiều → không phát cả hai, ghi “xung đột”. Nhiều mô hình đủ điều kiện cùng chiều → chọn TP1 (R sau phí) cao nhất; ngược chiều → không phát |
+| Kiểu vào lệnh mô hình | d ≤ 1×A vào trực tiếp 100%; 1–2×A chia 2 chân 50% market + 50% limit tại đường phá ± 0,25×A; > 2×A chỉ limit 50% khối lượng; limit hủy sau 10 nến hoặc khi chạm TP1 trước |
+| Sau TP1 (lệnh mô hình) | Giá khớp cách đường phá < 0,5×A → SL về đường phá ∓ 0,5×A (không nới quá SL gốc); xa hơn → SL về đúng giá khớp thật. Lệnh chia 2 chân in luật cho cả “khớp cả hai” và “chỉ khớp chân market”; đường phá nghiêng in độ dốc |
+| In | Khối “Mô hình đang theo dõi” (loại, khung, trạng thái, đường phá hoặc hai biên, chiều cao, ghi chú P-G2 / lý do kế hoạch) cho mọi hợp đồng trong phạm vi; kế hoạch mô hình in từng chân, khối lượng mỗi chân, TP theo hai trường hợp khớp, dòng “Sau TP1 → SL về …” |
+
+Ngoài phạm vi 1c: cốc-tay cầm, mô hình thất bại (busted), ảnh chụp/lưu trạng thái (kế hoạch 3), điều kiện OI giảm mạnh ở nến phá, backtest (kế hoạch 2), kiểm tra “kháng cự dày giữa đường” bằng sổ lệnh.
+
 ## 4. Đo kết quả
 
 - Kết quả mỗi lệnh = **R thực sau phí, trượt giá và funding**. Giá nhảy qua cắt lỗ → khớp ở giá mở cửa trừ
@@ -322,6 +342,7 @@ Dự án Pháp Sư; schema `public`, tiền tố `coin_`.
 ## 8. Giới hạn đã biết (ghi trên web và báo cáo)
 
 - Gần như mọi ngưỡng là đề xuất chưa backtest; Lướt nhanh ít căn cứ nhất.
+- Mô hình biểu đồ (3.11): với p = 0,5–0,73 và SL ở mức mô hình, chữ nhật và hai đỉnh/hai đáy gần như không bao giờ đạt TP1 ≥ 1R sau phí (TP1 ≤ h×p trong khi R ≥ h/2 + 0,5×A); thực tế chỉ cờ và tam giác có thể ra lệnh. Chữ nhật được xét từ bản phát sớm nhất nên dễ “hết hạn” trước khi phá.
 - Giá thanh lý là **ước tính** (bậc ký quỹ thật cần API key); luôn đối chiếu trên Binance.
 - Sổ Lướt nhanh chỉ ghi khi web đang mở → mẫu ít hơn Swing.
 - Lịch GitHub Actions có thể trễ/bỏ lượt; repo public không hoạt động 60 ngày bị tắt lịch.
