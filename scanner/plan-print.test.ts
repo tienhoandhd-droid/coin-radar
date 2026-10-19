@@ -345,3 +345,17 @@ test('I5 planLines: dòng đầu ghi TÍN HIỆU MỚI + id khi có; tín hiệu
   assert.match(held, /đang giữ/);
   assert.doesNotMatch(held, /MỚI/);
 });
+
+test('B0 rà soát lại: C2 có TP1 nhưng trailing = null (kế hoạch không hợp lệ) → không ném lỗi, in rõ chưa tính trailing', () => {
+  const noTrail: TradePlan = { ...c2Long, valid: false, invalidReason: 'x', exit: { ...c2Long.exit, trailing: null } };
+  const t = planLines(head, noTrail, 0.0001).join('\n');
+  assert.match(t, /trailing: chưa tính \(kế hoạch không hợp lệ/);
+  const pp = patternPlan(111.4, {}, [], 'C2');
+  const t2 = patternPlanLines(ph, { ...pp, valid: false, exit: { ...pp.exit, trailing: null } }, 0.01).join('\n');
+  assert.match(t2, /trailing: chưa tính \(kế hoạch không hợp lệ/);
+});
+
+test('I8: câu trailing nói rõ "chưa tính trượt giá khi lệnh trailing khớp market"', () => {
+  const t = planLines(head, c2Long, 0.0001).join('\n');
+  assert.match(t, /≥ giá vào \+ phí\); gần như hòa vốn, chưa tính trượt giá khi lệnh trailing khớp market/);
+});

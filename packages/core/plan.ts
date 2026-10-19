@@ -309,6 +309,8 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const costPct = COMMON.costRoundTripPct[a.costTier] + a.extraCostPct;
   const size = positionSize(a.capital, a.riskPct, entry, stop, costPct, a.stepSize);
   const estLoss = size.qty * riskPerUnit + (size.notional * costPct) / 100;
+  // Hiệu khối lượng làm tròn theo bước như pattern-plan.ts (tránh sai số dấu phẩy động khi so phần trailing > 0)
+  const sq = (x: number) => Number(x.toFixed(tickDecimals(a.stepSize)));
   const parts = splitQuantity(size.qty, a.stepSize, zc.exitPcts);
   targets.forEach((t, i) => { t.qty = parts[i]!; });
   // Bảng khối lượng theo giá khớp: cùng ngân sách rủi ro, khối lượng = rủi ro ÷ (|khớp − SL| + phí)
@@ -324,7 +326,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     if (size.qty <= 0) {
       valid = false;
       invalidReason = 'Khối lượng quá nhỏ so với bước khối lượng của sàn — tăng vốn hoặc bỏ lệnh';
-    } else if (c2 ? !(targets[0]!.qty > 0 && size.qty - targets[0]!.qty > 0) : targets.some((t) => t.price !== null && t.qty <= 0)) {
+    } else if (c2 ? !(targets[0]!.qty > 0 && sq(size.qty - targets[0]!.qty) > 0) : targets.some((t) => t.price !== null && t.qty <= 0)) {
       valid = false;
       invalidReason = c2
         ? `Khối lượng không chia được TP1 ${zc.exitPcts[0]}% + trailing ${100 - zc.exitPcts[0]!}% theo bước khối lượng của sàn`
@@ -334,7 +336,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
   // Dòng đầu đã hợp lệ thì kiểm nốt các dòng sau bằng cùng luật: khối lượng > 0 và mọi phần có giá TP phải ≥ 1 bước.
   // Giá khớp càng xấu thì khối lượng càng nhỏ nên các dòng sau dễ hỏng trước → bỏ dòng hỏng, hạ giá tối đa về dòng hợp lệ cuối cùng.
   if (valid && entryType === 'market') {
-    const rowOk = (f: FillRow) => f.qty > 0 && (c2 ? f.q[0] > 0 && f.qty - f.q[0] > 0 : targets.every((t, i) => t.price === null || f.q[i]! > 0));
+    const rowOk = (f: FillRow) => f.qty > 0 && (c2 ? f.q[0] > 0 && sq(f.qty - f.q[0]) > 0 : targets.every((t, i) => t.price === null || f.q[i]! > 0));
     const kept = fillTable.filter(rowOk);
     if (kept.length < fillTable.length && kept.length > 0) {
       fillTable.length = 0;

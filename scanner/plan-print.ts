@@ -17,12 +17,16 @@ const dec = (x: number): string => String(x).replace('.', ',');
 export const utc = (t: number): string => `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
 // Trailing của C2: kích hoạt tại TP1; khoảng lùi đã tính để mức dừng lúc kích hoạt ≥ giá vào + phí (hoặc nói rõ khi không đạt được).
-function trailingText(t: TrailingPlan, tickSize: number, trailQty: number): string {
+// t = null khi kế hoạch không hợp lệ (buildExit không tính trailing) — in rõ, không dùng toán tử ! (rà soát lại B0).
+// I8: lệnh trailing kích hoạt khớp bằng MARKET → "gần như hòa vốn", chưa tính trượt giá.
+function trailingText(t: TrailingPlan | null, tickSize: number, trailQty: number): string {
   const px = (x: number) => formatTick(x, tickSize);
-  const base = `${100 - COMMON.zones.exitPcts[0]}% còn lại (${qty(trailQty)} coin): trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi ${num(t.callbackPct, 2)}%`;
+  const head = `${100 - COMMON.zones.exitPcts[0]}% còn lại (${qty(trailQty)} coin)`;
+  if (t === null) return `${head}: trailing: chưa tính (kế hoạch không hợp lệ — không đặt lệnh)`;
+  const base = `${head}: trailing stop trên sàn, kích hoạt tại TP1, khoảng lùi ${num(t.callbackPct, 2)}%`;
   return t.needsBreakevenFloor
     ? `${base} (mức dừng lúc kích hoạt ≈ ${px(t.stopAtActivation)} < giá vào + phí vì mức bảo đảm không lỗ chỉ ${num(t.noLossCallbackPct, 3)}% < ${num(COMMON.binanceTrailCallbackMinPct, 1)}% tối thiểu của sàn → bot phải giữ thêm lệnh dừng hòa vốn)`
-    : `${base} (mức dừng lúc kích hoạt ≈ ${px(t.stopAtActivation)} ≥ giá vào + phí${t.clampedTo === 'max' ? `; khoảng lùi theo ATR ${num(t.atrCallbackPct, 1)}% vượt trần ${COMMON.binanceTrailMaxCallbackPct}% của sàn nên dùng ${COMMON.binanceTrailMaxCallbackPct}%` : ''})`;
+    : `${base} (mức dừng lúc kích hoạt ≈ ${px(t.stopAtActivation)} ≥ giá vào + phí${t.clampedTo === 'max' ? `; khoảng lùi theo ATR ${num(t.atrCallbackPct, 1)}% vượt trần ${COMMON.binanceTrailMaxCallbackPct}% của sàn nên dùng ${COMMON.binanceTrailMaxCallbackPct}%` : ''}); gần như hòa vốn, chưa tính trượt giá khi lệnh trailing khớp market`;
 }
 
 // Các dòng in ra cho một kế hoạch lệnh. Mọi giá in theo tickSize; khoảng cách trailing in kèm %.
@@ -51,7 +55,7 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
     lines.push(`  Không có vùng ${long ? 'cản phía trên' : 'đỡ phía dưới'} → không có TP cố định; toàn bộ vị thế theo ${trail}`);
   } else if (c2) {
     const t1 = p.targets[0]!;
-    lines.push(`  TP1: ${px(t1.price!)} chốt ${COMMON.zones.exitPcts[0]}% = ${qty(p.exit.tp1Qty)} coin | ${num(t1.r!, 2)}R — ${t1.reason}; ${trailingText(p.exit.trailing!, tickSize, p.exit.trailQty)}`);
+    lines.push(`  TP1: ${px(t1.price!)} chốt ${COMMON.zones.exitPcts[0]}% = ${qty(p.exit.tp1Qty)} coin | ${num(t1.r!, 2)}R — ${t1.reason}; ${trailingText(p.exit.trailing, tickSize, p.exit.trailQty)}`);
     for (const t of p.targets.slice(1)) {
       if (t.price !== null) lines.push(`  ${t.name} (tham khảo, không đặt lệnh với C2): ${px(t.price)} | ${num(t.r!, 2)}R — ${t.reason}`);
     }
@@ -167,7 +171,7 @@ export function patternPlanLines(head: { symbol: string; score: number; riskTier
     lines.push(t.price === null
       ? `  ${t.name}: chốt ${t.pct}%${amount} — ${trail} — ${t.reason}`
       : c2
-        ? `  ${t.name}: ${px(t.price)} chốt ${COMMON.zones.exitPcts[0]}%${amount} | ${num(t.r!, 2)}R — ${t.reason}; ${trailingText(p.exit.trailing!, tickSize, p.exit.trailQty)}`
+        ? `  ${t.name}: ${px(t.price)} chốt ${COMMON.zones.exitPcts[0]}%${amount} | ${num(t.r!, 2)}R — ${t.reason}; ${trailingText(p.exit.trailing, tickSize, p.exit.trailQty)}`
         : `  ${t.name}: ${px(t.price)} chốt ${t.pct}%${amount} | ${num(t.r!, 2)}R — ${t.reason}`);
   });
   if (c2) {
