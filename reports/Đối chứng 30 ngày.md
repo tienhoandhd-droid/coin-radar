@@ -47,6 +47,27 @@ R = số lần mức rủi ro của lệnh. −0,13R nghĩa là mỗi lệnh tru
 
 30 ngày mù hầu như chỉ có lệnh Long (thị trường không cho tín hiệu Short đạt chuẩn), nên chưa đo được Short ngoài mẫu.
 
+## 4b. Độ nhạy chi phí (bổ sung sau khi chạy mù — không đổi luật, không chạy lại phần mù)
+
+Giả định chi phí trong `config.ts` (`costRoundTripPct` 0,25 / 0,5 / 1,0% khứ hồi theo nhóm thanh khoản, ghi “giả định thận trọng — chưa tra”)
+được kiểm lại bằng một ảnh chụp `bookTicker` của 523 hợp đồng (19/10/2026 18:32Z) + phí taker chính thức 0,05%/chiều:
+chi phí khứ hồi thật khoảng **0,115 / 0,136 / 0,154%** → giả định cũ bi quan 2–6,5 lần. Chạy lại trên 3 tháng phát triển với chi phí hiệu chỉnh:
+
+| Cấu hình | Kỳ vọng R: cũ → hiệu chỉnh | Tổng lãi: cũ → hiệu chỉnh | PF | Long / Short (R/lệnh, hiệu chỉnh) |
+|---|---|---|---|---|
+| Swing, luật hiện tại | −0,145 → −0,101 | −7,2% → −4,9% | 0,84 → 0,89 | −0,01 / −0,18 |
+| Swing combo-loc | +0,254 → +0,299 | +8,6% → +9,6% | 1,50 → 1,57 | +0,34 / +0,14 |
+| Lướt nhanh 4H/1H | −0,227 → −0,083 | −18,6% → +12,2% | 0,84 → 1,11 | +0,07 / −0,24 |
+| Lướt nhanh gốc | −0,356 → −0,193 | −60,2% → −50,1% | 0,57 → 0,59 | −0,27 / −0,15 |
+
+Ý nghĩa:
+- **Kết luận chính không đổi:** không cấu hình nào dương có ý nghĩa thống kê. Ở Swing, chi phí chỉ chiếm ~0,05R/lệnh — kể cả chi phí bằng 0,
+  luật hiện tại vẫn ≈ −0,08R. Vấn đề của Swing là **luật vào lệnh**, không phải phí.
+- Kết quả 30 ngày mù ở mục 4 cũng tính với chi phí cũ, nên nhiều khả năng bi quan thêm khoảng 0,04R/lệnh ở Swing — đây là ước lượng,
+  không phải đo (phần mù đã dùng, không chạy lại).
+- **Long Swing gần hòa vốn (−0,01R)** khi chi phí sát thực tế; Short vẫn là nguồn lỗ.
+- Hạn chế: spread chụp một thời điểm hôm nay, không phải spread của kỳ phát triển; mô hình trượt giá theo cỡ lệnh giữ nguyên.
+
 ## 5. Điểm mạnh
 
 - **Quản trị rủi ro chạy đúng như anh đặt:** không lệnh nào lỗ quá 2%, cầu chì ngắt đúng, sụt giảm Swing được giới hạn ~14–17%.
@@ -83,6 +104,8 @@ R = số lần mức rủi ro của lệnh. −0,13R nghĩa là mỗi lệnh tru
 3. **Có bật combo-loc cho bot giấy không:** tốt hơn luật gốc ở cả hai kỳ nhưng vẫn âm trên dữ liệu mù → đề xuất chỉ bật ở **paper** để thu thêm mẫu.
 4. **Vị thế lạ** (không do bot mở, ví dụ anh tự vào tay) trên sàn: hiện bot chỉ báo Telegram, không đặt SL. Anh muốn bot tự đặt SL bảo vệ không?
 5. Cầu chì: lệnh đóng hòa vốn lỗ vài cent vì phí có tính là “thua” không? Thời gian chờ 2 nến áp sau mọi lần đóng hay chỉ sau SL?
+6. **Hiệu chỉnh giả định chi phí** trong `config.ts` về mức đo được (0,115 / 0,136 / 0,154% khứ hồi, mục 4b)? Đổi này làm máy quét và bot
+   chấp nhận thêm tín hiệu (bớt từ chối “TP1 chưa bù phí”) nên tôi chưa tự đổi. Đề xuất: đổi, kèm đo lại spread định kỳ thay vì ảnh chụp một lần.
 
 ## 9. Hướng tiếp theo đề xuất (chưa làm, cần anh duyệt vì là thay đổi luật)
 
