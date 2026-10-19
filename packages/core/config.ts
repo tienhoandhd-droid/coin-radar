@@ -89,6 +89,20 @@ export const COMMON = {
   patterns: {
     minSwingAtr: { '15m': 1.0, '1h': 1.0, '4h': 0.75, '1d': 0.75 }, // biên độ swing tối thiểu so với pivot ngược chiều trước đó, tính bằng ×ATR(14) tại nến pivot — đề xuất, chưa backtest
     atrPeriod: 14, // chu kỳ ATR của khung nhận diện — đề xuất, chưa backtest
+    zoneTolAtr: 0.5, // hai mức 'bằng nhau' khi chênh ≤ mức này (×A), theo quy tắc gom vùng S/R — đề xuất, chưa backtest
+    rect: {
+      minTouches: 2, // số chạm tối thiểu mỗi biên — đề xuất, chưa backtest
+      tripleTouches: 3, // từ mức này ở một biên thì ghi chú ba đỉnh/ba đáy — đề xuất, chưa backtest
+      minHeightAtr: 3, // chiều cao tối thiểu (×A) — đề xuất, chưa backtest
+      minBars: 20, // thời lượng tối thiểu (nến) — đề xuất, chưa backtest
+      stopMaxAtr: 3, // cắt lỗ xa hơn mức này (×A) thì dùng giữa vùng — đề xuất, chưa backtest
+    },
+    double: {
+      tolAtr: 0.5, // hai đỉnh/đáy lệch ≤ min(mức này ×A, tolPct% giá) — đề xuất, chưa backtest
+      tolPct: 3, // trần lệch theo % giá (Bulkowski <3%) — đề xuất, chưa backtest
+      minDepthAtr: 2.5, // đáy giữa (đỉnh giữa) sâu tối thiểu (×A) — đề xuất, chưa backtest
+      minGapBars: 10, // hai đỉnh/đáy cách nhau tối thiểu (nến) — đề xuất, chưa backtest
+    },
   },
   // GIẢ ĐỊNH THẬN TRỌNG — chưa tra trang phí/ký quỹ chính thức Binance:
   costRoundTripPct: { high: 0.25, mid: 0.5, low: 1.0 }, // phí + trượt giá khứ hồi theo nhóm thanh khoản (%)
