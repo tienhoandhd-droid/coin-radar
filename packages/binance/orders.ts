@@ -177,7 +177,12 @@ function sideProblem(what: string, side: Side, entry: number, price: number, pro
 // Dùng cho SL ban đầu, dừng sàn hòa vốn (D10, leg BE) và dời SL (hủy + đặt lại, mục 4.5).
 // markPrice = giá MARK hiện tại: điều kiện thật của sàn (SL đã ở phía sai so với mark → kích hoạt ngay, -2021/-4142).
 // Không kiểm theo giá vào: dừng hòa vốn nằm phía LỜI của giá vào là hợp lệ.
-export type StopLossInput = { contract: Contract; side: Side; markPrice: number; triggerPrice: number; id: ClientIdParts };
+// purpose quyết định hướng làm tròn tick:
+//   'initial'   = SL ban đầu: XA giá vào (Long XUỐNG, Short LÊN) — giống hệt core (packages/core/plan.ts, awayDir); kế hoạch đã làm
+//                 tròn sẵn nên với giá do core tạo đây là phép đồng nhất (giá in cho người dùng = giá gửi sàn).
+//   'breakeven' = dừng sàn hòa vốn / dời SL về hòa vốn: về phía được bảo vệ (Long LÊN, Short XUỐNG) — không bao giờ tệ hơn hòa vốn.
+export type StopPurpose = 'initial' | 'breakeven';
+export type StopLossInput = { contract: Contract; side: Side; markPrice: number; triggerPrice: number; purpose: StopPurpose; id: ClientIdParts };
 
 // SL: STOP_MARKET closePosition=true (đóng toàn bộ vị thế). Tài liệu: closePosition không dùng cùng quantity và reduceOnly.
 // priceProtect CỐ ĐỊNH false: với true, sàn KHÔNG kích hoạt khi |MARK − CONTRACT| > triggerProtect (mục 4.2) — đúng lúc sập
@@ -188,9 +193,10 @@ function buildStopLoss(a: StopLossInput): Built {
   const idr = tryId(a.id);
   if ('problem' in idr) return fail(idr.problem);
   if (!isPos(a.markPrice) || !isPos(a.triggerPrice)) return failId(idr.id, [`Giá mark ${a.markPrice} / giá dừng ${a.triggerPrice} không hợp lệ`]);
-  // Làm tròn: Long LÊN, Short XUỐNG — SL ban đầu về phía giá vào (lỗ ≤ kế hoạch), dừng hòa vốn ra xa giá vào (không dưới hòa vốn)
-  const trigger = snapToTick(a.triggerPrice, c.tickSize, a.side === 'long' ? 'up' : 'down');
-  // Long (SELL stop) cần trigger < mark; Short (BUY stop) cần trigger > mark
+  if (a.purpose !== 'initial' && a.purpose !== 'breakeven') return failId(idr.id, [`purpose "${String(a.purpose)}" phải là 'initial' hoặc 'breakeven'`]);
+  const up = a.purpose === 'initial' ? a.side === 'short' : a.side === 'long';
+  const trigger = snapToTick(a.triggerPrice, c.tickSize, up ? 'up' : 'down');
+  // Kiểm SAU khi làm tròn. Long (SELL stop) cần trigger < mark; Short (BUY stop) cần trigger > mark
   const wrong = a.side === 'long' ? trigger >= a.markPrice : trigger <= a.markPrice;
   if (wrong) return failId(idr.id, [`Giá dừng ${trigger} đã ở phía sai giá mark ${a.markPrice} (vị thế ${a.side}) — sẽ kích hoạt ngay`]);
   return okReq(algoRequest({

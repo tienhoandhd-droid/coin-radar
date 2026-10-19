@@ -6,6 +6,7 @@ import {
   ALGO_PATH, CLIENT_ID_RE, ORDER_PATH, assertR1, bracketSlots, builders, createOrders, makeClientId, type ClientIdParts,
 } from './orders.ts';
 import type { Contract } from '../core/types.ts';
+import { snapToTick } from '../core/price.ts';
 
 // ---- Hợp đồng mẫu (giá trị giống exchangeInfo thật: tick 0,1; step 0,001; MIN_NOTIONAL 50) ----
 const C: Contract = {
@@ -153,31 +154,31 @@ test('unknown_status trả về kèm clientId, KHÔNG tự gửi lại', async (
   assert.equal(r.kind, 'unknown_status');
   assert.equal(r.clientId, makeClientId(id('E1')));
   assert.equal(h.calls.length, 1);
-  const r2 = await harness([{ throws: true }]).orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, id: id('SL') });
+  const r2 = await harness([{ throws: true }]).orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'initial', id: id('SL') });
   assert.equal(r2.kind, 'unknown_status');
   assert.equal(r2.clientId, makeClientId(id('SL')));
 });
 
 // ================= Algo: SL / TP / trailing =================
-test('SL Long: STOP_MARKET SELL qua algoOrder, closePosition, MARK_PRICE, KHÔNG có quantity/reduceOnly; trigger làm tròn LÊN (gần giá vào)', async () => {
+test('SL ban đầu Long: STOP_MARKET SELL qua algoOrder, closePosition, MARK_PRICE, KHÔNG có quantity/reduceOnly; trigger làm tròn XUỐNG (xa giá vào, như core)', async () => {
   const h = harness([{ body: { algoId: 7, algoStatus: 'NEW' } }]);
-  const r = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 58999.91, id: id('SL') });
+  const r = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 58999.91, purpose: 'initial', id: id('SL') });
   assert.equal(r.kind, 'ok');
   assert.deepEqual(h.calls[0], {
     method: 'POST', path: ALGO_PATH,
     params: {
-      algoType: 'CONDITIONAL', symbol: 'BTCUSDT', side: 'SELL', type: 'STOP_MARKET', triggerPrice: '59000.0',
+      algoType: 'CONDITIONAL', symbol: 'BTCUSDT', side: 'SELL', type: 'STOP_MARKET', triggerPrice: '58999.9',
       closePosition: 'true', workingType: 'MARK_PRICE', priceProtect: 'false', clientAlgoId: makeClientId(id('SL')),
     },
   });
 });
 
-test('SL Short: BUY, trigger làm tròn XUỐNG; priceProtect luôn false (cố định trong module)', async () => {
+test('SL ban đầu Short: BUY, trigger làm tròn LÊN (xa giá vào, như core); priceProtect luôn false', async () => {
   const h = harness();
-  await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 60000, triggerPrice: 61000.09, id: id('SL') });
+  await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 60000, triggerPrice: 61000.09, purpose: 'initial', id: id('SL') });
   const p = h.calls[0]!.params;
   assert.equal(p.side, 'BUY');
-  assert.equal(p.triggerPrice, '61000.0');
+  assert.equal(p.triggerPrice, '61000.1');
   assert.equal(p.priceProtect, 'false');
   assert.equal(p.workingType, 'MARK_PRICE');
   assert.equal('quantity' in p, false);
@@ -186,21 +187,41 @@ test('SL Short: BUY, trigger làm tròn XUỐNG; priceProtect luôn false (cố 
 
 test('SL sai phía giá MARK hiện tại → stop_rejected tại chỗ (vùng -2021/-4142)', async () => {
   const h = harness();
-  const r = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 60000.05, id: id('SL') });
+  const r = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 60000.05, purpose: 'initial', id: id('SL') });
   assert.equal(r.kind, 'stop_rejected');
   assert.equal(r.sent, false);
   assert.equal(r.clientId, makeClientId(id('SL'))); // vẫn có id để log/Telegram truy được chân lệnh
-  const s = await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 60000, triggerPrice: 59000, id: id('SL') });
+  const s = await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 60000, triggerPrice: 59000, purpose: 'initial', id: id('SL') });
   assert.equal(s.kind, 'stop_rejected');
-  const bad = await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: Number.NaN, triggerPrice: 61000, id: id('SL') });
+  const bad = await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: Number.NaN, triggerPrice: 61000, purpose: 'initial', id: id('SL') });
   assert.equal(bad.kind, 'stop_rejected');
+  assert.equal(h.calls.length, 0);
+});
+
+test('SL ban đầu do core làm tròn (price.ts, hướng xa giá vào) đi qua NGUYÊN VẸN — Long và Short', async () => {
+  const h = harness();
+  const longStop = snapToTick(58999.97, C.tickSize, 'down');
+  const shortStop = snapToTick(61000.03, C.tickSize, 'up');
+  await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: longStop, purpose: 'initial', id: id('SL') });
+  await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 60000, triggerPrice: shortStop, purpose: 'initial', id: id('SL') });
+  assert.equal(h.calls[0]!.params.triggerPrice, '58999.9');
+  assert.equal(Number(h.calls[0]!.params.triggerPrice), longStop);
+  assert.equal(h.calls[1]!.params.triggerPrice, '61000.1');
+  assert.equal(Number(h.calls[1]!.params.triggerPrice), shortStop);
+});
+
+test('purpose sai → stop_rejected tại chỗ', async () => {
+  const h = harness();
+  const r = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'x' as 'initial', id: id('SL') });
+  assert.equal(r.kind, 'stop_rejected');
+  assert.match(r.msg, /purpose/);
   assert.equal(h.calls.length, 0);
 });
 
 test('Dừng hòa vốn (sàn BE, D10) phía LỜI của giá vào được đặt — Long và Short', async () => {
   const h = harness();
   // Long vào 60000, giá hòa vốn sau phí 60060.04, mark đang 61500 → dừng ở 60060.1 (làm tròn LÊN: không thấp hơn hòa vốn)
-  const l = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 61500, triggerPrice: 60060.04, id: id('BE') });
+  const l = await h.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 61500, triggerPrice: 60060.04, purpose: 'breakeven', id: id('BE') });
   assert.equal(l.kind, 'ok');
   assert.deepEqual(h.calls[0], {
     method: 'POST', path: ALGO_PATH,
@@ -210,7 +231,7 @@ test('Dừng hòa vốn (sàn BE, D10) phía LỜI của giá vào được đ�
     },
   });
   // Short vào 60000, hòa vốn 59939.96, mark 58500 → dừng 59939.9 (làm tròn XUỐNG)
-  const s = await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 58500, triggerPrice: 59939.96, id: id('BE') });
+  const s = await h.orders.placeStopLoss({ contract: C, side: 'short', markPrice: 58500, triggerPrice: 59939.96, purpose: 'breakeven', id: id('BE') });
   assert.equal(s.kind, 'ok');
   assert.equal(h.calls[1]!.params.side, 'BUY');
   assert.equal(h.calls[1]!.params.triggerPrice, '59939.9');
@@ -221,7 +242,7 @@ test('SL KHÔNG kiểm số lệnh tại chỗ; sàn từ chối SL (-2025/-4045
   const full: Contract = { ...C, maxNumOrders: 1 };
   for (const code of [-2025, -4045, -4142]) {
     const h = harness([{ status: 400, body: { code, msg: 'x' } }]);
-    const r = await h.orders.placeStopLoss({ contract: full, side: 'long', markPrice: 60000, triggerPrice: 59000, id: id('SL') });
+    const r = await h.orders.placeStopLoss({ contract: full, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'initial', id: id('SL') });
     assert.equal(h.calls.length, 1, 'SL phải được gửi');
     assert.equal(r.kind, 'stop_rejected', String(code));
     assert.equal(r.code, code);
@@ -229,7 +250,7 @@ test('SL KHÔNG kiểm số lệnh tại chỗ; sàn từ chối SL (-2025/-4045
   }
   // unknown_status giữ nguyên (phải tra lại, không phải bị từ chối)
   const u = harness([{ status: 503, body: { code: -1007, msg: 'Timeout' } }]);
-  assert.equal((await u.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, id: id('SL') })).kind, 'unknown_status');
+  assert.equal((await u.orders.placeStopLoss({ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'initial', id: id('SL') })).kind, 'unknown_status');
 });
 
 test('Lệnh vào giữ chỗ cho CẢ bộ lệnh (vào + SL + TP1 + trailing + BE) theo MAX_NUM_ORDERS', async () => {
@@ -310,8 +331,8 @@ test('Trailing Short: BUY, activatePrice làm tròn XUỐNG; callbackRate ngoài
 test('Giá rất nhỏ không bị viết dạng số mũ (1e-7)', async () => {
   const tinyC: Contract = { ...C, symbol: 'PEPEUSDT', tickSize: 0.0000001, stepSize: 1, marketStepSize: 1, minQty: 1, marketMinQty: 1, maxQty: 1e9, marketMaxQty: 1e9, minNotional: 5 };
   const h = harness();
-  await h.orders.placeStopLoss({ contract: tinyC, side: 'long', markPrice: 0.0000123, triggerPrice: 0.00000111, id: id('SL') });
-  assert.equal(h.calls[0]!.params.triggerPrice, '0.0000012');
+  await h.orders.placeStopLoss({ contract: tinyC, side: 'long', markPrice: 0.0000123, triggerPrice: 0.00000111, purpose: 'initial', id: id('SL') });
+  assert.equal(h.calls[0]!.params.triggerPrice, '0.0000011');
 });
 
 // ================= Hủy / tra / liệt kê =================
@@ -417,8 +438,8 @@ const samples: Record<keyof typeof builders, unknown[][]> = {
     [{ contract: C, side, kind: 'limit', qty: 0.002, limitPrice: 60000, id: id('E3'), openCount: 0, reserveSlots: 4, expireAt: NOW + 3_600_000 }, NOW],
   ]),
   stopLoss: [
-    [{ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, id: id('SL') }],
-    [{ contract: C, side: 'short', markPrice: 60000, triggerPrice: 61000, id: id('SL') }],
+    [{ contract: C, side: 'long', markPrice: 60000, triggerPrice: 59000, purpose: 'initial', id: id('SL') }],
+    [{ contract: C, side: 'short', markPrice: 60000, triggerPrice: 61000, purpose: 'initial', id: id('SL') }],
   ],
   takeProfit: [
     [{ contract: C, side: 'long', entryPrice: 60000, triggerPrice: 62000, qty: 0.001, id: id('TP1'), openCount: 0 }],
