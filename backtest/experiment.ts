@@ -76,6 +76,8 @@ export type Variant = {
   hooks: string[];
   notTrial?: string; // sửa công cụ/định cỡ (không phải giả thuyết luật): không tính vào k, ghi lý do
   modes?: Mode[]; // chế độ áp dụng được (mặc định cả hai)
+  pinnedBase?: string; // chỉ chạy được với --base này (biến thể độ nhạy gắn với MỘT cấu hình gốc đã chạy)
+  sensitivity?: boolean; // độ nhạy (vd. chi phí): không đổi luật, không tính vào k, KHÔNG thành gốc mới
 };
 
 export const BASELINE_SPEC: RunSpec = { policy: 'C2', filter: 'all', configOverride: {} };
@@ -95,6 +97,17 @@ function wired(name: string, proposal: number | null, change: string, rationale:
 function unwired(name: string, proposal: number | null, change: string, rationale: string,
   configOverride: Record<string, unknown>, hooks: string[]): Variant {
   return { name, proposal, change: `${change} — chưa nối`, rationale, wired: false, run: null, configOverride, hooks: [H0, ...hooks] };
+}
+
+// Độ nhạy chi phí (không phải lần thử luật): costRoundTripPct hiệu chỉnh = 2 × taker 0,05% + 1 × spread trung vị theo nhóm thanh khoản,
+// ảnh chụp bookTicker 523 hợp đồng USDⓈ-M lúc 2026-10-19T18:32Z (hạng theo quoteVolume 24h, COMMON.costTierRank) — trung vị spread
+// cao 0,0153% / vừa 0,0361% / thấp 0,0537%. Một ảnh chụp hôm nay, không phải lịch sử kỳ D. Trượt theo cỡ lệnh (COMMON.slippage) giữ nguyên.
+export const COST_CALIBRATED = { high: 0.115, mid: 0.136, low: 0.154 };
+const SENS = 'độ nhạy chi phí — không phải thử luật, không đổi k; chỉ thay costRoundTripPct bằng bảng hiệu chỉnh (2×taker + spread trung vị ảnh chụp 2026-10-19)';
+function costSensitivity(name: string, base: string, mode: Mode): Variant {
+  return wired(name, null, `độ nhạy chi phí: costRoundTripPct cao/vừa/thấp ${COST_CALIBRATED.high}/${COST_CALIBRATED.mid}/${COST_CALIBRATED.low}%`,
+    'phí taker thật + spread đo được thay cho giả định thận trọng 0,25/0,5/1,0%', {}, { 'COMMON.costRoundTripPct': COST_CALIBRATED },
+    { notTrial: SENS, sensitivity: true, modes: [mode], pinnedBase: base });
 }
 
 const list: Variant[] = [
@@ -138,6 +151,10 @@ const list: Variant[] = [
       'COMMON.entryRules.shortAsym': true, 'COMMON.entryRules.fundingXsPct': 70 }, { modes: ['swing'] }),
   wired('p8-funding-xs70', 8, '#8 lọc funding mặt cắt ngang: Long khi phân vị funding TB 7 ngày ≤ 70%, Short khi ≥ 70%',
     `${RESEARCH} #8 — basis/carry là tín hiệu mặt cắt ngang`, {}, { 'COMMON.entryRules.fundingXsPct': 70 }, { modes: ['swing'] }),
+  costSensitivity('cost-cal-f1', 'f1-funding-fix', 'swing'),
+  costSensitivity('cost-cal-combo', 'combo-loc', 'swing'),
+  costSensitivity('cost-cal-p2fast', 'p2-fast-4h', 'fast'),
+  costSensitivity('cost-cal-base', 'baseline', 'fast'),
 ];
 export const VARIANTS: Record<string, Variant> = Object.fromEntries(list.map((v) => [v.name, v]));
 export function notTrialNames(): Set<string> {
@@ -149,6 +166,10 @@ export function requireWired(name: string): Variant {
   if (v === undefined) throw new Error(`không có biến thể "${name}" — xem --list`);
   if (!v.wired) throw new Error(`biến thể "${name}" chưa nối — bộ mô phỏng/lõi cần:\n  - ${v.hooks.join('\n  - ')}`);
   return v;
+}
+
+export function checkBase(v: Variant, base: string): void {
+  if (v.pinnedBase !== undefined && base !== v.pinnedBase) throw new Error(`biến thể "${v.name}" chỉ chạy với --base ${v.pinnedBase}, nhận "${base}"`);
 }
 
 export function assertDevPeriod(period: string): void {
@@ -249,12 +270,14 @@ export function upsertLogRow(text: string, row: string): string {
 
 export type DecideInput = {
   notTrial?: string; // lý do không tính là lần thử → gốc mới, không áp tiêu chí nhận
+  sensitivity?: boolean; // độ nhạy: không tính là thử và KHÔNG phải gốc mới
   baseline: boolean; trades: number; rPerDayAdjLo: number; retPerDayAdjLo: number; expectancy: number; baseExpectancy: number;
   dd: number; baseDd: number; streak: number; baseStreak: number;
   expectancyCiLo?: number; expectancyCiHi?: number; // CI khối ngày của kỳ vọng biến thể — để ghi dấu tuyệt đối khi "đạt"
 };
 export function decide(a: DecideInput): string {
   if (a.baseline) return 'gốc (đối chứng)';
+  if (a.sensitivity === true) return `độ nhạy — không tính là thử, không phải gốc mới, không đổi luật — ${a.notTrial ?? ''}`;
   if (a.notTrial !== undefined) return `không tính là thử, gốc của các lần thử sau — ${a.notTrial}`;
   if (a.trades < 30) return `không kết luận được (< 30 lệnh: ${a.trades})`;
   if (!(a.rPerDayAdjLo > 0)) return 'không nhận (cận dưới CI Bonferroni của Δ R/ngày ≤ 0)';
@@ -487,7 +510,7 @@ async function decideMode(v: Variant, mode: Mode, outDir: string, sh: Shared): P
     k: v.name === 'baseline' || v.notTrial !== undefined ? '—' : String(sh.k), totalPct: vn(run.summary.totalReturnPct), pf: vn(s.profitFactor), maxDd: vn(run.summary.maxDdPct),
     streak: String(s.longestLosingStreak),
     decision: decide({
-      ...(v.notTrial !== undefined ? { notTrial: v.notTrial } : {}), baseline: v.name === 'baseline', trades: s.trades, rPerDayAdjLo: portfolio?.rPerDay.ciAdj.lo ?? NaN, retPerDayAdjLo: portfolio?.retPerDay.ciAdj.lo ?? NaN,
+      ...(v.notTrial !== undefined ? { notTrial: v.notTrial } : {}), ...(v.sensitivity === true ? { sensitivity: true } : {}), baseline: v.name === 'baseline', trades: s.trades, rPerDayAdjLo: portfolio?.rPerDay.ciAdj.lo ?? NaN, retPerDayAdjLo: portfolio?.retPerDay.ciAdj.lo ?? NaN,
       expectancy: s.expectancyR, baseExpectancy: base?.expectancy ?? NaN, dd: run.summary.maxDdPct, baseDd: base?.dd ?? NaN,
       streak: s.longestLosingStreak, baseStreak: base?.streak ?? NaN, expectancyCiLo: s.expectancyCIBlock.lo, expectancyCiHi: s.expectancyCIBlock.hi,
     }),
@@ -558,6 +581,7 @@ async function main() {
   const base = o.base!;
   if (base === v.name) throw new Error('--base phải khác biến thể đang thử');
   if (base !== 'baseline' && VARIANTS[base] === undefined) throw new Error(`--base: không có biến thể "${base}"`);
+  checkBase(v, base);
   const num = (x: string, name: string) => { const n = Number(x); if (!(n > 0 && Number.isInteger(n))) throw new Error(`--${name} không hợp lệ: "${x}"`); return n; };
 
   const resamples = num(o.resamples!, 'resamples');

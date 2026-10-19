@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   VARIANTS, stackRun, BASELINE_SPEC, assertDevPeriod, requireWired, logRows, countTrials, formatLogRow, upsertLogRow, LOG_HEADER, decide, parseFromOutput, validateSource, resamplesFor,
+  checkBase, notTrialNames, COST_CALIBRATED,
 } from './experiment.ts';
 import { DEV_PERIOD } from './replay.ts';
 
@@ -143,4 +144,25 @@ test('decide: "đạt" so với gốc nhưng bản thân kỳ vọng âm → ghi
   assert.match(decide({ ...ok, expectancy: -0.227, baseExpectancy: -0.381, expectancyCiHi: -0.029 }), /đạt tiêu chí D so với gốc nhưng bản thân vẫn âm \(−0,227R, CI trên < 0\) — không đề xuất bật/);
   assert.match(decide({ ...ok, expectancy: -0.05, expectancyCiHi: 0.2 }), /bản thân vẫn âm \(−0,050R, CI chứa 0\)/);
   assert.match(decide({ ...ok, expectancy: 0.1, expectancyCiLo: -0.1, expectancyCiHi: 0.3 }), /bản thân dương nhưng CI chứa 0/);
+});
+
+test('độ nhạy chi phí: 4 biến thể chỉ ghi đè costRoundTripPct, ghim gốc như lần chạy gốc, không tính vào k, quyết định KHÔNG ghi "gốc mới"', () => {
+  const want: Record<string, { base: string; mode: string }> = {
+    'cost-cal-f1': { base: 'f1-funding-fix', mode: 'swing' }, 'cost-cal-combo': { base: 'combo-loc', mode: 'swing' },
+    'cost-cal-p2fast': { base: 'p2-fast-4h', mode: 'fast' }, 'cost-cal-base': { base: 'baseline', mode: 'fast' },
+  };
+  for (const [name, w] of Object.entries(want)) {
+    const v = VARIANTS[name]!;
+    assert.ok(v.wired && v.sensitivity === true && v.notTrial !== undefined, name);
+    assert.deepEqual(v.configOverride, { 'COMMON.costRoundTripPct': COST_CALIBRATED }, name);
+    assert.deepEqual(v.modes, [w.mode], name);
+    assert.equal(v.pinnedBase, w.base, name);
+    assert.ok(notTrialNames().has(name), name);
+    assert.doesNotThrow(() => checkBase(v, w.base));
+    assert.throws(() => checkBase(v, w.base === 'baseline' ? 'f1-funding-fix' : 'baseline'), /chỉ chạy với --base/);
+  }
+  assert.doesNotThrow(() => checkBase(VARIANTS['combo-loc']!, 'f1-funding-fix')); // biến thể không ghim gốc: --base tùy ý
+  const d = decide({ ...ok, notTrial: 'độ nhạy chi phí', sensitivity: true });
+  assert.match(d, /độ nhạy/);
+  assert.doesNotMatch(d, /gốc của các lần thử sau/);
 });
