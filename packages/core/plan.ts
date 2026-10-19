@@ -1,7 +1,7 @@
 import { atr, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
 import { stopSideZones, targetSideZones, describeZone, type Zone } from './zones.ts';
-import { snapToTick, formatTick } from './price.ts';
+import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import type { Candle, Mode, Side } from './types.ts';
 
 export type CostTier = 'high' | 'mid' | 'low';
@@ -28,7 +28,23 @@ export function positionSize(capital: number, riskPct: number, entry: number, st
   return { qty: q, notional: Math.round(q * entry * 1e8) / 1e8, riskAmount };
 }
 
-export type Target = { name: 'TP1' | 'TP2' | 'TP3'; price: number | null; pct: number; r: number | null; reason: string };
+// Chia khối lượng theo % chốt: các phần đầu làm tròn XUỐNG theo stepSize, phần cuối nhận phần còn lại (tổng luôn bằng qty)
+export function splitQuantity(qty: number, stepSize: number, pcts: readonly number[]): number[] {
+  const d = tickDecimals(stepSize);
+  const snap = (x: number) => Number(x.toFixed(d));
+  const parts: number[] = [];
+  let used = 0;
+  for (let i = 0; i < pcts.length - 1; i++) {
+    const part = snap(Math.floor((qty * pcts[i]!) / 100 / stepSize + 1e-9) * stepSize);
+    parts.push(part);
+    used += part;
+  }
+  parts.push(snap(qty - used));
+  return parts;
+}
+
+// qty = khối lượng của phần này; nếu price = null thì phần này nằm trong phần để trailing stop
+export type Target = { name: 'TP1' | 'TP2' | 'TP3'; price: number | null; pct: number; qty: number; r: number | null; reason: string };
 
 export type TradePlan = {
   side: Side;
@@ -49,7 +65,8 @@ export type TradePlan = {
   riskPerUnit: number;
   qty: number;
   notional: number;
-  riskAmount: number;
+  riskAmount: number; // NGÂN SÁCH rủi ro (vốn × %), không phải số tiền mất thật
+  estLoss: number; // số tiền mất ước tính nếu chạm SL = qty × |vào − SL| + phí ước tính
   riskPct: number; // % vốn rủi ro thực sự đã dùng để tính khối lượng (P-01)
   safeLeverage: number;
   suggestedLeverage: number;
@@ -165,7 +182,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     if (found.length === 0 && z === candidates[0] && dir * (tp - entry) <= 0) { blockedBy = z; break; }
     const prev = found.length ? found[found.length - 1]!.price! : entry;
     if (dir * (tp - prev) <= 0) continue;
-    found.push({ name: `TP${found.length + 1}` as Target['name'], price: tp, pct: 0, r: (dir * (tp - entry)) / riskPerUnit,
+    found.push({ name: `TP${found.length + 1}` as Target['name'], price: tp, pct: 0, qty: 0, r: (dir * (tp - entry)) / riskPerUnit,
       reason: `Trước vùng cản ${dz(z)}` });
   }
   const names = ['TP1', 'TP2', 'TP3'] as const;
@@ -173,7 +190,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     const pct = zc.exitPcts[idx]!;
     const hit = found[idx];
     if (hit) return { ...hit, name, pct };
-    return { name, price: null, pct, r: null,
+    return { name, price: null, pct, qty: 0, r: null,
       reason: found.length === 0 ? 'Không có vùng cản phía trên (giá ở vùng đỉnh mới) — để trailing stop' : 'Không còn vùng cản — phần này để trailing stop (3×ATR)' };
   });
   if (blockedBy !== null) {
@@ -202,7 +219,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
   let entryReason: string;
   if (entryType === 'limit' && support !== null) {
     entryZone = a.side === 'long' ? { low: nearEdge, high: entry } : { low: entry, high: nearEdge };
-    const hasTp1 = targets[0]!.price !== null;
+    // TP1 đã nằm sai phía giá thị trường (Long ≤, Short ≥) thì điều kiện "chạm TP1 trước" vô nghĩa
+    const tp1 = targets[0]!.price;
+    const hasTp1 = tp1 !== null && dir * (tp1 - marketPrice) > 0;
     limitExpiryHours = zc.limitExpiryBars[a.mode] * ENTRY_BAR_HOURS[a.mode];
     entryReason = `Giá đã chạy xa vùng ${sideWord} ${vn(distAtr, 1)}×ATR — đặt limit ${fp(entry)} chờ hồi về vùng ${dz(support)}; hủy nếu sau ${limitExpiryHours} giờ chưa khớp${hasTp1 ? ' hoặc giá chạm TP1 trước' : ''}`;
   } else {
@@ -218,6 +237,18 @@ export function buildPlan(a: PlanArgs): TradePlan {
 
   const costPct = COMMON.costRoundTripPct[a.costTier];
   const size = positionSize(a.capital, a.riskPct, entry, stop, costPct, a.stepSize);
+  const estLoss = size.qty * riskPerUnit + (size.notional * costPct) / 100;
+  const parts = splitQuantity(size.qty, a.stepSize, zc.exitPcts);
+  targets.forEach((t, i) => { t.qty = parts[i]!; });
+  if (valid) {
+    if (size.qty <= 0) {
+      valid = false;
+      invalidReason = 'Khối lượng quá nhỏ so với bước khối lượng của sàn — tăng vốn hoặc bỏ lệnh';
+    } else if (targets.some((t) => t.price !== null && t.qty <= 0)) {
+      valid = false;
+      invalidReason = 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn';
+    }
+  }
   const safe = maxSafeLeverage(riskPerUnit / entry, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops);
   const suggested = Math.max(1, Math.min(cfg.maxLeverage, Math.floor(safe)));
   // Số kỳ funding thật trong thời gian giữ dự kiến: 4h/kỳ → gấp đôi 8h/kỳ
@@ -243,6 +274,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     qty: size.qty,
     notional: size.notional,
     riskAmount: size.riskAmount,
+    estLoss,
     riskPct: a.riskPct,
     safeLeverage: safe,
     suggestedLeverage: suggested,

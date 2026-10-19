@@ -3,6 +3,7 @@ import { formatTick } from '../packages/core/price.ts';
 import type { TradePlan } from '../packages/core/plan.ts';
 
 const num = (x: number, digits: number): string => x.toFixed(digits).replace('.', ',');
+const qty = (x: number): string => num(x, 8).replace(/0+$/, '').replace(/,$/, '');
 const dec = (x: number): string => String(x).replace('.', ',');
 
 // Các dòng in ra cho một kế hoạch lệnh. Mọi giá in theo tickSize; khoảng cách trailing in kèm %.
@@ -25,15 +26,15 @@ export function planLines(head: { symbol: string; score: number; riskTier: strin
   } else {
     for (const t of p.targets) {
       lines.push(t.price === null
-        ? `  ${t.name}: chốt ${t.pct}% — ${trail} — ${t.reason}`
-        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}% | ${num(t.r!, 2)}R — ${t.reason}`);
+        ? `  ${t.name}: chốt ${t.pct}% = ${qty(t.qty)} coin — ${trail} — ${t.reason}`
+        : `  ${t.name}: ${px(t.price)} chốt ${t.pct}% = ${qty(t.qty)} coin | ${num(t.r!, 2)}R — ${t.reason}`);
     }
     lines.push(`  Đạt TP1 → dời SL về giá vào ${px(p.afterTp1Stop)} (giữ nguyên sau TP2)`);
   }
   if (trailPct > COMMON.binanceTrailMaxCallbackPct) {
-    lines.push(`  LƯU Ý: lệnh trailing stop của Binance chỉ nhận callbackRate tối đa ${COMMON.binanceTrailMaxCallbackPct}% (khoảng cách này là ${num(trailPct, 1)}%) → không đặt được nguyên văn, hãy tự dời SL thủ công theo ${px(p.trailAtr)} dưới giá ${long ? 'cao' : 'thấp'} nhất.`);
+    lines.push(`  LƯU Ý: lệnh trailing stop của Binance chỉ nhận callbackRate tối đa ${COMMON.binanceTrailMaxCallbackPct}% (khoảng cách này là ${num(trailPct, 1)}%) → không đặt được nguyên văn, hãy tự dời SL thủ công theo ${px(p.trailAtr)} ${long ? 'dưới giá cao' : 'trên giá thấp'} nhất.`);
   }
-  lines.push(`  Khối lượng: ${num(p.qty, 8).replace(/0+$/, '').replace(/,$/, '')} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)}`);
-  lines.push(`  Tiền mất nếu chạm SL: ${num(p.riskAmount, 2)} USDT (${dec(p.riskPct)}% vốn)`);
+  lines.push(`  Khối lượng: ${qty(p.qty)} (≈ ${num(p.notional, 2)} USDT) | Đòn bẩy gợi ý: ${p.suggestedLeverage}x | Giá thanh lý ước tính: ${px(p.liquidationEstimate)}`);
+  lines.push(`  Tiền mất ước tính nếu chạm SL: ${num(p.estLoss, 2)} USDT (đã gồm phí ước tính; ngân sách rủi ro ${dec(p.riskPct)}% vốn = ${num(p.riskAmount, 2)} USDT)`);
   return lines;
 }

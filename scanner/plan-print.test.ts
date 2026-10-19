@@ -7,12 +7,12 @@ const base: TradePlan = {
   side: 'long', entryType: 'market', marketPrice: 0.6143, entry: 0.6143, entryZone: { low: 0.6143, high: 0.6263 },
   limitExpiryHours: null, entryReason: 'ly do vao', maxEntry: 0.6263, stop: 0.532, stopReason: 'ly do sl',
   targets: [
-    { name: 'TP1', price: 0.761, pct: 50, r: 1.78, reason: 'ly do tp1' },
-    { name: 'TP2', price: null, pct: 30, r: null, reason: 'het vung' },
-    { name: 'TP3', price: null, pct: 20, r: null, reason: 'het vung' },
+    { name: 'TP1', price: 0.761, pct: 50, qty: 14, r: 1.78, reason: 'ly do tp1' },
+    { name: 'TP2', price: null, pct: 30, qty: 8, r: null, reason: 'het vung' },
+    { name: 'TP3', price: null, pct: 20, qty: 7, r: null, reason: 'het vung' },
   ],
   afterTp1Stop: 0.6143, valid: true, invalidReason: null, trailAtr: 0.1196, riskPerUnit: 0.0823, qty: 29, notional: 17.81,
-  riskAmount: 2.5, riskPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
+  riskAmount: 2.5, estLoss: 2.39, riskPct: 0.25, safeLeverage: 4, suggestedLeverage: 3, liquidationEstimate: 0.4157, marginNeeded: 6,
   fundingCostR: 0, timeStopHours: 1, maxHoldHours: 2,
 };
 const head = { symbol: 'TIAUSDT', score: 75.9, riskTier: 'Rất cao' };
@@ -20,7 +20,7 @@ const head = { symbol: 'TIAUSDT', score: 75.9, riskTier: 'Rất cao' };
 test('in kế hoạch: dấu phẩy cho điểm và % rủi ro, trailing là khoảng cách kèm %', () => {
   const t = planLines(head, base, 0.0001).join('\n');
   assert.match(t, /điểm 75,9/);
-  assert.match(t, /\(0,25% vốn\)/);
+  assert.match(t, /ngân sách rủi ro 0,25% vốn/);
   assert.match(t, /trailing stop: cách giá cao nhất 3×ATR = 0,1196 \(19,5%\)/);
   assert.match(t, /Đạt TP1 → dời SL về giá vào 0,6143/);
   assert.doesNotMatch(t, /3×ATR = 0,1196 — /);
@@ -52,5 +52,26 @@ test('limit: ghi giá limit và giờ hết hạn', () => {
 
 test('TP2/TP3 null khi TP1 có: dùng cùng câu trailing', () => {
   const t = planLines(head, base, 0.0001).join('\n');
-  assert.match(t, /TP2: chốt 30% — trailing stop/);
+  assert.match(t, /TP2: chốt 30% = 8 coin — trailing stop/);
+});
+
+test('1.2 Short: LƯU Ý trailing nói "trên giá thấp nhất"; Long nói "dưới giá cao nhất"', () => {
+  const sh = planLines(head, { ...base, side: 'short' }, 0.0001).join('\n');
+  assert.match(sh, /theo 0,1196 trên giá thấp nhất/);
+  assert.doesNotMatch(sh, /dưới giá thấp nhất/);
+  const lg = planLines(head, base, 0.0001).join('\n');
+  assert.match(lg, /theo 0,1196 dưới giá cao nhất/);
+});
+
+test('1.4 in khối lượng từng TP; phần trailing ghi rõ', () => {
+  const t = planLines(head, base, 0.0001).join('\n');
+  assert.match(t, /TP1: 0,7610 chốt 50% = 14 coin/);
+  assert.match(t, /TP2: chốt 30% = 8 coin — trailing stop/);
+  assert.match(t, /TP3: chốt 20% = 7 coin — trailing stop/);
+});
+
+test('1.3 in thua lỗ ước tính thật, không in ngân sách rủi ro', () => {
+  const t = planLines(head, base, 0.0001).join('\n');
+  assert.match(t, /Tiền mất ước tính nếu chạm SL: 2,39 USDT/);
+  assert.doesNotMatch(t, /Tiền mất nếu chạm SL: 2,50/);
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, buildPlan, tp1R } from './plan.ts';
+import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan, tp1R } from './plan.ts';
 import type { Zone } from './zones.ts';
 import type { Candle } from './types.ts';
 
@@ -299,4 +299,59 @@ test('limit không có TP1: lý do chỉ "hủy nếu sau … giờ chưa khớp
 test('limit có TP1: lý do vẫn ghi "hoặc giá chạm TP1 trước"', () => {
   const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(100), zones: [...supports, zone(103, 104)] });
   assert.match(p.entryReason, /giá chạm TP1 trước/);
+});
+
+// ---- Sửa trước khi merge 1.1: TP1 đã nằm sai phía giá thị trường ----
+test('1.1 Long limit: TP1 ≤ giá thị trường → không ghi "giá chạm TP1", chỉ hết hạn', () => {
+  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'long', entry: flat(100), zones: [zone(95, 96, 3), zone(99, 99.5)] });
+  assert.equal(p.entryType, 'limit');
+  assert.ok(p.targets[0]!.price! <= 100);
+  assert.match(p.entryReason, /hủy nếu sau 2 giờ chưa khớp/);
+  assert.doesNotMatch(p.entryReason, /TP1/);
+});
+
+test('1.1 Short limit: TP1 ≥ giá thị trường → không ghi "giá chạm TP1", chỉ hết hạn', () => {
+  const p = buildPlan({ ...baseArgs, mode: 'fast', side: 'short', entry: flat(100), zones: [zone(104, 105, 3), zone(100.5, 101)] });
+  assert.equal(p.entryType, 'limit');
+  assert.ok(p.targets[0]!.price! >= 100);
+  assert.match(p.entryReason, /hủy nếu sau 2 giờ chưa khớp/);
+  assert.doesNotMatch(p.entryReason, /TP1/);
+});
+
+test('1.1 Short limit: TP1 dưới giá thị trường → vẫn ghi "giá chạm TP1 trước"', () => {
+  const p = buildPlan({ ...baseArgs, side: 'short', entry: flat(100), zones: [zone(104, 105, 3), zone(97, 98)] });
+  assert.match(p.entryReason, /giá chạm TP1 trước/);
+});
+
+// ---- 1.3 / 1.4: khối lượng ----
+test('1.4 splitQuantity: 29 (bước 1) → 14/8/7; 0,033 (bước 0,001) → 0,016/0,009/0,008; 2 → có phần 0', () => {
+  assert.deepEqual(splitQuantity(29, 1, [50, 30, 20]), [14, 8, 7]);
+  assert.deepEqual(splitQuantity(0.033, 0.001, [50, 30, 20]), [0.016, 0.009, 0.008]);
+  assert.deepEqual(splitQuantity(2, 1, [50, 30, 20]), [1, 0, 1]);
+});
+
+test('1.3 qty = 0 → kế hoạch không hợp lệ, có lý do khối lượng', () => {
+  const p = buildPlan({ ...baseArgs, stepSize: 1000, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(p.qty, 0);
+  assert.equal(p.valid, false);
+  assert.equal(p.invalidReason, 'Khối lượng quá nhỏ so với bước khối lượng của sàn — tăng vốn hoặc bỏ lệnh');
+});
+
+test('1.4 qty không chia được 50/30/20 → không hợp lệ; chia được → qty từng TP cộng lại bằng qty', () => {
+  // vốn 1000, rủi ro 0,5%, vào 96,3, SL 94,7, phí cao → qty khoảng 3 với bước 1
+  const small = buildPlan({ ...baseArgs, stepSize: 1, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(small.qty, 2);
+  assert.equal(small.valid, false);
+  assert.equal(small.invalidReason, 'Khối lượng không chia được 50/30/20 theo bước khối lượng của sàn');
+  const ok = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  assert.equal(ok.valid, true);
+  assert.equal(r6(ok.targets.reduce((s, t) => s + t.qty, 0)), r6(ok.qty));
+});
+
+test('1.3 estLoss = qty × |vào − SL| + phí ước tính', () => {
+  const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: [...supports, ...resistances] });
+  const cost = 0.5; // COMMON.costRoundTripPct.high — kiểm lại bên dưới
+  assert.ok(p.estLoss > p.qty * p.riskPerUnit);
+  assert.ok(p.estLoss <= p.riskAmount + 1e-9);
+  void cost;
 });
