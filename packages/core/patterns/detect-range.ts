@@ -57,7 +57,7 @@ export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], ti
     if (highs.length >= cfg.tripleTouches) notes.push(`ba đỉnh (${highs.length} chạm biên trên)`);
     if (lows.length >= cfg.tripleTouches) notes.push(`ba đáy (${lows.length} chạm biên dưới)`);
     const touches = Math.min(highs.length, lows.length);
-    out.push({
+    const geom: PatternGeometry = {
       kind: 'rectangle',
       timeframe,
       pivots: win,
@@ -70,7 +70,9 @@ export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], ti
       stopRef: { up: mid, down: mid },
       quality: Math.min(1, touches / (2 * cfg.minTouches)),
       notes,
-    });
+    };
+    geom.stopAt = (cc, side, bi) => rectangleStopRef(cc, geom, side, bi, atr);
+    out.push(geom);
   }
   return out;
 }
@@ -78,12 +80,15 @@ export function detectRectangles(c: Candle[], pivots: Pivot[], atr: number[], ti
 // Mức cắt lỗ chữ nhật lúc phá (báo cáo mục (2): "pivot nhỏ gần nhất phía trong mô hình"):
 // pivot NGƯỢC loại với biên bị phá (phá lên → đáy; phá xuống → đỉnh), gần nhất, nằm SAU lần chạm cuối của biên bị phá,
 // đã xác nhận (đủ pivotConfirmBars nến bên phải) chậm nhất tại nến phá, KHÔNG phải một lần chạm biên của mô hình,
-// và nằm hẳn giữa hai biên. Không có → giữa vùng. Chỉ đọc nến ≤ breakoutIndex.
-export function rectangleStopRef(c: Candle[], g: PatternGeometry, side: 'up' | 'down', breakoutIndex: number): { price: number; note: string } {
+// nằm hẳn giữa hai biên và cách biên bị phá ≥ innerMinAtr×A(nến phá). Không có → giữa vùng. Chỉ đọc nến ≤ breakoutIndex.
+export function rectangleStopRef(c: Candle[], g: PatternGeometry, side: 'up' | 'down', breakoutIndex: number, atr: number[]): { price: number; note: string } {
   if (g.kind !== 'rectangle') throw new Error(`rectangleStopRef: chỉ cho chữ nhật, nhận ${g.kind}`);
   if (!Number.isInteger(breakoutIndex) || breakoutIndex < 0 || breakoutIndex >= c.length) {
     throw new Error(`rectangleStopRef: nến phá ${breakoutIndex} ngoài dữ liệu (${c.length} nến)`);
   }
+  const A = atr[breakoutIndex];
+  if (A === undefined || !Number.isFinite(A) || A <= 0) throw new Error(`rectangleStopRef: ATR không hợp lệ tại nến phá ${breakoutIndex}: ${A}`);
+  const minGap = COMMON.patterns.rect.innerMinAtr * A;
   const upper = g.upper(g.endIndex);
   const lower = g.lower(g.endIndex);
   const mid = (upper + lower) / 2;
@@ -96,7 +101,8 @@ export function rectangleStopRef(c: Candle[], g: PatternGeometry, side: 'up' | '
   const n = COMMON.pivotConfirmBars;
   const idx = side === 'up' ? pivotLows(seen.map((k) => k.low), n) : pivotHighs(seen.map((k) => k.high), n);
   const priceAt = (i: number) => (side === 'up' ? c[i]!.low : c[i]!.high);
-  const inner = idx.filter((i) => i > lastTouch.index && !touchIdx.has(i) && priceAt(i) > lower && priceAt(i) < upper);
+  const gapOk = (i: number) => (side === 'up' ? upper - priceAt(i) : priceAt(i) - lower) >= minGap - 1e-9; // không dùng gợn sát biên
+  const inner = idx.filter((i) => i > lastTouch.index && !touchIdx.has(i) && priceAt(i) > lower && priceAt(i) < upper && gapOk(i));
   const pick = inner[inner.length - 1];
   if (pick === undefined) return { price: mid, note: 'SL chữ nhật: không có pivot nhỏ phía trong sau lần chạm cuối → giữa vùng' };
   return { price: priceAt(pick), note: `SL chữ nhật: pivot nhỏ phía trong ${priceAt(pick)} (nến ${pick}) sau lần chạm biên cuối` };

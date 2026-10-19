@@ -184,11 +184,13 @@ test('đường phá nghiêng: in độ dốc trong luật sau TP1', () => {
 
 test('khối "Mô hình đang theo dõi": loại, khung, trạng thái, đường phá, chiều cao; ẩn ghi rõ', () => {
   const lines = trackedLines([
-    { id: 'x', kind: 'rectangle', timeframe: '4h', state: 'breakout', side: 'up', upper: 110.5, lower: 99.5, breakoutLine: 110.5, height: 11, pivots: [], notes: ['P-G2 qua'], hidden: false },
-    { id: 'y', kind: 'bull_flag', timeframe: '1h', state: 'armed', side: null, upper: 120.123, lower: 118.2, breakoutLine: null, height: 9, pivots: [], notes: [], hidden: true },
+    { id: 'x', kind: 'rectangle', timeframe: '4h', state: 'breakout', side: 'up', upper: 110.5, lower: 99.5, breakoutLine: 110.5, height: 11, pivots: [], notes: ['P-G2 qua'], hidden: false, contextOnly: false },
+    { id: 'z', kind: 'double_top', timeframe: '4h', state: 'breakout', side: 'down', upper: 120, lower: 110, breakoutLine: 110, height: 10, pivots: [], notes: [], hidden: false, contextOnly: true },
+    { id: 'y', kind: 'bull_flag', timeframe: '1h', state: 'armed', side: null, upper: 120.123, lower: 118.2, breakoutLine: null, height: 9, pivots: [], notes: [], hidden: true, contextOnly: false },
   ], 0.1);
   const t = lines.join('\n');
   assert.match(t, /chữ nhật 4H — breakout \(phá lên\) \| đường phá 110,5 \| chiều cao 11,0/);
   assert.match(t, /P-G2 qua/);
+  assert.match(t, /hai đỉnh 4H \(bối cảnh\) — breakout \(phá xuống\)/);
   assert.match(t, /cờ tăng 1H — armed \| biên trên 120,1 \/ biên dưới 118,2 \| chiều cao 9,0 \| ẩn \(Lướt nhanh: chỉ ghi nhận\)/);
 });

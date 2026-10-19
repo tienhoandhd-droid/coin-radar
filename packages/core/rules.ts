@@ -40,10 +40,10 @@ export const RULES: readonly Rule[] = [
   { code: 'R-02', title: 'Chế độ thị trường BTC SMA200 + cầu dao biến động', evidence: 'evidence', status: 'active', source: REPORT },
   // Kế hoạch 1c — mô hình biểu đồ (mức căn cứ theo báo cáo mục (1) và phần "BTC/ETH ít biến động")
   { code: 'P-G1', title: 'Mô hình chỉ cho coin rủi ro Thấp/Vừa và thanh khoản nhóm cao (suy luận, chưa có số liệu)', evidence: 'industry', status: 'active', source: PATTERNS },
-  { code: 'P-G2', title: 'Mô hình Swing chỉ phá thuận xu hướng 1D; tam giác cân phá xuống khi thị trường Lên không Short; hai đỉnh Short cần 1D dưới SMA20 và ngoài 30 ngày sau khi BTC lấy lại SMA200', evidence: 'evidence', status: 'active', source: PATTERNS },
-  { code: 'P-C1', title: 'Bối cảnh: vai-đầu-vai đã xác nhận chặn lệnh ngược; cấm Long sát dưới biên trên / Short sát trên biên dưới vùng nhiều tháng chưa phá', evidence: 'industry', status: 'active', source: PATTERNS },
+  { code: 'P-G2', title: 'Mô hình Swing chỉ phá thuận xu hướng 1D; tam giác cân phá xuống khi thị trường Lên không Short', evidence: 'evidence', status: 'active', source: PATTERNS },
+  { code: 'P-C1', title: 'Bối cảnh: vai-đầu-vai và hai đỉnh/hai đáy đã xác nhận chặn lệnh ngược (hai đỉnh/hai đáy chỉ là bối cảnh — người dùng chọn 19/10/2026); cấm Long sát dưới biên trên / Short sát trên biên dưới vùng nhiều tháng chưa phá', evidence: 'industry', status: 'active', source: PATTERNS },
   { code: 'P-C2', title: 'Cờ "coil" (nén biến động) — chỉ báo, không là điều kiện', evidence: 'industry', status: 'display', source: PATTERNS },
-  { code: 'P-S1', title: 'Tín hiệu phá vỡ mô hình 4H/1D (chữ nhật, cờ, tam giác, hai đỉnh/hai đáy) với kế hoạch lệnh riêng; Lướt nhanh chỉ ghi nhận', evidence: 'industry', status: 'active', source: PATTERNS },
+  { code: 'P-S1', title: 'Tín hiệu phá vỡ mô hình 4H/1D (chữ nhật, cờ, tam giác) với kế hoạch lệnh riêng; Lướt nhanh chỉ ghi nhận', evidence: 'industry', status: 'active', source: PATTERNS },
 ];
 
 export function ruleByCode(code: string): Rule {

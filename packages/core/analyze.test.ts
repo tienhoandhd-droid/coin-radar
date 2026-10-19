@@ -286,7 +286,7 @@ import { finalizeSignal, type PatternCandidate } from './analyze.ts';
 import { patternPlanLines } from '../../scanner/plan-print.ts';
 
 // Chữ nhật 4H 500..530 (h = 30, cao hơn mọi vùng S/R của base) — 20 nến nền khởi động ATR, chạm trên 30/50/70, chạm dưới 40/60,
-// đáy nhỏ phía trong 528,8 ở nến 75 (sau lần chạm trên cuối), nến 80 phá lên đóng 532.
+// đáy nhỏ phía trong 528,2 ở nến 75 (cách biên 1,8 ≥ 0,5×A) (sau lần chạm trên cuối), nến 80 phá lên đóng 532.
 function rectInner(): Candle[] {
   const out: Candle[] = [];
   const put = (i: number, high: number, low: number, close: number) =>
@@ -296,7 +296,7 @@ function rectInner(): Candle[] {
     const low = i === 40 || i === 60 ? 500 : 515;
     put(i, high, low, 516.5);
   }
-  for (let i = 71; i <= 79; i++) put(i, 529.8, i === 75 ? 528.8 : 529.1, 529.5);
+  for (let i = 71; i <= 79; i++) put(i, 529.8, i === 75 ? 528.2 : 528.5, 529.2);
   put(80, 532.6, 529, 532);
   return out;
 }
@@ -318,7 +318,7 @@ test('I1: Long — vùng và mô hình cùng chiều → phát tín hiệu MÔ H
   assert.equal(a.best.side, 'long');
   assert.ok(a.gates.some((g) => g.code === 'P-G2' && g.pass) && a.gates.some((g) => g.code === 'P-G1'));
   assert.ok(a.flags.some((f) => /cùng chiều Long → dùng kế hoạch theo mô hình/.test(f)), a.flags.join(' | '));
-  assert.ok(r!.notes.some((n) => /pivot nhỏ phía trong 528.8/.test(n)), r!.notes.join(' | '));
+  assert.match(a.patternSignal.stopReason, /pivot nhỏ phía trong 528.2/);
   if (process.env.PRINT_PLAN) console.log(patternPlanLines({ symbol: 'TESTUSDT', score: a.best.score, riskTier: a.risk.tier }, a.patternSignal, 0.01).join('\n'));
 });
 
@@ -343,7 +343,9 @@ test('I1: điểm phía mô hình < minSideScore → không phát tín hiệu m�
   if (a.long.score >= COMMON.patterns.minSideScore) return assert.fail(`fixture cần điểm Long < ${COMMON.patterns.minSideScore}, có ${a.long.score}`);
   assert.equal(a.patternSignal, null);
   const r = a.patterns.find((p) => p.kind === 'rectangle')!;
-  assert.ok(r.notes.some((n) => /điểm Long .* < 70|cổng trượt/.test(n)), r.notes.join(' | '));
+  // lý do chặn phải là ĐIỂM (đã qua mọi cổng), không phải cổng khác
+  assert.ok(!r.notes.some((n) => /cổng trượt|^Kế hoạch mô hình: bỏ/.test(n)), r.notes.join(' | '));
+  assert.ok(r.notes.includes(`Kế hoạch mô hình: lập được, qua cổng nhưng điểm Long ${a.long.score} < ${COMMON.patterns.minSideScore}`), r.notes.join(' | '));
 });
 
 const fakeScore = (side: 'long' | 'short', score: number) => ({ side, score, coverage: 1, reasons: [], rsZ: null });

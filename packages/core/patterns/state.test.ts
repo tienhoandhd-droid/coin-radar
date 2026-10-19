@@ -117,7 +117,7 @@ test('không failed khi quay vào đúng 0,5×A hoặc ít hơn', () => {
 });
 
 test('failed: chạm mức cắt lỗ (stopRef)', () => {
-  const r = run(rect({ stopRef: { up: 107, down: 106 } }), [bar(111), bar(110.5, 112, 106.5)]);
+  const r = run(rect({ stopRef: { up: 107, down: 106 } }), [bar(111), bar(110.5, 112, 105.9)]); // mức dừng = 107 − 0,5×A(2) = 106
   assert.equal(r.state, 'failed');
 });
 
@@ -226,7 +226,7 @@ test('dedupePatterns: trong cùng (loại, khung) cửa sổ chồng nhau chỉ 
 
 test('C1: failed vẫn được phát hiện SAU 10 nến (chạm cắt lỗ)', () => {
   const far = (n: number) => Array.from({ length: n }, () => bar(115, 116, 114));
-  const r = run(rect({ stopRef: { up: 107, down: 106 } }), [bar(111), ...far(15), bar(112, 113, 106.5)]);
+  const r = run(rect({ stopRef: { up: 107, down: 106 } }), [bar(111), ...far(15), bar(112, 113, 105.9)]);
   assert.equal(r.state, 'failed');
 });
 
@@ -262,7 +262,7 @@ test('I2: inBreakoutWindow máy đọc được: null nếu không phải tam gi
   assert.equal(run(g, [bar(105)]).inBreakoutWindow, null); // chưa phá
 });
 
-const ASOF = 160; // tại nến này bản phát đầu đã failed nhưng bản phát lại vẫn cho breakout (repro của review)
+const ASOF = 189; // tại nến này bản phát đầu đã failed nhưng bản phát lại vẫn cho breakout (repro của review; mức dừng có đệm từ vòng sửa 2 nên lùi từ 160)
 test('C2: cùng patternId nhiều hình học cờ → giữ trạng thái của hình học phát ĐẦU TIÊN (failed không bị ghi đè)', () => {
   const c = series();
   const a = atr(c, COMMON.patterns.atrPeriod);
@@ -401,4 +401,27 @@ test('P3: tam giác tăng và tam giác giảm chồng cửa sổ cùng khung �
   assert.equal(dedupePatterns([mk('a', 'double_top', 0, 20, 3, 'armed'), mk('b', 'double_bottom', 10, 25, 3, 'armed')]).length, 1);
   // khác họ (chữ nhật vs tam giác) → giữ cả hai
   assert.equal(dedupePatterns([mk('a', 'rectangle', 0, 20, 4, 'armed'), mk('b', 'sym_triangle', 10, 25, 5, 'armed')]).length, 2);
+});
+
+// ---------- Vòng sửa 2: mức dừng của máy trạng thái = mức dừng của kế hoạch (một hàm dùng chung) ----------
+import { patternStopLevel } from './state.ts';
+
+test('patternStopLevel: mức mô hình ∓ đệm×A tại NẾN PHÁ (không dùng ATR nến sau)', () => {
+  const c = [...base(), bar(111)];
+  const a = A(c.length, 2);
+  const lv = patternStopLevel(rect({ stopRef: { up: 107, down: 106 } }), c, a, 'up', 24);
+  assert.equal(lv.ref, 107);
+  assert.equal(lv.level, 107 - COMMON.patterns.plan.stopBufferAtr * 2);
+  const a2 = [...a];
+  a2[a2.length - 1] = 50; // ATR sau nến phá không được ảnh hưởng — ở đây nến phá là nến cuối nên đổi nến TRƯỚC thì cũng không
+  a2[10] = 99;
+  assert.equal(patternStopLevel(rect({ stopRef: { up: 107, down: 106 } }), c, a2, 'up', 23).level, 107 - COMMON.patterns.plan.stopBufferAtr * 2);
+  const short = patternStopLevel(rect({ stopRef: { up: 107, down: 106 } }), c, a, 'down', 24);
+  assert.equal(short.level, 106 + COMMON.patterns.plan.stopBufferAtr * 2);
+});
+
+test('failed: râu chạm mức dừng có đệm (chưa chạm thì vẫn breakout)', () => {
+  const g = rect({ stopRef: { up: 107, down: 106 } });
+  assert.notEqual(run(g, [bar(111), bar(110.5, 112, 106.1)]).state, 'failed'); // 106,1 > 106
+  assert.equal(run(g, [bar(111), bar(110.5, 112, 106)]).state, 'failed');
 });

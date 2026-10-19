@@ -184,9 +184,8 @@ test('xu hướng 1D theo S-01: giá/SMA20/SMA50 cùng chiều; thiếu dữ li�
   assert.match(short.note, /Thiếu dữ liệu 1D/);
 });
 
-const NOW = Date.UTC(2026, 9, 19);
 const tg = (over: Partial<Parameters<typeof patternTrendGate>[0]>) => patternTrendGate({
-  kind: 'rectangle', side: 'long', daily: dailyTrend(daysUp), regime: 'up', btcSma200ReclaimedAt: null, now: NOW, ...over,
+  kind: 'rectangle', side: 'long', daily: dailyTrend(daysUp), regime: 'up', ...over,
 });
 
 test('P-G2: chữ nhật/cờ/tam giác chỉ phá cùng chiều xu hướng 1D', () => {
@@ -205,19 +204,9 @@ test('P-G2: tam giác cân phá xuống trong thị trường Lên → không Sh
   assert.equal(tg({ kind: 'sym_triangle', side: 'short', daily: dailyTrend(daysDown), regime: 'sideways' }).pass, true);
 });
 
-test('P-G2: hai đỉnh Short cần 1D đóng dưới SMA20 và ngoài 30 ngày sau khi BTC lấy lại SMA200', () => {
-  const dd = dailyTrend(daysDown);
-  assert.equal(tg({ kind: 'double_top', side: 'short', daily: dd }).pass, true);
-  assert.equal(tg({ kind: 'double_top', side: 'short', daily: dailyTrend(daysUp) }).pass, false);
-  const recent = tg({ kind: 'double_top', side: 'short', daily: dd, btcSma200ReclaimedAt: NOW - 10 * 86_400_000 });
-  assert.equal(recent.pass, false);
-  assert.match(recent.note, /30 ngày sau khi BTC lấy lại SMA200/);
-  assert.equal(tg({ kind: 'double_top', side: 'short', daily: dd, btcSma200ReclaimedAt: NOW - 31 * 86_400_000 }).pass, true);
-});
-
-test('P-G2: hai đáy Long chỉ cần 1D không còn giảm', () => {
-  assert.equal(tg({ kind: 'double_bottom', daily: dailyTrend(daysFlat) }).pass, true);
-  assert.equal(tg({ kind: 'double_bottom', daily: dailyTrend(daysDown) }).pass, false);
+test('P-G2: hai đỉnh/hai đáy không còn luật riêng (chỉ là bối cảnh) — xét như mọi mô hình: cùng chiều 1D', () => {
+  assert.equal(tg({ kind: 'double_bottom', daily: dailyTrend(daysFlat) }).pass, false);
+  assert.doesNotMatch(tg({ kind: 'double_top', side: 'short', daily: dailyTrend(daysDown) }).note, /SMA200/);
 });
 
 test('P-C1: bối cảnh chặn đúng chiều; ngoài phạm vi thì qua kèm ghi chú', () => {

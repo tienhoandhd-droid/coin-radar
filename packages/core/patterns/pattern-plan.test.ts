@@ -80,7 +80,7 @@ test('Long chữ nhật d = 0,5×A: market 100%, SL = 108,5 − 0,5×A, TP theo 
   assert.equal(r6(p.distanceAtr), 0.5);
   assert.equal(p.entry, 110.5);
   assert.equal(p.stop, 108);
-  assert.match(p.stopReason, /108,50 − 0,5×A = 108,00/);
+  assert.match(p.stopReason, /108,50 − 0,5×A\(nến phá\) = 108,00/);
   assert.equal(p.targetShort, 115);
   assert.equal(p.targetFull, 120);
   assert.deepEqual(p.targets.map((t) => t.price), [115, 120.8, 125.8]);
@@ -311,7 +311,7 @@ test('Short chữ nhật phá xuống: đối xứng Long, funding dương khôn
   assert.equal(p.side, 'short');
   assert.equal(p.entryType, 'market');
   assert.equal(p.stop, 112);
-  assert.match(p.stopReason, /111,50 \+ 0,5×A = 112,00/);
+  assert.match(p.stopReason, /111,50 \+ 0,5×A\(nến phá\) = 112,00/);
   assert.equal(p.targetShort, 105);
   assert.equal(p.targetFull, 100);
   assert.deepEqual(p.targets.map((t) => t.price), [105, 99.2, 94.2]);
@@ -339,8 +339,8 @@ test('Short d = 0,3×A: sau TP1 SL về đường phá + 0,5×A; Short d = 1,5×
 
 // ---------- từng loại mô hình: p của T_ngắn ----------
 
-test('T_ngắn theo loại: tam giác tăng 0,70; hai đáy 0,73; vai-đầu-vai 0,51; còn lại 0,5', () => {
-  const longKinds = [['asc_triangle', 0.7], ['double_bottom', 0.73], ['inv_head_shoulders', 0.5], ['rectangle', 0.5], ['sym_triangle', 0.5]] as const;
+test('T_ngắn theo loại: tam giác tăng 0,70; vai-đầu-vai 0,51; còn lại 0,5', () => {
+  const longKinds = [['asc_triangle', 0.7], ['inv_head_shoulders', 0.5], ['rectangle', 0.5], ['sym_triangle', 0.5]] as const;
   for (const [kind, p] of longKinds) {
     const plan = ready(args({ geometry: geom({ kind, breakoutSide: kind === 'rectangle' || kind === 'sym_triangle' ? 'both' : 'up' }),
       state: st({ inBreakoutWindow: kind.endsWith('triangle') ? true : null }), zones: [] }));
@@ -348,7 +348,7 @@ test('T_ngắn theo loại: tam giác tăng 0,70; hai đáy 0,73; vai-đầu-vai
     assert.equal(r6(plan.targetShort), r6(110 + 10 * p), kind);
     assert.equal(plan.targets[0]!.price, r6(110 + 10 * p), kind);
   }
-  const shortKinds = [['head_shoulders', 0.51], ['double_top', 0.5], ['desc_triangle', 0.5]] as const;
+  const shortKinds = [['head_shoulders', 0.51], ['desc_triangle', 0.5]] as const;
   for (const [kind, p] of shortKinds) {
     const plan = ready(args({ close: 109.5, side: 'short', zones: [],
       geometry: geom({ kind, breakoutSide: 'down', upper: () => 120, lower: () => 110, stopRef: { up: 118, down: 111.5 } }),
@@ -382,8 +382,8 @@ test('không lập lệnh: trạng thái khác breakout/retested, tín hiệu c�
   assert.equal(mm.status, 'rejected');
 });
 
-test('Short hai đỉnh trong 30 ngày sau khi BTC lấy lại SMA200: không vào trực tiếp → chỉ limit; giá quá sát → bỏ', () => {
-  const g = geom({ kind: 'double_top', breakoutSide: 'down', upper: () => 120, lower: () => 110, stopRef: { up: 110, down: 111.5 } });
+test('Short vai-đầu-vai (đảo chiều) trong 30 ngày sau khi BTC lấy lại SMA200: không vào trực tiếp → chỉ limit; giá quá sát → bỏ', () => {
+  const g = geom({ kind: 'head_shoulders', breakoutSide: 'down', upper: () => 120, lower: () => 110, stopRef: { up: 110, down: 111.5 } });
   const c = candles(109.5, 'short');
   const now = c[c.length - 1]!.closeTime;
   const blocked = ready(args({ candles: c, geometry: g, state: st({ side: 'down' }), zones: [], btcSma200ReclaimedAt: now - 10 * DAY }));
@@ -432,22 +432,15 @@ test('tích hợp: trạng thái từ evaluateState trên chữ nhật thật �
   assert.equal(COMMON.patterns.plan.limitExpiryBars, 10);
 });
 
-// ---------- Người dùng chọn 19/10/2026: trần R riêng cho hai đỉnh/hai đáy = 4×A ----------
-test('hai đáy: R trong (3; 4]×A không còn bị trần R loại; R > 4×A vẫn bị loại; loại khác vẫn trần 3×A', () => {
-  assert.equal(COMMON.patterns.plan.maxRiskAtrByKind.double_bottom, 4);
-  assert.equal(COMMON.patterns.plan.maxRiskAtrByKind.double_top, 4);
-  // cổ 110, đáy thấp hơn 107 → SL 106,5; giá 110,3 → R = 3,8A
-  const db = (bottom: number) => geom({ kind: 'double_bottom', breakoutSide: 'up', upper: () => 110, lower: () => bottom, height: 110 - bottom, stopRef: { up: bottom, down: 110 } });
-  const r38 = buildPatternPlan(args({ close: 110.3, geometry: db(107), zones: [] }));
-  assert.ok(r38.plan && Math.abs(r38.plan.riskAtr - 3.8) < 1e-9);
-  assert.doesNotMatch(r38.reason ?? '', /R = .*×A >/, 'không còn bị trần R loại');
-  // Toán: TP1 ≤ T_ngắn = cổ + 0,73h, R ≥ h + 0,5A + d → TP1 luôn < 0,73R: vẫn bỏ vì TP1 < 1R
-  assert.equal(r38.status, 'rejected');
-  assert.match(r38.reason!, /TP1 chỉ .*R sau phí/);
-  // R = 4,3A > 4A → trần R
-  const r43 = buildPatternPlan(args({ close: 110.3, geometry: db(106.5), zones: [] }));
-  assert.match(r43.reason!, /R = 4,30×A > 4×A/);
-  // chữ nhật cùng R 3,8A → trần 3×A
-  const rr = buildPatternPlan(args({ close: 110.3, geometry: geom({ stopRef: { up: 107, down: 101 } }), zones: [] }));
-  assert.match(rr.reason!, /R = 3,80×A > 3×A/);
+// ---------- Người dùng chọn 19/10/2026: hai đỉnh/hai đáy CHỈ LÀ BỐI CẢNH ----------
+test('hai đỉnh/hai đáy: không lập kế hoạch lệnh (chỉ bối cảnh), kể cả khi đã phá', () => {
+  for (const kind of ['double_bottom', 'double_top'] as const) {
+    const down = kind === 'double_top';
+    const r = buildPatternPlan(args({ close: down ? 109.5 : 110.5, side: down ? 'short' : 'long', zones: [],
+      geometry: geom({ kind, breakoutSide: down ? 'down' : 'up' }), state: st({ side: down ? 'down' : 'up' }) }));
+    assert.equal(r.status, 'rejected', kind);
+    assert.equal(r.plan, null);
+    assert.match(r.reason!, /chỉ là bối cảnh/);
+  }
+  assert.equal((COMMON.patterns.plan as Record<string, unknown>).maxRiskAtrByKind, undefined, 'trần 4×A cho hai đỉnh/đáy đã bỏ');
 });

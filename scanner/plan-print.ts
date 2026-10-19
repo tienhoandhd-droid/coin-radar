@@ -67,7 +67,7 @@ export function trackedLines(list: PatternInfo[], tickSize: number): string[] {
     const dir = p.side === 'up' ? ' (phá lên)' : p.side === 'down' ? ' (phá xuống)' : '';
     const where = p.breakoutLine !== null ? `đường phá ${px(p.breakoutLine)}` : `biên trên ${px(p.upper)} / biên dưới ${px(p.lower)}`;
     const hidden = p.hidden ? ' | ẩn (Lướt nhanh: chỉ ghi nhận)' : '';
-    lines.push(`    ${KIND_NAME[p.kind]} ${p.timeframe.toUpperCase()} — ${p.state}${dir} | ${where} | chiều cao ${px(p.height)}${hidden}`);
+    lines.push(`    ${KIND_NAME[p.kind]} ${p.timeframe.toUpperCase()}${p.contextOnly ? ' (bối cảnh)' : ''} — ${p.state}${dir} | ${where} | chiều cao ${px(p.height)}${hidden}`);
     for (const n of p.notes) lines.push(`      · ${n}`);
   }
   return lines;

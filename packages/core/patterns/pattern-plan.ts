@@ -5,7 +5,7 @@ import { snapToTick, formatTick, tickDecimals } from '../price.ts';
 import { targetSideZones, zoneContaining, describeZone, type Zone } from '../zones.ts';
 import { positionSize, splitQuantity, liquidationPrice, maxSafeLeverage, vn, type CostTier, type Target, type FillRow } from '../plan.ts';
 import type { MultiMonthContext } from './context.ts';
-import type { StateResult } from './state.ts';
+import { patternStopLevel, type StateResult } from './state.ts';
 import type { PatternGeometry, PatternKind } from './types.ts';
 
 // Kế hoạch lệnh theo mô hình biểu đồ (báo cáo "Mô hình biểu đồ cho BTC", mục (2) đệm cắt lỗ, (3), (4)).
@@ -106,7 +106,6 @@ const num = (x: number) => String(x).replace('.', ',');
 
 function stopLabel(kind: PatternKind, side: Side): string {
   if (isFlag(kind)) return side === 'long' ? 'Đáy cờ' : 'Đỉnh cờ';
-  if (kind === 'double_top' || kind === 'double_bottom') return side === 'long' ? 'Đáy thấp hơn' : 'Đỉnh cao hơn';
   if (kind === 'head_shoulders' || kind === 'inv_head_shoulders') return 'Vai phải';
   if (isTriangle(kind)) return 'Pivot gần nhất phía đối diện';
   if (kind === 'rectangle') return 'Pivot nhỏ phía trong (không có thì giữa vùng)';
@@ -124,6 +123,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   if (c.length === 0) throw new Error('buildPatternPlan: chuỗi nến rỗng');
   if (a.atr.length !== c.length) throw new Error(`buildPatternPlan: độ dài atr (${a.atr.length}) khác độ dài nến (${c.length})`);
   if (g.kind === 'multi_month_range') return reject('Vùng nhiều tháng chỉ là bối cảnh — không lập lệnh trực tiếp');
+  if (g.kind === 'double_top' || g.kind === 'double_bottom') return reject('Hai đỉnh/hai đáy chỉ là bối cảnh (người dùng chọn 19/10/2026) — không lập lệnh');
   if (s.state !== 'breakout' && s.state !== 'retested') {
     return reject(`Mô hình đang ở trạng thái ${s.state} — chỉ lập lệnh khi đã phá vỡ (breakout/retested)`);
   }
@@ -184,7 +184,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   let entryType: PatternPlan['entryType'] = d <= P.marketMaxAtr ? 'market' : d <= P.splitMaxAtr ? 'split' : 'limit';
   const notes = [...s.notes];
   const now = c[last]!.closeTime;
-  const reversalShort = side === 'short' && (g.kind === 'double_top' || g.kind === 'head_shoulders');
+  const reversalShort = side === 'short' && g.kind === 'head_shoulders';
   let blockedMarket = false;
   if (reversalShort && a.btcSma200ReclaimedAt !== null) {
     if (a.btcSma200ReclaimedAt > now) throw new Error('buildPatternPlan: btcSma200ReclaimedAt nằm sau nến cuối (dữ liệu tương lai)');
@@ -200,9 +200,11 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   }
 
   // ---- Cắt lỗ: mức của mô hình ± đệm, đẩy qua số tròn ----
-  const stopRef = side === 'long' ? g.stopRef.up : g.stopRef.down;
-  let stop = snapToTick(stopRef - dir * P.stopBufferAtr * A, tick, away);
-  let stopReason = `${stopLabel(g.kind, side)} ${fp(stopRef)} ${mp} ${num(P.stopBufferAtr)}×A = ${fp(stop)}`;
+  // Cùng hàm mức dừng với máy trạng thái (đệm theo ATR tại nến phá); ở đây chỉ làm tròn tick ra xa và đẩy qua số tròn.
+  const lv = patternStopLevel(g, c, a.atr, s.side, bi);
+  const stopRef = lv.ref;
+  let stop = snapToTick(lv.level, tick, away);
+  let stopReason = `${stopLabel(g.kind, side)} ${fp(stopRef)} ${mp} ${num(P.stopBufferAtr)}×A(nến phá) = ${fp(stop)}${lv.note ? ` (${lv.note})` : ''}`;
   {
     // Số tròn nằm trong vùng đệm (giữa mức mô hình và SL) hoặc sát ngoài SL (< 0,2×A) → SL qua hẳn số tròn 0,2×A
     const step = roundStep(marketPrice);
@@ -324,7 +326,7 @@ export function buildPatternPlan(a: PatternPlanArgs): PatternPlanResult {
   const netR = (f: number) => (dir * (tp1 - f) - costFrac * f) / Math.abs(f - stop);
   const minR = isFlag(g.kind) ? P.flagMinTp1R : P.minTp1R;
   const tp1NetR = netR(worstEntry);
-  const maxRisk = (P.maxRiskAtrByKind as Partial<Record<PatternKind, number>>)[g.kind] ?? P.maxRiskAtr; // hai đỉnh/hai đáy: 4×A (người dùng chọn)
+  const maxRisk = P.maxRiskAtr;
   const riskAtr = Math.abs(worstEntry - stop) / A;
 
   // Giá tối đa cho chân market: ≤ maxEntryAtr×A, R ≤ maxRiskAtr×A, và TP1 sau phí ≥ minR

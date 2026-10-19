@@ -24,6 +24,17 @@ export function patternId(symbol: string, g: PatternGeometry): string {
   return `${symbol}|${g.timeframe}|${g.kind}|${p1.index}|${p2.index}`;
 }
 
+// MỘT hàm mức dừng cho cả máy trạng thái (failed do chạm cắt lỗ) và kế hoạch lệnh (SL trước làm tròn tick / đẩy qua số tròn):
+// mức tham chiếu (geometry.stopAt nếu có — chữ nhật: pivot nhỏ phía trong —, không thì stopRef) ∓ stopBufferAtr × ATR tại NẾN PHÁ.
+// Chỉ đọc nến/ATR ≤ breakoutIndex. Kế hoạch chỉ đẩy SL RA XA hơn mức này (tick, số tròn), nên lệnh chạm SL ⇒ trạng thái đã failed.
+export function patternStopLevel(g: PatternGeometry, c: Candle[], atr: number[], side: 'up' | 'down', breakoutIndex: number): { ref: number; level: number; atr: number; note: string | null } {
+  const a = atr[breakoutIndex];
+  if (a === undefined || !Number.isFinite(a) || a <= 0) throw new Error(`patternStopLevel: ATR không hợp lệ tại nến phá ${breakoutIndex}: ${a}`);
+  const r = g.stopAt ? g.stopAt(c, side, breakoutIndex) : { price: side === 'up' ? g.stopRef.up : g.stopRef.down, note: null };
+  const dir = side === 'up' ? 1 : -1;
+  return { ref: r.price, level: r.price - dir * COMMON.patterns.plan.stopBufferAtr * a, atr: a, note: r.note };
+}
+
 const EPS = 1e-9; // sai số làm tròn khi so với apex tính bằng số thực
 const isFlag = (g: PatternGeometry) => g.kind === 'bull_flag' || g.kind === 'bear_flag';
 const isTriangle = (g: PatternGeometry) => g.kind === 'asc_triangle' || g.kind === 'desc_triangle' || g.kind === 'sym_triangle';
@@ -73,6 +84,7 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
   let pending: 'up' | 'down' | null = null;
   let side: 'up' | 'down' | null = null;
   let bi = -1;
+  let stopLevel = NaN; // mức dừng (cùng hàm với kế hoạch lệnh), tính một lần tại nến phá
   let retested = false;
   const notes: string[] = [];
 
@@ -92,6 +104,7 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
         if (dist >= confirmAtr * a || pending === hit) {
           side = hit;
           bi = i;
+          stopLevel = patternStopLevel(g, c, atr, hit, i).level;
           pending = null;
           continue;
         }
@@ -108,8 +121,7 @@ export function evaluateState(g: PatternGeometry, c: Candle[], atr: number[], tf
     // Thất bại (đóng quay vào > failAtr×A hoặc chạm cắt lỗ) được kiểm ở MỌI nến sau phá; chỉ retest bị giới hạn retestBars nến.
     const line = lineOf(side, i);
     const inside = -outside(side, i); // dương = đóng quay vào trong
-    const stop = side === 'up' ? g.stopRef.up : g.stopRef.down;
-    const hitStop = side === 'up' ? c[i]!.low <= stop : c[i]!.high >= stop;
+    const hitStop = side === 'up' ? c[i]!.low <= stopLevel : c[i]!.high >= stopLevel;
     if (inside > cfg.failAtr * a || hitStop) {
       return out('failed', { breakoutIndex: bi, side, breakoutLine: lineOf(side, bi), notes: breakoutNotes(), inBreakoutWindow: windowOk() });
     }

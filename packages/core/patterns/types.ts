@@ -1,4 +1,5 @@
 import type { Pivot } from './pivots.ts';
+import type { Candle } from '../types.ts';
 
 export type PatternKind =
   | 'rectangle'
@@ -27,4 +28,6 @@ export type PatternGeometry = {
   stopRef: { up: number; down: number };
   quality: number;
   notes: string[];
+  // Mức cắt lỗ chỉ xác định được lúc phá (chữ nhật: pivot nhỏ phía trong). Có thì dùng thay stopRef; chỉ đọc nến ≤ breakoutIndex.
+  stopAt?: (c: Candle[], side: 'up' | 'down', breakoutIndex: number) => { price: number; note: string };
 };

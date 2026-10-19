@@ -257,3 +257,19 @@ test('contextFlags: vai-đầu-vai 4H và 1D đã xác nhận NGƯỢC nhau → 
   assert.equal(same.block.short, false);
   assert.ok(!same.notes.some((n) => /xung đột/.test(n)));
 });
+
+test('bối cảnh hai đỉnh/hai đáy (người dùng chọn 19/10/2026): hai đỉnh đã phá cổ → chặn Long; hai đáy gương → chặn Short; hết hiệu lực sau hs.activeBars nến', () => {
+  const top = wave([[0, 80], [30, 100], [40, 90], [50, 100], [56, 88]]); // hai đỉnh 100,5; cổ 89,5; nến 56 đóng 88 thủng cổ
+  const r = contextFlags(top, []);
+  assert.equal(r.block.long, true, r.notes.join(' | '));
+  assert.equal(r.block.short, false);
+  assert.ok(r.notes.some((n) => /hai đỉnh 4H đã phá cổ .* chặn Long/.test(n)), r.notes.join(' | '));
+  assert.ok(r.doubles.some((d) => d.kind === 'double_top' && d.timeframe === '4h'));
+  const bottom = top.map((x) => k(300 - x.low, 300 - x.high));
+  const rb = contextFlags(bottom, []);
+  assert.equal(rb.block.short, true, rb.notes.join(' | '));
+  assert.equal(rb.block.long, false);
+  // sau phá, đi ngang dưới cổ quá activeBars nến → hết hiệu lực bối cảnh
+  const later = top.concat(Array.from({ length: COMMON.patterns.hs.activeBars + 1 }, () => k(86.5, 85.5, 86)));
+  assert.equal(contextFlags(later, []).block.long, false);
+});

@@ -6,6 +6,7 @@ import type { Pivot } from './pivots.ts';
 import type { PatternGeometry } from './types.ts';
 import { detectRectangles } from './detect-range.ts';
 import { detectHeadShoulders, hsStatus } from './detect-hs.ts';
+import { trackPatterns } from './track.ts';
 
 // ---------- Vùng nhiều tháng (1D) ----------
 
@@ -104,8 +105,10 @@ export type HsContext = {
   endIndex: number;
 };
 export type MultiMonthContext = { upper: number; lower: number; state: MultiMonthState };
+export type DoubleContext = { kind: 'double_top' | 'double_bottom'; timeframe: string; neckline: number; breakoutIndex: number };
 export type ContextFlags = {
   hs: HsContext | null;
+  doubles: DoubleContext[];
   multiMonth: MultiMonthContext | null;
   coil: boolean;
   // Chặn lệnh MỚI theo bối cảnh: long = cấm Long, short = cấm Short.
@@ -175,6 +178,24 @@ export function contextFlags(c4h: Candle[], c1d: Candle[]): ContextFlags {
     }
   }
 
+  // Hai đỉnh/hai đáy (CHỈ bối cảnh — người dùng chọn 19/10/2026): đã phá cổ (breakout/retested) và chưa quá hs.activeBars nến
+  // kể từ nến phá (cùng luật thời hạn với vai-đầu-vai) → hai đỉnh chặn Long mới, hai đáy chặn Short mới.
+  const doubles: DoubleContext[] = [];
+  for (const [tf, c] of [['1d', c1d], ['4h', c4h]] as const) {
+    if (c.length === 0) continue;
+    for (const t of trackPatterns('CTX', c, tf, ['double'])) {
+      const r = t.result;
+      if ((r.state !== 'breakout' && r.state !== 'retested') || r.breakoutIndex === null || r.breakoutLine === null) continue;
+      if (c.length - 1 - r.breakoutIndex > P.hs.activeBars) continue;
+      const kind = t.geometry.kind as DoubleContext['kind'];
+      doubles.push({ kind, timeframe: tf, neckline: r.breakoutLine, breakoutIndex: r.breakoutIndex });
+      const top = kind === 'double_top';
+      if (top) block.long = true;
+      else block.short = true;
+      notes.push(`${top ? 'hai đỉnh' : 'hai đáy'} ${tf.toUpperCase()} đã phá cổ ${String(Number(r.breakoutLine.toPrecision(8))).replace('.', ',')} (bối cảnh) → chặn ${top ? 'Long' : 'Short'} mới`);
+    }
+  }
+
   // Vùng nhiều tháng trên 1D.
   let multiMonth: MultiMonthContext | null = null;
   if (c1d.length > 0) {
@@ -203,5 +224,5 @@ export function contextFlags(c4h: Candle[], c1d: Candle[]): ContextFlags {
 
   const coil = coilAt(c4h, c4h.length - 1);
   if (coil.on) notes.push(`coil (nén biến động): ${coil.hits.join('; ')}`);
-  return { hs, multiMonth, coil: coil.on, block, notes };
+  return { hs, doubles, multiMonth, coil: coil.on, block, notes };
 }

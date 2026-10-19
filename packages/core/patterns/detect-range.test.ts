@@ -119,6 +119,7 @@ test('chống look-ahead: chạy từng tiền tố khớp chạy cả chuỗi (
 
 // ---------- P1: pivot nhỏ phía trong lúc phá ----------
 import { rectangleStopRef } from './detect-range.ts';
+import { evaluateState } from './state.ts';
 import { buildPatternPlan } from './pattern-plan.ts';
 import type { PatternGeometry } from './types.ts';
 
@@ -141,6 +142,7 @@ function innerSeries(withInner = true): Candle[] {
   c.push(kc(60, 110.4, 109.8, 110.3));
   return c;
 }
+const ones = (n: number) => new Array<number>(n).fill(1);
 const rectG: PatternGeometry = {
   kind: 'rectangle', timeframe: '4h', pivots: [hi(10, 110), lo(20, 105), hi(30, 110), lo(40, 105), hi(50, 110)],
   startIndex: 10, endIndex: 50, upper: () => 110, lower: () => 105, breakoutSide: 'both', height: 5,
@@ -148,14 +150,14 @@ const rectG: PatternGeometry = {
 };
 
 test('P1: rectangleStopRef lấy đáy nhỏ gần nhất sau lần chạm biên trên cuối, trước nến phá, nằm hẳn trong vùng', () => {
-  const r = rectangleStopRef(innerSeries(), rectG, 'up', 60);
+  const r = rectangleStopRef(innerSeries(), rectG, 'up', 60, ones(61));
   assert.equal(r.price, 109.5);
   assert.match(r.note, /pivot nhỏ phía trong/);
-  const none = rectangleStopRef(innerSeries(false), rectG, 'up', 60);
+  const none = rectangleStopRef(innerSeries(false), rectG, 'up', 60, ones(61));
   assert.equal(none.price, 107.5); // không có → giữa vùng
   assert.match(none.note, /giữa vùng/);
   // pivot chỉ tính khi đã xác nhận trước/đúng nến phá: phá ở nến 57 thì đáy 55 chưa xác nhận (cần nến 58)
-  assert.equal(rectangleStopRef(innerSeries(), rectG, 'up', 57).price, 107.5);
+  assert.equal(rectangleStopRef(innerSeries(), rectG, 'up', 57, ones(61)).price, 107.5);
 });
 
 test('P1: chữ nhật h = 5A với pivot phía trong sát biên → kế hoạch hợp lệ, TP1 ≥ 1R (tính tay); giữa vùng → R > 3A bị bỏ', () => {
@@ -165,7 +167,7 @@ test('P1: chữ nhật h = 5A với pivot phía trong sát biên → kế hoạc
     mode: 'swing' as const, geometry: g, state: st, candles: c, atr: new Array<number>(c.length).fill(1), atr1h: 1, zones: [], multiMonth: null,
     btcSma200ReclaimedAt: null, capital: 10_000, riskPct: 0.5, costTier: 'high' as const, tickSize: 0.01, stepSize: 0.001, fundingRate: 0.0001, fundingIntervalHours: 8,
   });
-  const inner = rectangleStopRef(c, rectG, 'up', 60).price;
+  const inner = rectangleStopRef(c, rectG, 'up', 60, ones(61)).price;
   const r = buildPatternPlan(args({ ...rectG, stopRef: { ...rectG.stopRef, up: inner } }));
   assert.equal(r.status, 'ready', r.reason ?? '');
   const p = r.plan!;
@@ -182,4 +184,36 @@ test('P1: chữ nhật h = 5A với pivot phía trong sát biên → kế hoạc
   const mid = buildPatternPlan(args(rectG));
   assert.equal(mid.status, 'rejected');
   assert.match(mid.reason!, /R = 3,30×A > 3×A/);
+});
+
+test('vòng sửa 2: chữ nhật đã phá — râu 108,9 chạm SL kế hoạch 109 → failed (máy trạng thái dùng cùng mức dừng); 109,1 → vẫn breakout', () => {
+  const g = detectRectangles(innerSeries(), [hi(10, 110), lo(20, 105), hi(30, 110), lo(40, 105), hi(50, 110)], ones(61), '4h').pop()!;
+  assert.ok(g.stopAt, 'chữ nhật phải mang hàm stopAt');
+  const st = (low: number) => {
+    const c = [...innerSeries(), kc(61, 110.6, low, 110.2)];
+    return evaluateState(g, c, ones(c.length), '4h').state;
+  };
+  assert.notEqual(st(109.1), 'failed'); // râu chạm lại đường phá → retested, vẫn còn sống
+  assert.equal(st(108.9), 'failed');
+});
+
+test('vòng sửa 2: Short gương — râu 106,1 chạm SL kế hoạch 106 (105,5 + 0,5×A) → failed; 105,9 → vẫn breakout', () => {
+  const M = 215; // gương: biên 105..110 → 105..110 (M − giá)
+  const mir = (x: Candle): Candle => ({ ...x, open: M - x.open, close: M - x.close, high: M - x.low, low: M - x.high });
+  const base = innerSeries().map(mir);
+  const g = detectRectangles(base, [lo(10, 105), hi(20, 110), lo(30, 105), hi(40, 110), lo(50, 105)], ones(61), '4h').pop()!;
+  assert.equal(rectangleStopRef(base, g, 'down', 60, ones(61)).price, 105.5);
+  const st = (high: number) => {
+    const c = [...base, kc(61, high, 104.4, 104.8)];
+    return evaluateState(g, c, ones(c.length), '4h').state;
+  };
+  assert.notEqual(st(105.9), 'failed'); // 105,9 < 106 = 105,5 + 0,5×A
+  assert.equal(st(106.1), 'failed');
+});
+
+test('vòng sửa 2: gợn nhỏ sát biên (< 0,5×A) không dùng làm pivot phía trong', () => {
+  const c = innerSeries().map((x, i) => (i >= 51 && i <= 59 ? { ...x, high: 109.95, low: i === 55 ? 109.8 : 109.85 } : x));
+  const r = rectangleStopRef(c, rectG, 'up', 60, ones(61));
+  assert.equal(r.price, 107.5); // 110 − 109,8 = 0,2 < 0,5×A → bỏ, dùng giữa vùng
+  assert.ok(COMMON.patterns.rect.innerMinAtr > 0);
 });

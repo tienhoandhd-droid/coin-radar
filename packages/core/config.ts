@@ -95,6 +95,7 @@ export const COMMON = {
       tripleTouches: 3, // từ mức này ở một biên thì ghi chú ba đỉnh/ba đáy — đề xuất, chưa backtest
       minHeightAtr: 3, // chiều cao tối thiểu (×A) — đề xuất, chưa backtest
       minBars: 20, // thời lượng tối thiểu (nến) — đề xuất, chưa backtest
+      innerMinAtr: 0.5, // pivot nhỏ phía trong dùng làm cắt lỗ phải cách biên bị phá ≥ mức này (×A tại nến phá), tránh gợn sát biên — đề xuất, chưa backtest
     },
     double: {
       tolAtr: 0.5, // hai đỉnh/đáy lệch ≤ min(mức này ×A, tolPct% giá) — đề xuất, chưa backtest
@@ -152,8 +153,8 @@ export const COMMON = {
     plan: {
       stopBufferAtr: 0.5, // SL = mức cắt lỗ của mô hình ± đệm (×A); báo cáo cho khoảng 0,25–0,5, chọn mức rộng — đề xuất, chưa backtest
       maxRiskAtr: 3, // R = |giá vào − SL| > mức này (×A khung vào lệnh) → bỏ lệnh (mặc định mọi loại) — đề xuất, chưa backtest
-      maxRiskAtrByKind: { double_top: 4, double_bottom: 4 }, // trần R riêng cho hai đỉnh/hai đáy — người dùng chọn 19/10/2026, chưa backtest
-      targetRatio: { asc_triangle: 0.7, double_bottom: 0.73, head_shoulders: 0.51 }, // p của Bulkowski: T_ngắn = đường phá ± h×p — đề xuất, chưa backtest
+      // Hai đỉnh/hai đáy: người dùng chọn 19/10/2026 trần R 4×A, rồi đổi sang CHỈ BỐI CẢNH sau khi tính ra TP1 luôn < 0,73R (TP1 ≤ cổ ± 0,73h, R ≥ h + 0,5×A + d) — không còn trần R riêng
+      targetRatio: { asc_triangle: 0.7, head_shoulders: 0.51 }, // p của Bulkowski: T_ngắn = đường phá ± h×p — đề xuất, chưa backtest
       defaultTargetRatio: 0.5, // p khi không có số liệu — đề xuất, chưa backtest
       flagPoleRatio: 0.46, // cờ: T_đủ = đáy cờ (Short: đỉnh cờ) ± cán × mức này — đề xuất, chưa backtest
       flagShortFraction: 0.5, // cờ: T_ngắn = đường phá ± mức này × (T_đủ − đường phá), tức nửa quãng còn lại tới T_đủ (đọc nguyên văn 'đáy cờ + nửa của cán×0,46' thường rơi vào trong cờ) — đề xuất, chưa backtest

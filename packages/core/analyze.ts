@@ -12,7 +12,6 @@ import type { Candle, Contract, Mode, PremiumIndex, Side } from './types.ts';
 import { contextFlags, type ContextFlags } from './patterns/context.ts';
 import { trackPatterns, isTracked, type PatternTf, type TrackedPattern } from './patterns/track.ts';
 import { buildPatternPlan, type PatternPlan } from './patterns/pattern-plan.ts';
-import { rectangleStopRef } from './patterns/detect-range.ts';
 import type { PatternKind } from './patterns/types.ts';
 import type { PatternState } from './patterns/state.ts';
 
@@ -34,6 +33,7 @@ export type PatternInfo = {
   pivots: Array<{ time: number; price: number; kind: 'high' | 'low' }>; // time = openTime của nến pivot (để đối chiếu dữ liệu thô)
   notes: string[];
   hidden: boolean;
+  contextOnly: boolean; // hai đỉnh/hai đáy (người dùng chọn 19/10/2026): chỉ bối cảnh, không lập lệnh
 };
 
 export type AnalyzeInput = {
@@ -219,11 +219,16 @@ export function analyze(i: AnalyzeInput): Analysis {
         upper: g.upper(lastIdx), lower: g.lower(lastIdx), breakoutLine: r.breakoutLine, height: g.height,
         pivots: g.pivots.map((p) => ({ time: c[p.index]!.openTime, price: p.price, kind: p.kind })),
         notes: [...g.notes, ...r.notes], hidden,
+        contextOnly: g.kind === 'double_top' || g.kind === 'double_bottom',
       };
       patterns.push(info);
+      if (info.contextOnly) {
+        if (r.state === 'breakout' || r.state === 'retested') info.notes.push('Hai đỉnh/hai đáy: chỉ bối cảnh (P-C1), không lập lệnh');
+        continue;
+      }
       if (hidden || daily === null || (r.state !== 'breakout' && r.state !== 'retested') || r.side === null || r.breakoutIndex === null) continue;
       const side: Side = r.side === 'up' ? 'long' : 'short';
-      const pg2 = patternTrendGate({ kind: g.kind, side, daily, regime: i.regime, btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, now: i.now.getTime() });
+      const pg2 = patternTrendGate({ kind: g.kind, side, daily, regime: i.regime });
       info.notes.push(pg2.note);
       if (!pg2.pass) continue;
       // ATR(1H) tại nến 1H đóng cùng lúc (hoặc ngay trước) nến phá của khung nhận diện
@@ -235,15 +240,9 @@ export function analyze(i: AnalyzeInput): Analysis {
         info.notes.push('Kế hoạch mô hình: bỏ — thiếu ATR(1H) tại nến phá (dữ liệu 1H không phủ tới nến phá)');
         continue;
       }
-      // Chữ nhật: mức cắt lỗ = pivot nhỏ phía trong sau lần chạm biên cuối (chỉ biết lúc phá), không có → giữa vùng
-      let geometry = g;
-      if (g.kind === 'rectangle') {
-        const sr = rectangleStopRef(c, g, r.side, r.breakoutIndex);
-        geometry = { ...g, stopRef: r.side === 'up' ? { ...g.stopRef, up: sr.price } : { ...g.stopRef, down: sr.price } };
-        info.notes.push(sr.note);
-      }
+      // Mức cắt lỗ (chữ nhật: pivot nhỏ phía trong) do patternStopLevel tính chung cho kế hoạch và máy trạng thái
       const res = buildPatternPlan({
-        mode: i.mode, geometry, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
+        mode: i.mode, geometry: g, state: r, candles: c, atr: t.atr, atr1h, zones, multiMonth: context.multiMonth,
         btcSma200ReclaimedAt: pd.btcSma200ReclaimedAt, capital: i.capital, riskPct, costTier: costTier(i.liquidityRankPct),
         tickSize: i.contract.tickSize, stepSize: i.contract.stepSize, fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours,
       });

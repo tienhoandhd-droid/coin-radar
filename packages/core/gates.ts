@@ -109,8 +109,6 @@ export function evaluateGates(c: GateContext): GateResult[] {
 
 // ---------- Kế hoạch 1c: cổng mô hình biểu đồ ----------
 
-const DAY_MS = 86_400_000;
-
 // P-G1: chỉ chạy mô hình (tín hiệu + bối cảnh) cho coin rủi ro Thấp/Vừa VÀ thanh khoản nhóm cao.
 export function inPatternScope(tier: RiskTier, liquidityRankPct: number): { ok: boolean; note: string } {
   const tierOk = tier === 'Thấp' || tier === 'Vừa';
@@ -146,25 +144,11 @@ export function dailyTrend(daily: Candle[]): DailyTrend {
 
 // P-G2: mô hình Swing chỉ phá thuận xu hướng 1D (báo cáo mục (1)).
 //  - chữ nhật / cờ / tam giác: xu hướng 1D phải cùng chiều lệnh; tam giác cân phá xuống khi thị trường Lên → không Short;
-//  - hai đáy (Long): 1D không còn giảm; hai đỉnh (Short): 1D đã đóng dưới SMA20 VÀ không trong 30 ngày sau khi BTC lấy lại SMA200.
-export function patternTrendGate(a: { kind: PatternKind; side: Side; daily: DailyTrend; regime: Regime; btcSma200ReclaimedAt: number | null; now: number }): GateResult {
+//  (hai đỉnh/hai đáy: chỉ là bối cảnh từ 19/10/2026 nên không còn luật riêng ở đây.)
+export function patternTrendGate(a: { kind: PatternKind; side: Side; daily: DailyTrend; regime: Regime }): GateResult {
   const sideTxt = a.side === 'long' ? 'Long' : 'Short';
   const fail = (why: string): GateResult => ({ code: 'P-G2', pass: false, note: `P-G2 trượt: ${why} — ${a.daily.note}` });
   const pass = (why: string): GateResult => ({ code: 'P-G2', pass: true, note: `P-G2 qua: ${why} — ${a.daily.note}` });
-  if (a.kind === 'double_top') {
-    if (a.side !== 'short') return fail('hai đỉnh chỉ cho Short');
-    if (!a.daily.closeBelowSma20) return fail(`hai đỉnh Short cần 1D đã đóng dưới SMA${COMMON.score.smaFast}`);
-    const days = COMMON.patterns.plan.reversalShortBlockDays;
-    if (a.btcSma200ReclaimedAt !== null && a.now - a.btcSma200ReclaimedAt < days * DAY_MS) {
-      const ago = Math.floor((a.now - a.btcSma200ReclaimedAt) / DAY_MS);
-      return fail(`hai đỉnh Short trong ${days} ngày sau khi BTC lấy lại SMA200 (mới ${ago} ngày)`);
-    }
-    return pass(`hai đỉnh Short: 1D đóng dưới SMA${COMMON.score.smaFast}, ngoài ${days} ngày sau khi BTC lấy lại SMA200`);
-  }
-  if (a.kind === 'double_bottom') {
-    if (a.side !== 'long') return fail('hai đáy chỉ cho Long');
-    return a.daily.trend === 'down' ? fail('hai đáy Long khi 1D vẫn đang giảm') : pass('hai đáy Long: 1D không còn giảm');
-  }
   if (a.kind === 'sym_triangle' && a.side === 'short' && a.regime === 'up') {
     return fail('tam giác cân phá xuống trong thị trường Lên → không Short');
   }
