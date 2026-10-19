@@ -31,8 +31,8 @@ Không phải mục tiêu bản này: giao dịch sao chép, viết bài (giai �
 | D7 | **Máy nhà:** không bao giờ để lệnh limit vào nằm trên sàn khi bot không chạy (R13); tắt có kế hoạch → hủy hết limit; mọi vị thế luôn có SL trên sàn (R2) | Máy tắt chỉ còn lệnh trên sàn bảo vệ tiền |
 | D8 | **Chạy nền bằng systemd của người dùng** (tự khởi động khi bật máy, tự chạy lại khi lỗi) | Có sẵn trên Ubuntu (systemd 255), không cần quyền root |
 | D9 | **Cách thoát lệnh (người dùng chốt 19/10/2026) = TP1 chốt 50%, 50% còn lại theo trailing stop** (biến thể C2 của ma trận A/B; không còn TP2/TP3 cố định, không còn SL cố định sau TP1) | Người dùng: “đạt TP1 thì không cần SL, TP1 chốt 50% còn lại theo phương án trailing stop… TP dài hơn để ăn lợi nhuận” |
-| D10 | **Trailing đặt TRÊN SÀN** (`TRAILING_STOP_MARKET` qua Algo Order, kích hoạt tại TP1, theo MARK_PRICE), khoảng cách (callback %) do bot tính sao cho **mức dừng lúc kích hoạt ≥ giá khớp thật + phí** → phần 50% còn lại không thể lỗ. Nếu khoảng cách cần thiết < mức tối thiểu sàn cho phép thì giữ thêm một lệnh dừng ở giá vào làm lưới an toàn; nếu khoảng cách theo ATR > mức tối đa sàn cho phép thì dùng mức tối đa và ghi rõ | Trailing là lệnh dừng nằm trên sàn → vị thế luôn được bảo vệ kể cả khi máy nhà tắt; tránh bẫy “trailing rộng hơn quãng tới TP1 → vẫn lỗ” |
-| D11 | **Rủi ro mỗi lệnh 2% vốn bot** (người dùng chốt 19/10/2026, “sẽ đánh vốn lớn”); **tối đa 10 lệnh mở cùng lúc — đủ 10 thì không vào lệnh mới** (người dùng chốt 19/10/2026, thay mức 3 lệnh/6% trước đó; tổng rủi ro mở có thể tới 20%); đòn bẩy vẫn ≤ trần (Swing 5×, Lướt nhanh 10×) và giá thanh lý cách SL ≥ 1 khoảng SL — nếu đòn bẩy trần không đủ để vào khối lượng 2% thì vào khối lượng tối đa cho phép và báo rõ | Vào ít lệnh nhưng chặt; giữ khóa đòn bẩy và thanh lý |
+| D10 | **Trailing đặt TRÊN SÀN** (`TRAILING_STOP_MARKET` qua Algo Order, kích hoạt tại TP1, theo MARK_PRICE), khoảng cách (callback %) do bot tính sao cho **mức dừng lúc kích hoạt ≥ giá khớp thật + phí** → phần 50% còn lại gần như hòa vốn (trừ trượt giá khi lệnh trailing khớp bằng market; đánh giá độc lập I8). Nếu khoảng cách cần thiết < mức tối thiểu sàn cho phép thì giữ thêm một lệnh dừng ở giá vào làm lưới an toàn; nếu khoảng cách theo ATR > mức tối đa sàn cho phép thì dùng mức tối đa và ghi rõ | Trailing là lệnh dừng nằm trên sàn → vị thế luôn được bảo vệ kể cả khi máy nhà tắt; tránh bẫy “trailing rộng hơn quãng tới TP1 → vẫn lỗ” |
+| D11 | **Rủi ro mỗi lệnh 2% vốn bot** (người dùng chốt 19/10/2026, “sẽ đánh vốn lớn”); **tối đa 10 lệnh mở cùng lúc — đủ 10 thì không vào lệnh mới**, **và tổng rủi ro đang mở ≤ 10% vốn** (lệnh đã qua TP1 tính 0) (người dùng chốt 19/10/2026 sau đánh giá độc lập C1); kiểm ký quỹ khả dụng trước mỗi lệnh (C3); đòn bẩy vẫn ≤ trần (Swing 5×, Lướt nhanh 10×) và giá thanh lý cách SL ≥ 1 khoảng SL — nếu đòn bẩy trần không đủ để vào khối lượng 2% thì vào khối lượng tối đa cho phép và báo rõ | Vào ít lệnh nhưng chặt; giữ khóa đòn bẩy và thanh lý |
 
 ## Kiến trúc
 
@@ -113,7 +113,7 @@ Vào lệnh (giá, SL, TP1/2/3, khối lượng, rủi ro USDT), khớp TP/SL (R
 ## Lộ trình (mỗi bậc có tiêu chí qua — như đã thống nhất)
 
 1. Kế hoạch 2 (đối chứng) cho kỳ vọng dương sau phí ngoài mẫu.
-2. Bot `paper` ≥ 100 lệnh hoặc ≥ 4 tuần, khớp với đối chứng.
+2. Bot `paper` ≥ 100 lệnh **và** ≥ 4 tuần (đánh giá độc lập C2), kỳ vọng R > 0 sau phí, khớp với đối chứng.
 3. Bot `demo` 2–4 tuần không lỗi cơ khí.
 4. Bot `live` vốn nhỏ (người dùng chọn số), khóa cứng; chuyển VPS.
 

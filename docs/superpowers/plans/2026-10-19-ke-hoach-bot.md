@@ -16,7 +16,7 @@
 - Trạng thái không rõ (503 “Unknown error”, -1006, -1007) → tra lại, không gửi lại mù.
 - Mặc định chế độ `paper`. `live` chỉ bật bằng cấu hình + xác nhận gõ tay; khóa cứng không bỏ qua được.
 - Secret chỉ trong `.env` (quyền 600, đã git-ignore); không log, không Telegram, không commit. Không `git add -f`.
-- Quyết định người dùng (19/10/2026) phải có trong config và test: rủi ro **2%/lệnh**; **tối đa 10 lệnh mở**; thoát lệnh **TP1 50% + 50% trailing trên sàn kích hoạt tại TP1, callback sao cho mức dừng lúc kích hoạt ≥ giá vào + phí**; **5 lệnh thua/24h → dừng tới khi người dùng cho phép**; **lỗ ngày > 10% → dừng tới khi cho phép**; **sụt 30% → chỉ cảnh báo**; chỉ tín hiệu **Hạng A MỚI**.
+- Quyết định người dùng (19/10/2026) phải có trong config và test: rủi ro **2%/lệnh**; **tối đa 10 lệnh mở và tổng rủi ro mở ≤ 10%**; thoát lệnh **TP1 50% + 50% trailing trên sàn kích hoạt tại TP1, callback sao cho mức dừng lúc kích hoạt ≥ giá vào + phí**; **5 lệnh thua/24h → dừng tới khi người dùng cho phép**; **lỗ ngày > 10% → dừng tới khi cho phép**; **sụt 30% → chỉ cảnh báo**; chỉ tín hiệu **Hạng A MỚI**.
 - Làm trên `main`, push sau mỗi task đạt rà soát. Tiếng Việt cho log/Telegram.
 
 ---
@@ -24,6 +24,19 @@
 ### Task B0: Đưa quyết định người dùng vào lõi
 
 `packages/core/config.ts` + nơi dùng: rủi ro mặc định 2% (bỏ phân tầng 0,5/0,25% cho bot — giữ phân tầng như tùy chọn hiển thị nếu cần, ghi rõ), trần 10 lệnh, chính sách thoát `C2` (TP1 50% + trailing) là mặc định khi in kế hoạch (vẫn tính TP2/TP3 làm thông tin và cho đối chứng các biến thể). Sửa máy quét in đúng chính sách mới. Cập nhật test và spec chính. Đồng bộ kế hoạch 2 (bộ mô phỏng dùng cùng hằng số).
+
+### Task B0b: Sửa theo đánh giá độc lập (reports/Đánh giá độc lập hệ thống.md)
+
+Người dùng chốt thêm 19/10/2026: **tổng rủi ro đang mở ≤ 10% vốn** (tối đa 10 lệnh; lệnh đã qua TP1 tính rủi ro 0).
+- C3: kiểm **ký quỹ khả dụng** trước mỗi lệnh (tổng ký quỹ các lệnh mở + lệnh mới ≤ vốn bot × hệ số an toàn trong config); không đủ → giảm khối lượng tới mức tối đa cho phép (rủi ro thực in rõ < 2%) hoặc bỏ lệnh; trần đòn bẩy giữ nguyên.
+- Trần danh mục: 10 lệnh **và** tổng rủi ro mở ≤ 10% (config), dùng chung cho máy quét (thông tin), mô phỏng kế hoạch 2 và bot.
+- I2: đọc đủ bộ lọc sàn từ exchangeInfo (MIN_NOTIONAL theo từng hợp đồng, MARKET_LOT_SIZE, minQty/maxQty, MAX_NUM_ORDERS); kế hoạch vi phạm → không hợp lệ kèm lý do.
+- I3: kế hoạch dùng **giá mark hiện tại** (premiumIndex) làm giá hiện tại; giá đóng nến cũ hơn ngưỡng (config) so với thời điểm quét → cờ “dữ liệu cũ”, không lập kế hoạch; phát hiện nến thiếu.
+- I4: cổng thiếu dữ liệu **chặn** (G-04 thiếu khối lượng → trượt; lịch sự kiện hết hạn hoặc còn < 14 ngày → cảnh báo nổi bật; G-06 “chưa đánh giá” hiển thị rõ ở đầu bản in; G-08 kiểm thật theo bậc ký quỹ khi có).
+- I5: tín hiệu vùng có `signalId` (theo hợp đồng + chế độ + hướng + thời điểm nến đóng) và cờ “MỚI”, vùng trễ 70/60 (hysteresis) theo spec.
+- I7: chi phí trượt giá theo cỡ lệnh (tỉ lệ notional / khối lượng 1 phút gần đây, config) + bậc ký quỹ duy trì thật khi có key (leverageBracket), mặc định thận trọng khi chưa có.
+- I8: sửa câu chữ thiết kế: “50% còn lại gần như hòa vốn, trừ trượt giá khi lệnh trailing khớp market”.
+Test từng mục.
 
 ### Task B1: REST có ký + đồng bộ giờ + phân loại lỗi
 

@@ -18,6 +18,8 @@
 - Phí khứ hồi theo nhóm (0,25/0,5/1,0%, đã có trong config) + **funding thật từng kỳ** (`/fapi/v1/fundingRate`).
 - Một nến chạm cả SL lẫn TP → xuống nến nhỏ hơn để phân xử; vẫn không phân xử được → **tính thua** và đếm tỉ lệ ca này.
 - Ghi rõ **thiên lệch sống sót**: chỉ test hợp đồng còn giao dịch hôm nay.
+- **Thứ hạng thanh khoản tại từng thời điểm** (đánh giá độc lập I6): tính từ khối lượng quote 24h của chính nến lịch sử tại t, KHÔNG dùng thứ hạng hôm nay — áp cho nhóm phí, phạm vi P-G1, G-03, top 10%.
+- Mô phỏng dùng trần danh mục thật: tối đa 10 lệnh **và** tổng rủi ro mở ≤ 10%, kiểm ký quỹ khả dụng (đánh giá độc lập C1, C3).
 - Không commit `data/cache/`, `output/`. Commit trên `main`, push sau mỗi task đạt rà soát (người dùng cho phép).
 - Ngưỡng mới trong `config.ts`, chú thích “đề xuất, chưa backtest” cho đến khi qua Task 8.
 
@@ -53,4 +55,4 @@ Chạy 30 ngày gần nhất + 3 tháng ngoài mẫu; báo cáo `reports/Đối 
 
 ### Task 8: Điều chỉnh có kỷ luật
 
-Chỉ chỉnh trên **3 tuần đầu** của tháng gần nhất; kiểm trên **tuần cuối** + **3 tháng trước**; ghi nhật ký mọi lần thử (số lần thử → nêu rủi ro quá khớp). Chỉ đề xuất đổi luật khi cận dưới khoảng tin cậy của chênh lệch R > 0 **và** sụt giảm không tệ hơn. **Người dùng cho phép (19/10/2026): cách thoát lệnh chính là C2 (TP1 chốt 50% + 50% trailing); nếu một cách thoát khác tốt hơn RÕ RỆT thì ÁP DỤNG luôn và báo kèm số liệu.** “Rõ rệt” = cận dưới khoảng tin cậy 95% của chênh lệch R theo cặp so với C2 > 0 trên tuần kiểm **và** trên 3 tháng ngoài mẫu, sụt giảm lớn nhất và chuỗi thua dài nhất không tệ hơn, số lệnh đủ để tính (ghi rõ). Không đạt cả hai giai đoạn → giữ C2. Các thay đổi luật KHÁC (vào lệnh, bộ lọc, ngưỡng) vẫn trình người dùng duyệt trước khi sửa `config.ts`. Mô phỏng phải dùng trần **10 lệnh mở cùng lúc** và rủi ro **2%/lệnh** như bot thật.
+Chỉ chỉnh trên **3 tuần đầu** của tháng gần nhất; kiểm trên **tuần cuối** + **3 tháng trước**; ghi nhật ký mọi lần thử (số lần thử → nêu rủi ro quá khớp). Chỉ đề xuất đổi luật khi cận dưới khoảng tin cậy của chênh lệch R > 0 **và** sụt giảm không tệ hơn. **Người dùng cho phép (19/10/2026): cách thoát lệnh chính là C2 (TP1 chốt 50% + 50% trailing); nếu một cách thoát khác tốt hơn RÕ RỆT thì ÁP DỤNG luôn và báo kèm số liệu.** “Rõ rệt” = cận dưới khoảng tin cậy của chênh lệch R theo cặp so với C2 > 0 **sau hiệu chỉnh thử nhiều lần (Bonferroni cho số biến thể đã thử, tức 95% → 1 − 0,05/k)** trên tuần kiểm **và** trên 3 tháng ngoài mẫu, sụt giảm lớn nhất và chuỗi thua dài nhất không tệ hơn, số lệnh đủ để tính (ghi rõ). Không đạt cả hai giai đoạn → giữ C2. Các thay đổi luật KHÁC (vào lệnh, bộ lọc, ngưỡng) vẫn trình người dùng duyệt trước khi sửa `config.ts`. Mô phỏng phải dùng trần **10 lệnh mở cùng lúc** và rủi ro **2%/lệnh** như bot thật.
