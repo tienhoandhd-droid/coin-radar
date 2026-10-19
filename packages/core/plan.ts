@@ -1,4 +1,4 @@
-import { atr, pivotHighs, pivotLows, last, roundStep } from './indicators.ts';
+import { atr, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
 import { stopSideZones, targetSideZones, describeZone, formatPrice, type Zone } from './zones.ts';
 import type { Candle, Mode, Side } from './types.ts';
@@ -7,19 +7,6 @@ export type CostTier = 'high' | 'mid' | 'low';
 
 // roundStep nằm ở indicators.ts (để zones.ts dùng mà không tạo vòng import); re-export để import cũ vẫn chạy
 export { roundStep };
-
-// TẠM GIỮ: score.ts (S-03) còn dùng; Task 3 (tích hợp analyze) sẽ thay bằng vùng và xóa hàm này.
-export function nearestLevels(entry: Candle[], confirm: number): { above: number | null; below: number | null } {
-  const price = last(entry.map((k) => k.close));
-  const highs = entry.map((k) => k.high);
-  const lows = entry.map((k) => k.low);
-  const above = pivotHighs(highs, confirm).map((i) => highs[i]!).filter((h) => h > price);
-  const below = pivotLows(lows, confirm).map((i) => lows[i]!).filter((l) => l < price);
-  return {
-    above: above.length ? Math.min(...above) : null,
-    below: below.length ? Math.max(...below) : null,
-  };
-}
 
 // Công thức gần đúng cho ký quỹ isolated (bỏ qua bậc ký quỹ thật — cần API key). P-04.
 export function liquidationPrice(entry: number, leverage: number, side: Side, mmr: number): number {

@@ -9,10 +9,15 @@ function k(i: number, close: number, takerShare = 0.5): Candle {
 }
 const up = (n: number, step: number, share = 0.5) => Array.from({ length: n }, (_, i) => k(i, 100 + i * step, share));
 
+// Xu hướng tăng có nhịp hồi (sóng): có đỉnh/đáy thật để dựng vùng hỗ trợ/kháng cự.
+// amp: biên độ nhịp (cùng đơn vị giá), period: số nến mỗi nhịp
+const upWaves = (n: number, step: number, share = 0.5, amp = 1, period = 40) =>
+  Array.from({ length: n }, (_, i) => k(i, 100 + i * step + amp * Math.sin((2 * Math.PI * i) / period), share));
+
 const base: AnalyzeInput = {
   mode: 'swing',
   contract: { symbol: 'TESTUSDT', baseAsset: 'TEST', onboardDate: Date.parse('2024-01-01'), tickSize: 0.001, stepSize: 0.001 },
-  trend: up(300, 1), entry: up(500, 0.2, 0.6), daily: up(300, 1), hourly: up(100, 0.05), btcTrend: up(300, 0.3),
+  trend: up(300, 1), entry: upWaves(500, 0.2, 0.6, 2, 40), daily: up(300, 1), hourly: up(100, 0.05), btcTrend: up(300, 0.3),
   regime: 'up', breakerTripped: false, liquidityRankPct: 0.05, spreadPct: 0.02,
   premium: { symbol: 'TESTUSDT', markPrice: 199.8, lastFundingRate: 0.0001, nextFundingTime: Date.parse('2026-10-19T16:00:00Z') },
   fundingIntervalHours: 8, fundingIntervalDefault: false,
@@ -81,7 +86,7 @@ const volatileDaily = Array.from({ length: 300 }, (_, i) => {
 });
 
 test('M2: coin rủi ro Cao/Rất cao → rủi ro 0,25% (2,5 USDT/1000), plan ghi riskPct', () => {
-  const a = analyze({ ...base, daily: volatileDaily, trend: volatileDaily });
+  const a = analyze({ ...base, daily: volatileDaily, trend: volatileDaily, entry: upWaves(500, 0.2, 0.6, 1, 20) });
   assert.ok(a.risk.tier === 'Cao' || a.risk.tier === 'Rất cao', a.risk.tier);
   assert.ok(a.plan, a.label);
   assert.equal(a.plan.riskAmount, 2.5);
@@ -152,4 +157,22 @@ test('D3: fast, thiếu nến BTC 1H (< 200) → G-01 trượt (fail closed)', (
   const g = a.gates.find((x) => x.code === 'G-01')!;
   assert.equal(g.pass, false);
   assert.match(g.note, /Thiếu dữ liệu BTC 1H/);
+});
+
+test('Task 3: plan có 3 mục tiêu chốt 50/30/20 và cổng G-12 qua', () => {
+  const a = analyze(base);
+  assert.ok(a.plan, a.label);
+  assert.equal(a.plan.targets.length, 3);
+  assert.deepEqual(a.plan.targets.map((t) => t.pct), [50, 30, 20]);
+  const g = a.gates.find((x) => x.code === 'G-12')!;
+  assert.equal(g.pass, true, g.note);
+});
+
+test('Task 3: đà tăng một mạch, không có đáy/đỉnh nào → không có vùng hỗ trợ → G-12 trượt, không Đạt, không plan', () => {
+  const mono = (n: number, step: number) => Array.from({ length: n }, (_, i) => { const c = 100 + i * step; return { ...k(i, c, 0.6), high: c, low: c * 0.9999 }; });
+  const a = analyze({ ...base, entry: mono(500, 0.2), trend: mono(300, 1) });
+  const g = a.gates.find((x) => x.code === 'G-12')!;
+  assert.equal(g.pass, false, g.note);
+  assert.ok(!a.label.startsWith('Đạt'));
+  assert.equal(a.plan, null);
 });

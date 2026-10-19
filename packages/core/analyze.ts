@@ -2,7 +2,7 @@ import { atr, last } from './indicators.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
-import { buildPlan, nearestLevels, maxSafeLeverage, type TradePlan, type CostTier } from './plan.ts';
+import { buildPlan, tp1R, maxSafeLeverage, type TradePlan, type CostTier } from './plan.ts';
 import { evaluateGates, ratePer8h, fundingNote, type GateResult } from './gates.ts';
 import { eventWindow, type MacroEvent } from './events.ts';
 import { riskTier, type RiskTier } from './risk.ts';
@@ -47,10 +47,11 @@ export type Analysis = {
   flags: string[];
 };
 
-// TẠM: quãng tới TP1; chưa có vùng cản thì dùng 1,5R như trước để điểm S-03 không đổi bản chất
-function tp1Distance(p: TradePlan): number {
-  const t = p.targets[0]!.price;
-  return t === null ? 1.5 * p.riskPerUnit : Math.abs(t - p.entry);
+const label4 = (iv: string) => iv.toUpperCase(); // '15m' → '15M', '4h' → '4H'
+
+// Mô tả vùng cản của TP1 để ghi vào lý do S-03
+function tp1Reason(p: TradePlan): string | undefined {
+  return p.targets[0]?.price === null ? undefined : p.targets[0]?.reason;
 }
 
 function costTier(rankPct: number): CostTier {
@@ -59,10 +60,13 @@ function costTier(rankPct: number): CostTier {
 
 // Lỗi từ buildPlan (ATR/khoảng cắt lỗ không hợp lệ) được để nổi lên — scanner ghi lỗi theo từng coin.
 export function analyze(i: AnalyzeInput): Analysis {
-  const levels = nearestLevels(i.entry, COMMON.pivotConfirmBars);
   const dailyAtr = last(atr(i.daily, 14));
-  // TẠM (Task 3 tích hợp thật): dựng vùng ở đây để biên dịch được; nhãn khung chỉ để ghi nguồn
-  const zones = findZones({ entry: i.entry, trend: i.trend, entryLabel: CONFIG[i.mode].entryInterval, trendLabel: CONFIG[i.mode].trendInterval, atr: last(atr(i.entry, 14)) });
+  const atrEntry = last(atr(i.entry, 14));
+  const zones = findZones({
+    entry: i.entry, trend: i.trend,
+    entryLabel: label4(CONFIG[i.mode].entryInterval), trendLabel: label4(CONFIG[i.mode].trendInterval),
+    atr: atrEntry,
+  });
   const price = last(i.entry.map((k) => k.close));
   const closesWindow = i.daily.slice(-COMMON.drawdownDays).map((k) => k.close);
   let peak = -Infinity;
@@ -87,8 +91,9 @@ export function analyze(i: AnalyzeInput): Analysis {
   const planLong = planFor('long');
   const planShort = planFor('short');
   const liquid = i.liquidityRankPct <= COMMON.liquidRankForRs;
-  const long = scoreSide({ mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid, nearestLevels: levels }, 'long', tp1Distance(planLong));
-  const short = scoreSide({ mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid, nearestLevels: levels }, 'short', tp1Distance(planShort));
+  const scoreIn = { mode: i.mode, trend: i.trend, entry: i.entry, btcTrend: i.btcTrend, liquid };
+  const long = scoreSide(scoreIn, 'long', tp1R(planLong), tp1Reason(planLong));
+  const short = scoreSide(scoreIn, 'short', tp1R(planShort), tp1Reason(planShort));
 
   // F-01: funding quá nhiệt cùng chiều lệnh → trừ điểm
   const flags: string[] = [];
@@ -121,6 +126,7 @@ export function analyze(i: AnalyzeInput): Analysis {
     liquidationOk: maxSafeLeverage(stopDistPct, COMMON.maintenanceMarginRate, COMMON.liquidationBufferStops) >= 1,
     fundingRate: i.premium.lastFundingRate, fundingIntervalHours: i.fundingIntervalHours, fundingIntervalDefault: i.fundingIntervalDefault,
     minutesToFunding: (i.premium.nextFundingTime - i.now.getTime()) / 60_000,
+    planValid: plan.valid, planNote: plan.invalidReason ?? plan.stopReason,
   });
 
   const allPass = gates.every((g) => g.pass);

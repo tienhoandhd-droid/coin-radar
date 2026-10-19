@@ -20,7 +20,7 @@ const ok: GateContext = {
   mode: 'swing', side: 'long', score: 75, regime: 'up', breakerTripped: false,
   warmupBars: 300, coverage: 1, liquidityRankPct: 0.1, spreadPct: 0.02,
   move1hPct: 1, volumeZ1h: 1, ageDays: 400, eventBlocked: false,
-  btcHourly: null, rsZ: 0, riskTier: 'Vừa', liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200,
+  btcHourly: null, rsZ: 0, riskTier: 'Vừa', liquidationOk: true, stopDistPct: 5, stopDistAtr: 1.2, fundingRate: 0.0001, fundingIntervalHours: 8, fundingIntervalDefault: false, minutesToFunding: 200, planValid: true, planNote: 'SL sau vùng hỗ trợ',
 };
 
 test('đủ điều kiện → mọi cổng qua (trừ G-06 chưa đánh giá vẫn tính qua)', () => {
@@ -45,6 +45,7 @@ test('từng cổng chặn đúng', () => {
   fail({ liquidationOk: false }, 'G-08');
   fail({ fundingRate: 0.002 }, 'G-09');
   fail({ mode: 'fast', fundingRate: 0.0002, minutesToFunding: 10 }, 'G-10');
+  fail({ planValid: false, planNote: 'Không có vùng hỗ trợ đủ mạnh' }, 'G-12');
 });
 
 test('Short bị chặn bởi funding âm cực đoan, không bởi funding dương', () => {
@@ -144,4 +145,11 @@ test('G-01 fast: thiếu nến BTC 1H (side null) hoặc không có dữ liệu 
 test('G-01 swing: không xét BTC 1H', () => {
   const g = evaluateGates({ ...ok, btcHourly: { side: 'short', note: 'x' } }).find((x) => x.code === 'G-01')!;
   assert.equal(g.pass, true);
+});
+
+test('G-12: note lấy từ lý do của kế hoạch', () => {
+  const g = evaluateGates({ ...ok, planValid: false, planNote: 'TP1 chỉ 0,6R' }).find((x) => x.code === 'G-12')!;
+  assert.equal(g.pass, false);
+  assert.equal(g.note, 'TP1 chỉ 0,6R');
+  assert.equal(evaluateGates(ok).find((x) => x.code === 'G-12')!.pass, true);
 });

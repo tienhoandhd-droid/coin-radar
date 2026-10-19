@@ -29,6 +29,8 @@ export type GateContext = {
   fundingIntervalHours: number; // chu kỳ funding của hợp đồng (giờ)
   fundingIntervalDefault: boolean; // true = mã không có trong fundingInfo, dùng mặc định 8h
   minutesToFunding: number;
+  planValid: boolean; // kế hoạch SL/TP theo vùng có hợp lệ không (TradePlan.valid)
+  planNote: string; // lý do không hợp lệ, hoặc lý do đặt SL
 };
 
 const comma1 = (x: number) => x.toFixed(1).replace('.', ',');
@@ -99,5 +101,6 @@ export function evaluateGates(c: GateContext): GateResult[] {
         ? `Cắt lỗ cách ${comma1(c.stopDistPct)}% giá (${comma1(c.stopDistAtr)}×ATR ngày); trần ${COMMON.maxStopDailyAtr}×ATR hoặc ${COMMON.maxStopPct}%`
         : `Cắt lỗ cách ${comma1(c.stopDistPct)}% giá; thiếu ATR ngày nên không đánh giá được — chặn`,
     },
+    { code: 'G-12', pass: c.planValid, note: c.planNote },
   ];
 }

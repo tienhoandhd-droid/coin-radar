@@ -6,7 +6,7 @@ import { CONFIG } from './config.ts';
 test('mã nguyên tắc là duy nhất và đủ các nhóm của spec', () => {
   const codes = RULES.map((r) => r.code);
   assert.equal(new Set(codes).size, codes.length);
-  for (const code of ['G-01', 'G-02', 'G-03', 'G-04', 'G-05', 'G-06', 'G-07', 'G-08', 'G-09', 'G-10', 'G-11',
+  for (const code of ['G-01', 'G-02', 'G-03', 'G-04', 'G-05', 'G-06', 'G-07', 'G-08', 'G-09', 'G-10', 'G-11', 'G-12',
     'S-01', 'S-02', 'S-03', 'F-01', 'F-02', 'F-03', 'F-04', 'F-05', 'F-06',
     'P-01', 'P-02', 'P-03', 'P-04', 'P-05', 'P-06', 'P-07', 'R-01', 'R-02']) {
     assert.ok(codes.includes(code), `thiếu ${code}`);

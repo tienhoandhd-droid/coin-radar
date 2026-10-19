@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, buildPlan, nearestLevels, tp1R } from './plan.ts';
+import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, buildPlan, tp1R } from './plan.ts';
 import type { Zone } from './zones.ts';
 import type { Candle } from './types.ts';
 
@@ -30,15 +30,6 @@ test('khối lượng: vốn 1000, rủi ro 0,5%, vào 100, cắt 98, chi phí 0
 function k(i: number, close: number, high = close * 1.01, low = close * 0.99): Candle {
   return { openTime: i, closeTime: i, open: close, high, low, close, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 };
 }
-
-test('nearestLevels: pivot đã xác nhận gần nhất trên/dưới giá', () => {
-  // đỉnh ở chỉ số 3 và đáy ở chỉ số 7 để đủ 3 nến xác nhận mỗi bên
-  const closes = [100, 101, 102, 110, 101, 100, 99, 90, 99, 100, 101, 102, 103, 104];
-  const c = closes.map((x, i) => k(i, x));
-  const lv = nearestLevels(c, 3);
-  assert.ok(lv.above !== null && lv.above > 104);
-  assert.ok(lv.below !== null && lv.below < 104);
-});
 
 const zone = (low: number, high: number, strength = 1): Zone => ({ low, high, strength, touches: 1, sources: ['test'] });
 // nến đóng cố định, biên độ 1 → ATR(14) = 1

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { takerImbalance, meanImbalance, volumeZ } from './flow.ts';
 import { scoreSide, type ScoreInput } from './score.ts';
+import { CONFIG } from './config.ts';
 import type { Candle } from './types.ts';
 
 function k(close: number, takerShare = 0.5, volume = 100): Candle {
@@ -24,7 +25,7 @@ test('volumeZ: nến cuối khối lượng vọt lên → z lớn', () => {
 });
 
 function input(trend: Candle[], entry: Candle[], btc: Candle[]): ScoreInput {
-  return { mode: 'swing', trend, entry, btcTrend: btc, liquid: true, nearestLevels: { above: null, below: null } };
+  return { mode: 'swing', trend, entry, btcTrend: btc, liquid: true };
 }
 
 test('coin tăng mạnh hơn BTC, taker mua áp đảo → Long ≥ 70 và cao hơn Short', () => {
@@ -49,15 +50,35 @@ test('coin thanh khoản thấp: không tính sức mạnh tương đối, độ
 
 test('kháng cự nằm trước chốt lời 1 → điểm Đường đi thấp hơn', () => {
   const base = input(rising(300, 1), rising(500, 0.2, 0.6), rising(300, 0.3));
-  const price = base.entry[base.entry.length - 1]!.close;
-  const free = scoreSide(base, 'long', 5);
-  const blocked = scoreSide({ ...base, nearestLevels: { above: price + 1, below: null } }, 'long', 5);
+  const free = scoreSide(base, 'long', null);
+  const blocked = scoreSide(base, 'long', 1);
   assert.ok(blocked.score < free.score);
 });
 
+test('S-03: TP1 = 1R → 0 điểm, 1,5R → nửa điểm, ≥ 2R hoặc không có vùng cản → đủ điểm', () => {
+  const base = input(rising(300, 1), rising(500, 0.2, 0.6), rising(300, 0.3));
+  const full = CONFIG.swing.weights.path;
+  const pts = (r: number | null) => scoreSide(base, 'long', r).reasons.find((x) => x.code === 'S-03')!.points;
+  assert.equal(pts(1), 0);
+  assert.equal(pts(0.5), 0);
+  assert.equal(pts(1.5), full / 2);
+  assert.equal(pts(2), full);
+  assert.equal(pts(3), full);
+  assert.equal(pts(null), full);
+});
+
+test('S-03: lý do ghi TP1 bao nhiêu R và vùng cản nào', () => {
+  const base = input(rising(300, 1), rising(500, 0.2, 0.6), rising(300, 0.3));
+  const r = scoreSide(base, 'long', 1.5, 'trước vùng cản 120–121').reasons.find((x) => x.code === 'S-03')!;
+  assert.match(r.text, /1,5R/);
+  assert.match(r.text, /vùng cản 120–121/);
+  const none = scoreSide(base, 'long', null).reasons.find((x) => x.code === 'S-03')!;
+  assert.match(none.text, /Không có vùng cản/);
+});
+
 test('thiếu toàn bộ dữ liệu (mảng rỗng) + có vùng cản → điểm 0, không NaN, độ phủ < 70%', () => {
-  const inp = { ...input([], [], []), nearestLevels: { above: 150, below: null } };
-  const s = scoreSide(inp, 'long', 5);
+  const inp = input([], [], []);
+  const s = scoreSide(inp, 'long', 1.5);
   assert.equal(s.score, 0);
   assert.ok(Number.isFinite(s.score));
   assert.ok(s.coverage < 0.7);
@@ -65,7 +86,7 @@ test('thiếu toàn bộ dữ liệu (mảng rỗng) + có vùng cản → đi�
 
 test('chỉ còn S-03 khả dụng (dữ liệu quá ngắn) → điểm 0 và có lý do độ phủ', () => {
   const short = rising(10, 1);
-  const inp = { ...input(short, rising(10, 0.2, 0.6), short), nearestLevels: { above: 1000, below: null } };
+  const inp = input(short, rising(10, 0.2, 0.6), short);
   const s = scoreSide(inp, 'long', 5);
   assert.equal(s.score, 0);
   assert.ok(s.coverage < 0.7);
