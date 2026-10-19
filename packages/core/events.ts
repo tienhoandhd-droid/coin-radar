@@ -27,7 +27,10 @@ export function eventWindow(now: Date, events: MacroEvent[], mode: Mode): { bloc
         : { blocked: false, flag: `Gần ${e.kind} (${e.time})` };
     }
   }
-  const exp = quarterlyExpiry(now).getTime();
-  if (Math.abs(exp - t) <= COMMON.expiryFlagHours * H) return { blocked: false, flag: `±24h đáo hạn quyền chọn quý ${new Date(exp).toISOString()}` };
+  const window = COMMON.expiryFlagHours * H;
+  // Kỳ đáo hạn gần nhất: kỳ kế tiếp, hoặc kỳ vừa qua (quarterlyExpiry(t - cửa sổ) trả kỳ đầu tiên >= t - cửa sổ).
+  for (const exp of [quarterlyExpiry(new Date(t - window)).getTime(), quarterlyExpiry(now).getTime()]) {
+    if (Math.abs(exp - t) <= window) return { blocked: false, flag: `±${COMMON.expiryFlagHours}h đáo hạn quyền chọn quý ${new Date(exp).toISOString()}` };
+  }
   return { blocked: false, flag: null };
 }

@@ -59,3 +59,8 @@ test('mức rủi ro: ATR% cao → Rất cao; coin mới tối thiểu Cao', () 
   assert.equal(riskTier({ dailyAtrPct: 3, ageDays: 400, liquidityRank: 0.1, maxDrawdown90Pct: 20 }).tier, 'Thấp');
   assert.equal(riskTier({ dailyAtrPct: 3, ageDays: 30, liquidityRank: 0.1, maxDrawdown90Pct: 20 }).tier, 'Cao');
 });
+
+test('cờ đáo hạn quyền chọn bật cả 24 giờ sau đáo hạn, tắt khi đã xa', () => {
+  assert.match(eventWindow(new Date('2026-12-25T20:00:00Z'), [], 'swing').flag ?? '', /đáo hạn/);
+  assert.equal(eventWindow(new Date('2026-12-27T12:00:00Z'), [], 'swing').flag, null);
+});
