@@ -1,4 +1,5 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
+import { applyConfigOverride } from '../core/config-override.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +15,12 @@ import { trailingFor } from '../core/exit.ts';
 import type { Candle, Contract, Side } from '../core/types.ts';
 import { createTrade, advanceTrade, tradeRecord, type SimCost } from '../../backtest/simulate.ts';
 import { exitFee, entryFee, exitExecX, fundingAmount, trailStopX, type FillCost } from './fill-model.ts';
+
+// Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
+// nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
+let restoreDefaults: () => void = () => {};
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+after(() => restoreDefaults());
 
 // Sàn giả lập (B7): cùng giao diện orders.ts (createOrders trên api giả), khớp theo giá MARK / nến, công thức từ fill-model.ts.
 // Không request nào rời máy; trạng thái lưu vào thư mục tạm.

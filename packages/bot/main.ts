@@ -20,6 +20,7 @@ import { runScan, type ScanInput, type ScanResult } from '../../scanner/run-scan
 import { createFundingMaxAbsLoader } from '../../scanner/funding-history.ts';
 import { fetchFgiDecision, httpJson } from '../../scanner/fgi.ts';
 import { liveUniverse } from '../core/gates.ts';
+import { fetchClusterDaily } from './cluster-data.ts';
 import { openJournal, type Journal } from './journal.ts';
 import { planOrders, type PlannerPlan } from './planner.ts';
 import { reconcile, roleOfClientId, tradeFromPlan, type Action, type AlertLevel, type ExPosition, type TradeState } from './reconcile.ts';
@@ -646,6 +647,9 @@ export function createBot(deps: BotDeps) {
         const ok = donchianBreakout(await klinesRest(sym, '1d', COMMON.breakout.donchianDays + 2), COMMON.breakout.donchianDays);
         if (ok !== null) breakout = { closeAboveDonchian: ok };
       }
+      // risk-cluster (COMMON.portfolio.cluster): nến 1D đã đóng của mã này + mã đang mở + BTC; tải lỗi → không vào lệnh (fail closed)
+      const clusterDaily = await fetchClusterDaily(sym, portfolio(), (s, limit) => klinesRest(s, '1d', limit), log, (e) => BAN_RE.test(errText(e)));
+      if (clusterDaily === null) { trace(`entry:cluster-data ${sym}`); return; }
       const openOrderCount = (lastFetched?.ex.openOrders.filter((o) => o.symbol === sym).length ?? 0) + (lastFetched?.ex.openAlgoOrders.filter((o) => o.symbol === sym).length ?? 0);
       const pr = planOrders({
         plan: p, grade: a.grade?.grade ?? null, signal: { id: sid, fresh: a.signal!.fresh }, mode, contract, capital, openTrades: portfolio(), openOrderCount,
@@ -653,6 +657,7 @@ export function createBot(deps: BotDeps) {
         costModel: { tierPct: COMMON.costRoundTripPct[tier], quoteVolPerMin: vol1m },
         fundingBuffer: { maxAbsRate, intervalHours }, fundingMeanRate: meanFundingRate(rows, now),
         ...(breakout !== undefined ? { breakout } : {}),
+        ...(clusterDaily !== undefined ? { clusterDaily } : {}),
       });
       if (!pr.allowed || pr.sizing === null) { trace(`entry:planner ${sym}`); log(`${sym} ${mode}: planner từ chối — ${pr.reasons.join('; ')}`); return; }
       await serial(`vào lệnh ${sym}`, () => placeEntry(mode, a, p, pr, capital, tier, vol1m, contract, maxNotional));

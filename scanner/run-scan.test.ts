@@ -200,3 +200,14 @@ test('FGI-hướng bật: lần quét Swing không có FGI → cảnh báo (mọ
     assert.match(r.warnings.join(' '), /FGI-hướng: FGI TB 7 ngày = 61/);
   });
 });
+
+test('minListingDays (mặc định 30, người dùng chốt 20/10/2026) áp trong runScan — đường máy quét/bot dùng chung: mã niêm yết < 30 ngày bị chặn', async () => {
+  const base = input();
+  const plain = await runScan(base);
+  const dat = plain.results.filter((a) => a.label.startsWith('Đạt') && a.signal !== null).map((a) => a.symbol);
+  assert.ok(dat.length > 0, 'fixture phải có tín hiệu Đạt');
+  assert.equal(plain.entryBlocks.size, 0, 'hợp đồng niêm yết từ 2024 → không chặn');
+  const young = base.contracts.map((c) => ({ ...c, onboardDate: NOW - 10 * 86_400_000 }));
+  const r = await runScan({ ...base, contracts: young });
+  for (const s of dat) assert.match(r.entryBlocks.get(s) ?? '', /#listing niêm yết 10,0 ngày < 30/, s);
+});

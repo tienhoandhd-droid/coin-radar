@@ -1,4 +1,5 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
+import { applyConfigOverride } from '../core/config-override.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,12 @@ import type { MarketEvent, UserEvent } from '../binance/stream.ts';
 import type { ScanInput, ScanResult } from '../../scanner/run-scan.ts';
 import type { Analysis } from '../core/analyze.ts';
 import type { Candle, Contract } from '../core/types.ts';
+
+// Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
+// nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
+let restoreDefaults: () => void = () => {};
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+after(() => restoreDefaults());
 
 // B8b vòng đời bot (main.ts) với đồng hồ giả, luồng giả, sàn giả lập THẬT (paper.ts) và nhật ký THẬT (thư mục tạm). Không gọi mạng.
 const H = 3_600_000;
@@ -586,4 +593,45 @@ test('R3 bộ nhớ chốt chặn funding (|funding| xấu nhất, lần kiểm 
   h2.clock.t = h.clock.t + 60_000;
   // nạp lại từ nhật ký ngay khi dựng bot (trước lần kiểm funding lúc khởi động)
   assert.deepEqual(h2.bot.fundingMemory('AAAUSDT'), { worstRate: m.worstRate, lastGood: m.lastGood });
+});
+
+// ---- risk-cluster trong bot (người dùng chốt 20/10/2026: bật mặc định) ----
+const CLUSTER_ON = { 'COMMON.portfolio.cluster': { corrDays: 30, corrMax: 0.7, betaDays: 60, betaFloor: 0.5, maxBetaRiskPct: 10 } };
+// nến 1D giả có biến động (beta cần phương sai): giá = gốc × (1 + 3% × sin(k·i))
+function dailyStub(h: ReturnType<typeof harness>, fail: string | null) {
+  const orig = h.deps.publicGet;
+  h.deps.publicGet = async (p: string) => {
+    if (!p.startsWith('/fapi/v1/klines') || !p.includes('interval=1d')) return orig(p);
+    h.gets.push(p);
+    const sym = /symbol=([A-Z]+)/.exec(p)![1]!;
+    if (sym === fail) throw new Error('Binance HTTP 503 tại /fapi/v1/klines');
+    const limit = Number(/limit=(\d+)/.exec(p)![1]);
+    const D = 24 * H;
+    const lastOpen = Math.floor(h.clock.t / D) * D - D;
+    const base = sym === 'BTCUSDT' ? 60_000 : 100;
+    const k = sym === 'BTCUSDT' ? 1.3 : 0.7;
+    return Array.from({ length: limit }, (_, j) => { const i = limit - 1 - j; return kRow(lastOpen - i * D, D, base * (1 + 0.03 * Math.sin(k * (lastOpen - i * D) / D))); });
+  };
+}
+
+test('risk-cluster (bot): bật → tải nến 1D mã định vào + BTC (limit 62 = 61 nến đã đóng) qua REST công khai rồi mới lập lệnh → vào lệnh', async () => {
+  await withConfigOverride(CLUSTER_ON, async () => {
+    const h = harness({ scan: signalScan([]) });
+    dailyStub(h, null);
+    await openTrade(h);
+    assert.ok(h.gets.includes('/fapi/v1/klines?symbol=AAAUSDT&interval=1d&limit=62'), h.gets.filter((g) => g.includes('1d')).join(' | '));
+    assert.ok(h.gets.includes('/fapi/v1/klines?symbol=BTCUSDT&interval=1d&limit=62'));
+    assert.equal(h.journal.state().trades[SIGNAL_ID]?.status, 'open');
+  });
+});
+
+test('risk-cluster (bot) FAIL CLOSED: tải nến 1D lỗi → ghi log, KHÔNG vào lệnh (không âm thầm bỏ qua kiểm tra)', async () => {
+  await withConfigOverride(CLUSTER_ON, async () => {
+    const h = harness({ scan: signalScan([]) });
+    dailyStub(h, 'BTCUSDT');
+    await openTrade(h);
+    assert.equal(h.journal.state().trades[SIGNAL_ID], undefined, 'không nhận tín hiệu');
+    assert.ok(h.logs.some((l) => /risk-cluster — không tải được nến 1D BTCUSDT.*không vào lệnh mới/.test(l)), h.logs.slice(-5).join(' | '));
+    assert.ok(h.bot.trace().includes('entry:cluster-data AAAUSDT'));
+  });
 });

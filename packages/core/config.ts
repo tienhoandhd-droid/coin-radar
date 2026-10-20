@@ -76,8 +76,9 @@ export const COMMON = {
     // Kiểm soát rủi ro danh mục "risk-cluster" (đăng ký trước 20/10/2026, docs/superpowers/plans/2026-10-20-luat-moi-va-kiem-mu-C.md) — chỉ SIẾT:
     // (1) từ chối lệnh mới nếu tương quan lợi suất ngày corrDays ngày với một lệnh đang mở CÙNG PHÍA ≥ corrMax (một lệnh mỗi cụm);
     // (2) Σ max(β, betaFloor) × rủi ro lệnh ≤ maxBetaRiskPct% vốn (β = beta lợi suất ngày betaDays ngày so với BTC), cộng thêm trần cũ.
-    // Chỉ dùng nến 1D đã đóng trước lúc quyết định (packages/core/risk-cluster.ts). null = tắt (mặc định). Thiếu số liệu → không vào lệnh.
-    cluster: null as null | { corrDays: number; corrMax: number; betaDays: number; betaFloor: number; maxBetaRiskPct: number },
+    // Chỉ dùng nến 1D đã đóng trước lúc quyết định (packages/core/risk-cluster.ts). null = tắt. Thiếu số liệu → không vào lệnh.
+    // BẬT: người dùng chốt 20/10/2026, lần thử #21 giảm DD 20,07→15,60% trên D, chưa kiểm mù (cùng minListingDays 30).
+    cluster: { corrDays: 30, corrMax: 0.7, betaDays: 60, betaFloor: 0.5, maxBetaRiskPct: 10 } as null | { corrDays: number; corrMax: number; betaDays: number; betaFloor: number; maxBetaRiskPct: number },
   },
   exit: {
     defaultPolicy: 'C2' as ExitPolicy, // người dùng chốt 19/10/2026: TP1 chốt 50%, 50% còn lại trailing stop trên sàn kích hoạt tại TP1. 'A0' = 50/30/20 cố định (luật cũ, để đối chứng)
@@ -296,7 +297,9 @@ export const COMMON = {
     // Thiếu dữ liệu → không vào lệnh mới (packages/core/fgi.ts). null = tắt; biến thể: { lagDays: 1, meanDays: 7, threshold: 50 }.
     fgiDirection: null as null | { lagDays: number; meanDays: number; threshold: number },
     sides: ['long', 'short'] as Array<'long' | 'short'>, // chỉ vào lệnh mới các phía này (mọi chế độ); biến thể "chỉ Long": ['long']
-    minListingDays: null as number | null, // bỏ hợp đồng niêm yết chưa đủ N ngày tại lúc quyết định (onboardDate exchangeInfo); null = tắt; biến thể 30
+    // bỏ hợp đồng niêm yết chưa đủ N ngày tại lúc quyết định (onboardDate exchangeInfo); null = tắt.
+    // 30: người dùng chốt 20/10/2026, lần thử #21 giảm DD 20,07→15,60% trên D, chưa kiểm mù (cùng portfolio.cluster).
+    minListingDays: 30 as number | null,
     // Chỉ khi chạy thật (máy quét/bot — lịch sử không có deliveryDate theo thời điểm): bỏ hẳn khỏi vũ trụ quét hợp đồng có deliveryDate
     // trước COMMON.perpetualDeliveryFloor (đã có lịch tất toán/hủy niêm yết). Cổng G-06 vẫn chặn các mã này kể cả khi tắt. Mặc định tắt.
     liveSkipScheduledDelivery: false as boolean,

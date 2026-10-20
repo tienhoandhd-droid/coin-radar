@@ -1,4 +1,5 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
+import { applyConfigOverride } from '../packages/core/config-override.ts';
 import assert from 'node:assert/strict';
 import { planOrders, type PlannerInput, type PlannerPlan, type PlannerResult } from '../packages/bot/planner.ts';
 import { trailingFor } from '../packages/core/exit.ts';
@@ -8,6 +9,12 @@ import {
   createTrade, advanceTrade, forceClose, tradeRecord, portfolioView, createBook, bookFlow, bookClose, isPaused, summarize,
   type SimTrade, type SimCost, type Resolver, type TradeRecord,
 } from './simulate.ts';
+
+// Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
+// nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
+let restoreDefaults: () => void = () => {};
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+after(() => restoreDefaults());
 
 // ---------- Dữ liệu tay: Long/Short quanh giá 100, vốn 102 000 USDT → 2% = 2 040 USDT; |vào − SL| = 5, phí kế hoạch 0,1% → 5,1/coin → 400 coin ----------
 const C: Contract = {

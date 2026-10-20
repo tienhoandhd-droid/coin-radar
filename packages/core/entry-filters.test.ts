@@ -1,8 +1,15 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
+import { applyConfigOverride } from './config-override.ts';
 import assert from 'node:assert/strict';
 import type { Analysis } from './analyze.ts';
 import { entryBlocks } from './entry-filters.ts';
 import { withConfigOverride } from './config-override.ts';
+
+// Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
+// nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
+let restoreDefaults: () => void = () => {};
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+after(() => restoreDefaults());
 
 // Analysis tối thiểu: nhãn, tín hiệu (chiều), rsZ
 const an = (symbol: string, side: 'long' | 'short' | null, rsZ: number | null): Analysis => ({
@@ -95,5 +102,5 @@ test('minListingDays: niêm yết chưa đủ N ngày tại thời điểm quy�
     assert.match(b.get('NEW')!, /#listing niêm yết 29,0 ngày < 30/);
     assert.match(b.get('X')!, /thiếu ngày niêm yết/);
   });
-  assert.equal(entryBlocks([an('NEW', 'long', 0)], { mode: 'swing', regime: 'up', now, onboardDate }).size, 0, 'mặc định tắt');
+  assert.equal(entryBlocks([an('NEW', 'long', 0)], { mode: 'swing', regime: 'up', now, onboardDate }).size, 0, 'tắt (null) → không chặn');
 });

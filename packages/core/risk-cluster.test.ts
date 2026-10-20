@@ -78,3 +78,9 @@ test('thiếu nến 1D (mã mới, mã đang mở, BTC) → từ chối có lý 
   assert.match(noOpenData.reasons[0]!, /lệnh đang mở ZZZ/);
   assert.deepEqual(clusterSymbols('AAA', [open('ZZZ', 'long', 1), open('AAA', 'long', 1)]), ['AAA', 'BTCUSDT', 'ZZZ']);
 });
+
+test('mặc định (người dùng chốt 20/10/2026, lần thử #21): risk-cluster BẬT với tham số đăng ký trước + minListingDays 30', async () => {
+  const { COMMON } = await import('./config.ts');
+  assert.deepEqual(COMMON.portfolio.cluster, { corrDays: 30, corrMax: 0.7, betaDays: 60, betaFloor: 0.5, maxBetaRiskPct: 10 });
+  assert.equal(COMMON.entryRules.minListingDays, 30);
+});

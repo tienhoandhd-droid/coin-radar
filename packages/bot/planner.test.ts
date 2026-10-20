@@ -1,4 +1,5 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
+import { applyConfigOverride } from '../core/config-override.ts';
 import assert from 'node:assert/strict';
 import { planOrders, exitSplit, type PlannerInput, type PlannerPlan, type DesiredOrder } from './planner.ts';
 import { trailingFor } from '../core/exit.ts';
@@ -6,6 +7,12 @@ import { COMMON } from '../core/config.ts';
 import { makeClientId, CLIENT_ID_RE } from '../binance/orders.ts';
 import type { Contract, Side } from '../core/types.ts';
 import type { OpenTrade } from '../core/portfolio.ts';
+
+// Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
+// nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
+let restoreDefaults: () => void = () => {};
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+after(() => restoreDefaults());
 
 const C: Contract = {
   symbol: 'AAAUSDT', baseAsset: 'AAA', onboardDate: 0, tickSize: 0.01, stepSize: 0.001, minQty: 0.001, maxQty: 100_000,
@@ -554,7 +561,7 @@ test('trend-d1: bot (không có trendSim) bị từ chối; mô phỏng → ch�
   }
 });
 
-test('risk-cluster: tắt mặc định; bật mà thiếu nến 1D → từ chối (fail closed); trần beta làm giảm khối lượng; cùng cụm → từ chối', async () => {
+test('risk-cluster: tắt → như cũ; bật mà thiếu nến 1D → từ chối (fail closed); trần beta làm giảm khối lượng; cùng cụm → từ chối', async () => {
   const { withConfigOverride } = await import('../core/config-override.ts');
   const DAY = 86_400_000;
   const rets = Array.from({ length: 70 }, (_, i) => 0.02 * Math.sin(i * 1.3));
