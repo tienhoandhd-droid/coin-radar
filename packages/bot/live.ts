@@ -73,7 +73,7 @@ export function resolveRunMode(a: { configMode: unknown; env: Readonly<Record<st
   { ok: true; mode: 'paper' | 'demo' } | { ok: true; mode: 'live'; caps: LiveCaps } | { ok: false; problems: string[] } {
   const raw = a.configMode === undefined || a.configMode === null || a.configMode === '' ? 'paper' : a.configMode;
   if (raw !== 'paper' && raw !== 'demo' && raw !== 'live') return { ok: false, problems: [`Chế độ "${String(raw)}" không hợp lệ (paper | demo | live)`] };
-  const cfgProblems = configProblems();
+  const cfgProblems = configProblems('bot'); // gồm cả hệ chỉ có trong mô phỏng (trend-d1, mtf-*) — bot không thực thi được → từ chối chạy
   if (cfgProblems.length > 0) return { ok: false, problems: cfgProblems };
   if (raw !== 'paper' && COMMON.risk.fundingBufferHorizon === 'expected' && a.fundingGuardActive !== true) {
     return { ok: false, problems: [`Đệm funding "expected" cần chốt chặn funding khi chạy của bot đang bật — không có, từ chối chạy ${raw}; đặt COMMON.risk.fundingBufferHorizon = "max"`] };

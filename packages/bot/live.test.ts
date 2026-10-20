@@ -136,3 +136,24 @@ test('F1 (B8b): đệm funding "expected" chỉ được phép cho demo/live khi
   // 'max' (mặc định): không phụ thuộc chốt chặn
   assert.deepEqual(resolveRunMode({ configMode: 'demo', env: { BINANCE_ENV: 'demo' }, capsRaw: null, armRaw: null, fundingGuardActive: false }), { ok: true, mode: 'demo' });
 });
+
+test('I3 khởi động bot: cấu hình bật hệ chỉ có trong mô phỏng (trend-d1, mtf-pullback, mtf-align/tf-*, lệnh hồi phục) → resolveRunMode từ chối (main.ts ném "Từ chối chạy")', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  const { configProblems } = await import('../core/config-validate.ts');
+  assert.deepEqual(configProblems('bot'), [], 'mặc định: bot chạy được');
+  const align = { frames: ['1d', '4h', '1h'], emaFast: 20, emaSlow: 50, touchBars: 8, slBars: 12, slBufferAtr: 0.25, atrPeriod: 14, minStrength: 2, minRR: 1.5, recovery: true, recoveryMaxHoldHours: 48 };
+  const cases: Array<[Record<string, unknown>, RegExp]> = [
+    [{ 'COMMON.trend.enabled': true, 'COMMON.risk.fundingRuntimeGuard': true }, /COMMON\.trend\.enabled/],
+    [{ 'COMMON.entryRules.mtfPullback': { emaH4: 50, emaH1: 20, atrPeriod: 14, nearAtr: 0.5, slBufferAtr: 0.25, minStrength: 2, minRR: 1.5 } }, /mtfPullback/],
+    [{ 'COMMON.entryRules.mtfAlign': { ...align, frames: ['4h'], recovery: false } }, /mtfAlign .*tf-\*/],
+    [{ 'COMMON.entryRules.mtfAlign': align }, /lệnh hồi phục chốt 100% TP1, giữ ≤ 48 giờ/],
+  ];
+  for (const [o, re] of cases) {
+    await withConfigOverride(o, async () => {
+      assert.deepEqual(configProblems(), [], 'mô phỏng vẫn chạy được cấu hình này');
+      const r = resolveRunMode({ configMode: 'paper', env: {}, capsRaw: null, armRaw: null });
+      assert.equal(r.ok, false);
+      if (!r.ok) assert.match(r.problems.join(' '), re);
+    });
+  }
+});
