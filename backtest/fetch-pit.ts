@@ -1,6 +1,6 @@
 // Tải thêm 15m cho mọi mã từng lọt top-N thanh khoản THEO THỜI ĐIỂM (cùng cách xếp hạng với phát lại) trong kỳ D và kỳ mù B.
 //   node backtest/fetch-pit.ts [--dir data/cache]
-// Kỳ mù C (--period blind-c): tải dữ liệu Swing cho cả kỳ C [2026-01-01, 2026-06-21) — CHỈ TẢI, không phát lại/mô phỏng:
+// Kỳ mù C (--period blind-c): tải dữ liệu Swing cho cả kỳ C [2026-01-01, 2026-05-01) (bản tải 20/10/2026 phủ tới 21/6, thừa không sao) — CHỈ TẢI, không phát lại/mô phỏng:
 //   node backtest/fetch-pit.ts --period blind-c [--dir data/cache]
 //   B1. 1h cho MỌI hợp đồng hiện tại niêm yết trước cuối C (cần cho xếp hạng thanh khoản theo thời điểm, như phát lại)
 //   B2. vũ trụ = mã từng lọt top COMMON.entryRules.swingUniverseSize tại một mốc quyết định Swing (mỗi giờ) trong C, luôn kèm BTCUSDT

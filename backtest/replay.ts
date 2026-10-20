@@ -45,8 +45,10 @@ import { meanFundingRate } from '../packages/core/sizing.ts';
 export const DATA_END = Date.UTC(2026, 9, 19); // mốc cuối của bộ đệm (backtest/fetch.ts --end mặc định)
 export const DEV_PERIOD = { start: Date.UTC(2026, 5, 21), end: Date.UTC(2026, 8, 19) };
 export const BLIND_PERIOD = { start: Date.UTC(2026, 8, 19), end: DATA_END }; // kỳ mù B (đã dùng)
-// Kỳ mù C (người dùng duyệt 20/10/2026): nửa đầu 2026, ngay TRƯỚC kỳ D — bảo vệ y như B, tệp khóa và marker riêng
-export const BLIND_C_PERIOD = { start: Date.UTC(2026, 0, 1), end: Date.UTC(2026, 5, 21) };
+// Kỳ mù C (người dùng duyệt 20/10/2026): 4 tháng đầu 2026 — bảo vệ y như B, tệp khóa và marker riêng. Người dùng chốt thu từ
+// [1/1, 21/6) về [1/1, 1/5) vì kiểm toán S/R đã xem 1/5–14/10/2026; khoảng [1/5, 21/6) KHÔNG còn mù (không phải D, không phải C).
+// Vẫn bị nhiễm nhẹ: phân tích đồng biến/biến động riêng theo ngày đã xem cả kỳ C (ghi trong tệp khóa C).
+export const BLIND_C_PERIOD = { start: Date.UTC(2026, 0, 1), end: Date.UTC(2026, 4, 1) };
 export const LOCK_FILE = 'docs/verification/khoa-luat-mo-phong-mu.md';
 export const LOCK_FILE_C = 'docs/verification/khoa-luat-mo-phong-mu-C.md';
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));

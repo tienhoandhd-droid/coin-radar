@@ -136,10 +136,10 @@ test('createReplay: cửa sổ chạm kỳ mù mà không được phép → t�
 });
 
 // ---------- Kỳ mù C ----------
-test('kỳ C: [2026-01-01, 2026-06-21), kết thúc đúng lúc D bắt đầu; tệp khóa riêng', () => {
+test('kỳ C: [2026-01-01, 2026-05-01), kết thúc trước D (khoảng giữa đã bị kiểm toán S/R xem); tệp khóa riêng', () => {
   assert.equal(BLIND_C_PERIOD.start, Date.parse('2026-01-01T00:00:00Z'));
-  assert.equal(BLIND_C_PERIOD.end, Date.parse('2026-06-21T00:00:00Z'));
-  assert.equal(BLIND_C_PERIOD.end, DEV_PERIOD.start);
+  assert.equal(BLIND_C_PERIOD.end, Date.parse('2026-05-01T00:00:00Z'));
+  assert.ok(BLIND_C_PERIOD.end < DEV_PERIOD.start);
   assert.equal(LOCK_FILE_C, 'docs/verification/khoa-luat-mo-phong-mu-C.md');
   assert.equal(blindPeriodOfLock(LOCK_FILE_C)?.id, 'C');
   assert.equal(blindPeriodOfLock('./' + LOCK_FILE)?.id, 'B');
@@ -154,6 +154,7 @@ test('blindPeriodsOverlapping: chạm kỳ mù dù 1 ms; chạm mép (end = star
   assert.deepEqual(ids({ start: C.start - 10 * HOUR, end: C.start }), []); // kết thúc đúng lúc C bắt đầu
   assert.deepEqual(ids({ start: C.start - 10 * HOUR, end: C.start + 1 }), ['C']);
   assert.deepEqual(ids({ start: C.end - 1, end: DEV_PERIOD.start + HOUR }), ['C']); // 1 ms cuối của C
+  assert.deepEqual(ids({ start: C.end, end: DEV_PERIOD.start }), []); // khoảng [1/5, 21/6) không mù
   assert.deepEqual(ids({ start: C.start + HOUR, end: C.start + 2 * HOUR }), ['C']); // nằm trong
   assert.deepEqual(ids({ start: C.start - HOUR, end: BLIND_PERIOD.end + HOUR }), ['B', 'C']); // trùm cả hai
 });
