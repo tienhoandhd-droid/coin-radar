@@ -109,3 +109,10 @@ Mỗi lần thử dùng MỘT khung để nhận định xu hướng (định ng
 Điểm vào, SL, TP1, bỏ khi chi phí > 0,10R: Y HỆT #25 (kích hoạt nến 15m hồi về EMA20 rồi đóng vượt). Thoát C2 (TP1 50% + trailing,
 "có thể lệnh dài" — phần trailing giữ tới khi bị dừng, theo thời gian giữ tối đa Swing hiện có). Gốc f1-funding-fix, top 200; k = 29;
 họ vùng S/R khi chọn luật vào C. Báo cáo: số lệnh, tỉ lệ thắng, kỳ vọng R, PF, tổng lãi %, DD, thời gian giữ trung vị, Long/Short.
+
+## Sai khác khi cài (ghi 20/10/2026, không đổi hành vi)
+
+- Cooldown (rà soát M1): bộ mô phỏng áp cho trend-d1 (#22, #23), mtf-pullback (#24) và mtf-align/tf-* (#25–#29) CÙNG luật cooldown cặp + chiều
+  sẵn có của lệnh vùng: sau khi một lệnh ĐÃ KHỚP của cặp (mã, chiều) đóng, không vào lại cặp đó trong 2 nến khung vào lệnh Swing (2 × 4H = 8 giờ)
+  (`backtest/simulate-run.ts` cooldownMs). Đăng ký trước của trend-d1 chỉ nói "không vào lại cùng mã khi đang có lệnh mở"; #24–#29 không nói gì
+  về cooldown. Kết quả #22–#29 trên D đã chạy CÓ cooldown này; giữ nguyên cho mọi lần chạy sau để so được.
