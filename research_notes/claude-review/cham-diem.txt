@@ -1,0 +1,33 @@
+đã có 76/76 nhận định
+Bot — mọi lệnh có nhận định                      n= 76 R TB= -0.158 tổng= -12.0 thắng=38%
+Bot — Claude chấm "take"                         n= 11 R TB= -0.267 tổng=  -2.9 thắng=27%
+Bot — Claude chấm "modify"                       n= 57 R TB= -0.141 tổng=  -8.0 thắng=40%
+Bot — Claude chấm "skip"                         n=  8 R TB= -0.126 tổng=  -1.0 thắng=38%
+Bot — Claude tự gọi CÙNG phía bot                n= 66 R TB= -0.113 tổng=  -7.5 thắng=39%
+Bot — Claude tự gọi NGƯỢC phía                   n=  1 R TB= -0.996 tổng=  -1.0 thắng=0%
+Bot — Claude tự gọi "đứng ngoài"                 n=  9 R TB= -0.392 tổng=  -3.5 thắng=33%
+  bot long, Claude "skip"                        n=  4 R TB=  0.732 tổng=   2.9 thắng=75%
+  bot short, Claude "skip"                       n=  4 R TB= -0.985 tổng=  -3.9 thắng=0%
+
+Lỗi Claude nêu (số lần / R TB của lệnh bot có lỗi đó):
+  duoi_gia_da_chay_xa                            n= 35 R TB= -0.003 tổng=  -0.1 thắng=46%
+  tp1_bat_hop_ly                                 n= 33 R TB= -0.278 tổng=  -9.2 thắng=36%
+  rr_kem                                         n= 31 R TB= -0.030 tổng=  -0.9 thắng=45%
+  sl_khong_o_cau_truc                            n= 19 R TB= -0.412 tổng=  -7.8 thắng=26%
+  vung_sr_yeu_hoac_khong_that                    n= 16 R TB= -0.137 tổng=  -2.2 thắng=44%
+  boi_canh_btc_xau                               n= 12 R TB= -0.135 tổng=  -1.6 thắng=33%
+  khac                                           n=  7 R TB= -0.359 tổng=  -2.5 thắng=43%
+  nguoc_xu_huong_lon                             n=  5 R TB= -0.098 tổng=  -0.5 thắng=40%
+  sl_qua_sat_nhieu                               n=  4 R TB= -0.304 tổng=  -1.2 thắng=25%
+  khoi_luong_khong_xac_nhan                      n=  3 R TB= -0.287 tổng=  -0.9 thắng=33%
+
+Lệnh Claude TỰ đề xuất (thoát 100% ở TP1, tối đa 7 ngày, phí 0,136%):
+  đề xuất 67, khớp 39, sai cấu trúc 0
+  Claude tự vào (đã khớp)                        n= 39 R TB= -0.275 tổng= -10.7 thắng=26%
+    tự tin 2                                     n= 27 R TB= -0.180 tổng=  -4.9 thắng=30%
+    tự tin 3                                     n= 12 R TB= -0.490 tổng=  -5.9 thắng=17%
+
+Giá limit tốt hơn Claude đề xuất cho kế hoạch bot (giữ SL/TP1 của bot, thoát 100% TP1):
+  có đề xuất 58, khớp trong 24h 32
+  vào ngay (cùng cách thoát) — mọi đề xuất       n= 58 R TB= -0.136 tổng=  -7.9 thắng=41%
+  limit của Claude (0 nếu không khớp)            n= 58 R TB= -0.145 tổng=  -8.4 thắng=14%
