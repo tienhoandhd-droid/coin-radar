@@ -5,4 +5,5 @@ output/
 *.log
 data/cache/
 data/bot/
+data/history/
 !.env.example
