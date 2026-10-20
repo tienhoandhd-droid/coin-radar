@@ -85,3 +85,18 @@ ngày với khoảng hỗ trợ và cản". Luật (gốc f1-funding-fix, Swing,
 5. Vào lệnh thị trường ở nến 1H kế tiếp; SL = đáy vùng − 0,25 ATR(14) 4H; rủi ro 2% như hiện tại.
 6. TP1 = kháng cự "clean" gần nhất độ mạnh ≥ 2 với R:R ≥ 1,5 (không có → bỏ); thoát C2 (TP1 50% + trailing) như hiện tại.
 Gắn risk-cluster nếu risk-cluster đạt điều kiện ở mục chọn luật. k = 24. Thuộc họ vùng S/R khi chọn luật vào C.
+
+## BỔ SUNG đăng ký trước — lần thử #25 "mtf-align" và #26 "mtf-recovery" (người dùng 20/10/2026: "xem xu hướng chung của kỹ thuật
+15 phút, 1h, 4h, 1d và tìm điểm vào phù hợp, có thể swing ngắn cả giai đoạn hồi phục ⇒ dựa vào đây để ấn xu hướng")
+
+Xu hướng mỗi khung (15m, 1H, 4H, 1D), tính trên nến đã đóng: Lên = giá đóng > EMA50 và EMA20 > EMA50; Xuống = đối xứng; còn lại Trung tính.
+Điểm vào chung (cả hai lần thử), Long (Short đối xứng):
+- Nến 15m: trong 8 nến 15m gần nhất có nến chạm EMA20 15m (giá thấp nhất ≤ EMA20), và nến 15m vừa đóng là nến tăng, đóng > EMA20 15m
+  và > đỉnh nến 15m trước. Vào lệnh thị trường ở nến 15m kế tiếp.
+- SL = đáy thấp nhất 12 nến 15m gần nhất − 0,25 × ATR(14) 1H; rủi ro 2% như hiện tại; bỏ nếu chi phí > 0,10R (cơ chế maxCostR có sẵn).
+- TP1 = kháng cự "clean" gần nhất độ mạnh ≥ 2 với R:R ≥ 1,5; không có → bỏ.
+#25 mtf-align: chỉ vào khi 1D, 4H, 1H CÙNG Lên (Long) / cùng Xuống (Short); thoát C2 (TP1 50% + trailing) như hiện tại.
+#26 mtf-recovery: = #25 CỘNG lệnh "swing ngắn giai đoạn hồi phục": 1D Xuống nhưng 4H và 1H cùng Lên → Long (1D Lên nhưng 4H, 1H cùng
+Xuống → Short); lệnh hồi phục chốt 100% tại TP1, giữ tối đa 48 giờ.
+Gốc f1-funding-fix, Swing, top 200; k = 26; thuộc họ vùng S/R khi chọn luật vào C. Báo cáo tách lệnh xu hướng / lệnh hồi phục.
+Lưu ý: người dùng đã bỏ Lướt nhanh cho altcoin; lệnh hồi phục giữ ≤ 48 giờ là ngoại lệ người dùng tự yêu cầu ở đây, chỉ để thử.
