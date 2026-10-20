@@ -13,3 +13,11 @@ Kết quả chính (R của lệnh bot thật; mẫu nhỏ, chưa có CI):
   gợi ý, chưa kiểm định; "đuổi giá" (35 lệnh, −0,00R) KHÔNG gắn với thua.
 Kết luận: phân tích kỹ thuật kiểu chuyên gia (Claude) trên cùng dữ liệu không tạo lợi thế ở altcoin kỳ D; không đáng gọi Claude API
 trước mỗi lệnh với mục đích lọc/đặt limit. Lỗi chính nằm ở chỗ các mẫu hình kỹ thuật này không có lợi thế, không phải ở bot đọc sai biểu đồ.
+
+## Quyết định người dùng (20/10/2026: "hãy theo đề xuất")
+1. Ưu tiên hệ BTC S-sma (đã kiểm mù C) — đưa vào bot, chạy giấy rồi Demo.
+2. Giả thuyết lưu lại, CHỈ kiểm bằng dữ liệu mới sau 19/10/2026 (paper), không kiểm lại trên D:
+   - H1 "SL phải ở cấu trúc": bỏ lệnh khi SL không nằm ngoài một mức đáy/đỉnh swing thật của khung vào lệnh.
+   - H2 "TP1 hợp lý": bỏ lệnh khi TP1 không phải mức cản/hỗ trợ thật gần nhất trên đường giá.
+   Cần định nghĩa cơ học + đăng ký trước khi kiểm.
+3. Không gọi Claude API để lọc lệnh / đặt limit.
