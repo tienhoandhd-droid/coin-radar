@@ -11,7 +11,8 @@ import type { OpenTrade } from '../core/portfolio.ts';
 // Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
 // nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
 let restoreDefaults: () => void = () => {};
-before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+// Mặc định COMMON.bot.modes = ['btc-regime'] (20/10/2026); tệp này kiểm planner/vòng đời của Swing → chạy với ['swing'] như trước.
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null, 'COMMON.bot.modes': ['swing'] }); });
 after(() => restoreDefaults());
 
 const C: Contract = {
@@ -531,7 +532,7 @@ test('#3 không TP1: mặc định từ chối; bật + đóng 1D phá đỉnh D
   });
 });
 
-test('COMMON.bot.modes: mặc định bot chỉ giao dịch Swing (người dùng chốt 20/10/2026) → planner từ chối mọi lệnh Lướt nhanh, Swing vẫn vào; thêm "fast" → Lướt nhanh được xét', async () => {
+test('COMMON.bot.modes: ["swing"] (tệp này) → planner từ chối Lướt nhanh, Swing vẫn vào; thêm "fast" → Lướt nhanh được xét; mặc định ["btc-regime"] → từ chối cả Swing; mô phỏng (simulation) bỏ qua cờ triển khai', async () => {
   const { withConfigOverride } = await import('../core/config-override.ts');
   assert.deepEqual(COMMON.bot.modes, ['swing']);
   const plan = mkPlan('long', 'market', false);
@@ -541,6 +542,12 @@ test('COMMON.bot.modes: mặc định bot chỉ giao dịch Swing (người dùn
   assert.equal(planOrders(input(plan)).allowed, true);
   await withConfigOverride({ 'COMMON.bot.modes': ['swing', 'fast'] }, async () => {
     assert.equal(planOrders(input(plan, { mode: 'fast' })).allowed, true);
+  });
+  await withConfigOverride({ 'COMMON.bot.modes': ['btc-regime'] }, async () => {
+    const sw = planOrders(input(plan));
+    assert.equal(sw.allowed, false);
+    assert.match(sw.reasons.join(' '), /chế độ swing đang tắt/);
+    assert.equal(planOrders({ ...input(plan), simulation: true }).allowed, true, 'bộ mô phỏng chạy đúng chế độ được yêu cầu');
   });
 });
 

@@ -13,7 +13,8 @@ import {
 // Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
 // nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
 let restoreDefaults: () => void = () => {};
-before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+// Mặc định COMMON.bot.modes = ['btc-regime'] (20/10/2026); tệp này kiểm planner/vòng đời của Swing → chạy với ['swing'] như trước.
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null, 'COMMON.bot.modes': ['swing'] }); });
 after(() => restoreDefaults());
 
 // ---------- Dữ liệu tay: Long/Short quanh giá 100, vốn 102 000 USDT → 2% = 2 040 USDT; |vào − SL| = 5, phí kế hoạch 0,1% → 5,1/coin → 400 coin ----------

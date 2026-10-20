@@ -9,7 +9,7 @@ import { legClientId, roleOfClientId, type Action, type ExAlgoOrder, type TradeS
 // Gọi sau MỖI kỳ funding chốt của mã có lệnh mở (main.ts). Hàm THUẦN: dùng chung công thức packages/core/funding-guard.ts với bộ mô phỏng,
 // trả hành động cho executor (cùng kiểu Action của reconcile) + sự kiện nhật ký.
 //   lockedLoss = Σ phí (userTrades.commission) + funding đã trả (−Σ income FUNDING_FEE) − Σ PnL đã chốt (userTrades.realizedPnl)
-//   exitCostFrac = costPct của lệnh / 200 (nửa phí + trượt khứ hồi của kế hoạch = chiều ra)
+//   exitCostFrac = plan.exitCostPct / 100 nếu có (btc-regime: phí taker + trượt), không thì costPct / 200 (nửa phí + trượt khứ hồi = chiều ra)
 // Trước TP1: mức dừng = lệnh dừng (SL/BE) của lệnh ĐANG nằm trên sàn (lần thử mới nhất), không có thì SL trong nhật ký.
 //   tighten → ghi stop_tightened (SL mới trong nhật ký) + thay lệnh dừng như reconcile: đặt mới TRƯỚC, hủy cũ SAU (place_then_cancel,
 //   từ chối thì giữ cũ) hoặc hủy-rồi-đặt khi lệnh đang ở chế độ dự phòng (stopReplaceFallback; đặt hỏng → đóng khẩn).
@@ -46,7 +46,7 @@ export function fundingGuardActions(a: {
   const lockedLoss = lockedLossOf(a.trades, a.fundingIncome);
   const equityAtEntry = t.equityAtEntry ?? a.capitalFallback;
   const budget = (equityAtEntry * a.riskPct) / 100;
-  const exitCostFrac = t.plan.costPct / 200;
+  const exitCostFrac = (t.plan.exitCostPct ?? t.plan.costPct / 2) / 100; // vắng exitCostPct: nửa phí + trượt khứ hồi
   const mine = a.algos.filter((o) => o.symbol === sym && roleOfClientId(t, o.clientId) !== null);
   const stopsOf = (role: 'SL' | 'BE') => mine.filter((o) => roleOfClientId(t, o.clientId)!.role === role)
     .sort((x, y) => roleOfClientId(t, x.clientId)!.attempt - roleOfClientId(t, y.clientId)!.attempt);

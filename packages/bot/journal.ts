@@ -42,7 +42,11 @@ export type JournalState = {
   equity: { peak: number; day: string; dayStartEquity: number } | null;
   // B8b vòng 3: bộ nhớ chốt chặn funding theo mã — |funding| xấu nhất đã biết + lần kiểm được gần nhất (lỗ đã chốt lúc đó)
   fundingGuard: Record<string, { worstRate: number; lastGood: { at: number; lockedLoss: number } | null }>;
+  // Hệ btc-regime: quyết định ngày gần nhất ĐÃ làm (theo nến 1D đã đóng) — khởi động lại không quyết định lại cùng nến (chạm SL trong ngày
+  // thì CHỜ lần quyết định kế tiếp mới vào lại), lỡ nến (máy tắt) thì quyết định ngay lúc khởi động. null = chưa quyết định lần nào.
+  btcRegime: RegimeDecision | null;
 };
+export type RegimeDecision = { closeTime: number; want: 'long' | 'flat'; action: string; note: string; close: number; sma: number; atr: number; signalId: string | null };
 
 export const OUTCOME_KEEP_MS = 7 * 86_400_000;
 
@@ -70,10 +74,11 @@ export type JournalEventBody =
   | { type: 'trade_outcome'; outcome: TradeOutcome }
   | { type: 'equity'; peak: number; day: string; dayStartEquity: number }
   | { type: 'funding_state'; symbol: string; worstRate: number; lastGood: { at: number; lockedLoss: number } | null }
+  | { type: 'btc_regime_decision'; decision: RegimeDecision }
   | { type: 'note'; text: string };
 export type JournalEvent = { seq: number; at: number } & JournalEventBody;
 
-export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null, fundingGuard: {} });
+export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null, fundingGuard: {}, btcRegime: null });
 
 export function journalFileName(at: number): string {
   return `journal-${new Date(at).toISOString().slice(0, 10)}.jsonl`;
@@ -94,6 +99,7 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
   s.outcomes ??= []; // ảnh chụp cũ (trước B8b)
   s.equity ??= null;
   s.fundingGuard ??= {};
+  s.btcRegime ??= null; // ảnh chụp/nhật ký trước hệ btc-regime
   const tradeOf = (signalId: string): TradeState | null => {
     const t = s.trades[signalId];
     if (t === undefined) warn(`sự kiện #${e.seq} (${e.type}) tham chiếu lệnh ${signalId} không có trong nhật ký — bỏ qua`);
@@ -238,6 +244,9 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
     case 'funding_state':
       s.fundingGuard[e.symbol] = { worstRate: e.worstRate, lastGood: e.lastGood === null ? null : { ...e.lastGood } };
       break;
+    case 'btc_regime_decision':
+      s.btcRegime = { ...e.decision };
+      break;
     case 'note':
       break;
     default:
@@ -303,6 +312,7 @@ function restoreFull(dir: string, warn: Warn): { state: JournalState; tornLine: 
       state.outcomes ??= [];
       state.equity ??= null;
       state.fundingGuard ??= {};
+      state.btcRegime ??= null;
       snapshotAt = snap.at;
     } catch (e) {
       warn(`ảnh chụp ${snapPath} không đọc được (${e instanceof Error ? e.message : String(e)}) — phát lại toàn bộ nhật ký`);

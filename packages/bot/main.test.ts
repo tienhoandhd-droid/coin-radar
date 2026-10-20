@@ -20,7 +20,8 @@ import type { Candle, Contract } from '../core/types.ts';
 // Người dùng chốt 20/10/2026: risk-cluster + minListingDays 30 BẬT mặc định. Các test trong tệp này kiểm logic khác (định cỡ, bộ lệnh, mô phỏng…)
 // nên chạy với hành vi CŨ (tắt hai luật); test của chính hai luật tự bật bằng withConfigOverride.
 let restoreDefaults: () => void = () => {};
-before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null }); });
+// Mặc định COMMON.bot.modes = ['btc-regime'] (20/10/2026); tệp này kiểm planner/vòng đời của Swing → chạy với ['swing'] như trước.
+before(() => { restoreDefaults = applyConfigOverride({ 'COMMON.portfolio.cluster': null, 'COMMON.entryRules.minListingDays': null, 'COMMON.bot.modes': ['swing'] }); });
 after(() => restoreDefaults());
 
 // B8b vòng đời bot (main.ts) với đồng hồ giả, luồng giả, sàn giả lập THẬT (paper.ts) và nhật ký THẬT (thư mục tạm). Không gọi mạng.
@@ -49,13 +50,16 @@ type FakeStream = MarketStreamLike & {
   emit(e: MarketEvent): void; marks: Map<string, number>; stale: boolean;
 };
 
-function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => Promise<ScanResult>; funding?: Array<{ fundingTime: number; fundingRate: number; markPrice: string }>; mark?: number } = {}) {
+// btcDaily: giá đóng nến 1D BTCUSDT theo giờ mở (vắng = 60 000 cố định); trả null = REST không có nến đó (thiếu dữ liệu)
+function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => Promise<ScanResult>; funding?: Array<{ fundingTime: number; fundingRate: number; markPrice: string }>; mark?: number;
+  btcDaily?: (openTime: number) => number | null } = {}) {
   const dir = o.dir ?? mkdtempSync(join(tmpdir(), 'cr-bot-'));
   const clock = { t: T0 };
   const now = () => clock.t;
   const streams: FakeStream[] = [];
   const order: string[] = []; // thứ tự sự kiện quan trọng xuyên các thành phần
   let mark = o.mark ?? 100;
+  let btcMark = 60_000;
   let premiumRate = '0.0001'; // funding kỳ gần nhất trong premiumIndex
   const paperRaw = createPaperExchange({ contracts: { AAAUSDT: C, BTCUSDT: BTC }, cost: () => ({ tierPct: 0.1, impactPct: 0.5, vol1m: Infinity }), startBalance: o.balance ?? 10_000, statePath: join(dir, 'paper-state.json'), now, defaultLeverage: 5 });
   const paper = {
@@ -74,7 +78,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     if (path === '/fapi/v1/ticker/24hr') return [{ symbol: 'AAAUSDT', quoteVolume: '1e9', priceChangePercent: '1' }, { symbol: 'BTCUSDT', quoteVolume: '1e10', priceChangePercent: '1' }];
     if (path === '/fapi/v1/ticker/bookTicker') return [{ symbol: 'AAAUSDT', bidPrice: String(mark - 0.01), askPrice: String(mark + 0.01) }];
     if (path.startsWith('/fapi/v1/premiumIndex')) {
-      const row = (s: string) => ({ symbol: s, markPrice: String(s === 'BTCUSDT' ? 60_000 : mark), lastFundingRate: premiumRate, nextFundingTime: Math.ceil((clock.t + 1) / (8 * H)) * 8 * H });
+      const row = (s: string) => ({ symbol: s, markPrice: String(s === 'BTCUSDT' ? btcMark : mark), lastFundingRate: premiumRate, nextFundingTime: Math.ceil((clock.t + 1) / (8 * H)) * 8 * H });
       const m = /symbol=([A-Z]+)/.exec(path);
       return m ? row(m[1]!) : [row('AAAUSDT'), row('BTCUSDT')];
     }
@@ -88,6 +92,17 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
       const lastOpen = Math.floor(clock.t / ms) * ms - ms; // nến đã đóng cuối
       const first = startM ? Math.max(Number(startM[1]), lastOpen - (limit - 1) * ms) : lastOpen - (limit - 1) * ms;
       const rows: unknown[] = [];
+      const daily = o.btcDaily;
+      if (sym === 'BTCUSDT' && interval === '1d' && daily !== undefined) {
+        // nến 1D BTC có biên độ ±300 quanh giá mở/đóng (ATR ≈ 600) — dữ liệu cho hệ btc-regime
+        for (let t = Math.ceil(first / ms) * ms; t <= lastOpen && rows.length < limit; t += ms) {
+          const c = daily(t);
+          if (c === null) continue;
+          const op = daily(t - ms) ?? c;
+          rows.push([t, String(op), String(Math.max(op, c) + 300), String(Math.min(op, c) - 300), String(c), '1000', t + ms - 1, '1000000000', 1, '500', '500000000', '0']);
+        }
+        return rows;
+      }
       for (let t = Math.ceil(first / ms) * ms; t <= lastOpen && rows.length < limit; t += ms) rows.push(kRow(t, ms, sym === 'BTCUSDT' ? 60_000 : mark));
       return rows;
     }
@@ -113,7 +128,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
         start() { this.started = true; this.calls.push('start'); order.push(`stream.start ${so.symbols.join(',')}`); },
         stop() { this.stopped = true; },
         seedLastClosed(sym, i, t) { this.seeds.push(`${sym}|${i}|${t}`); this.calls.push('seed'); },
-        latestMark(sym) { const p = this.marks.get(sym) ?? (sym === 'BTCUSDT' ? 60_000 : mark); return { price: p, eventTime: clock.t, receivedAt: clock.t }; },
+        latestMark(sym) { const p = this.marks.get(sym) ?? (sym === 'BTCUSDT' ? btcMark : mark); return { price: p, eventTime: clock.t, receivedAt: clock.t }; },
         isMarkStale() { return this.stale; },
         isKlineStale() { return this.stale; },
         emit(e) { so.onEvent(e); },
@@ -148,7 +163,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     if (err !== undefined) throw err;
     return out as T;
   }
-  return { bot, deps, dir, clock, streams, order, paper: paperRaw, journal, logs, notes, gets, botGets, drive, setMark: (p: number) => { mark = p; }, setPremiumRate: (r: string) => { premiumRate = r; } };
+  return { bot, deps, dir, clock, streams, order, paper: paperRaw, journal, logs, notes, gets, botGets, drive, setMark: (p: number) => { mark = p; }, setBtcMark: (p: number) => { btcMark = p; }, setPremiumRate: (r: string) => { premiumRate = r; } };
 }
 
 function emptyScan(i: ScanInput): ScanResult {
@@ -204,7 +219,7 @@ test('B8b khởi động ĐÚNG THỨ TỰ: giờ → exchangeInfo → tài kho�
   assert.deepEqual(steps, ['clock', 'exchangeInfo', 'account', 'journal', 'paper_backfill', 'seed', 'reconcile', 'streams']);
   const trigger = h.streams[0]!;
   assert.deepEqual([...trigger.symbols], ['BTCUSDT']);
-  assert.deepEqual([...trigger.intervals].sort(), ['4h']); // COMMON.bot.modes mặc định = chỉ swing (người dùng chốt 20/10/2026)
+  assert.deepEqual([...trigger.intervals].sort(), ['4h']); // tệp này chạy COMMON.bot.modes = ['swing'] (mặc định thật: ['btc-regime'] — test btc-regime ở cuối tệp)
   assert.ok(trigger.seeds.length === 1 && trigger.calls.indexOf('seed') < trigger.calls.indexOf('start'), 'seedLastClosed TRƯỚC start()');
   assert.ok(h.bot.trace().includes('reconcile:khởi động'));
   assert.ok(h.logs.some((l) => /Bot bật/.test(l)));
@@ -633,5 +648,176 @@ test('risk-cluster (bot) FAIL CLOSED: tải nến 1D lỗi → ghi log, KHÔNG v
     assert.equal(h.journal.state().trades[SIGNAL_ID], undefined, 'không nhận tín hiệu');
     assert.ok(h.logs.some((l) => /risk-cluster — không tải được nến 1D BTCUSDT.*không vào lệnh mới/.test(l)), h.logs.slice(-5).join(' | '));
     assert.ok(h.bot.trace().includes('entry:cluster-data AAAUSDT'));
+  });
+});
+
+// ======================= Hệ BTC theo chế độ (btc-regime, mặc định COMMON.bot.modes) =======================
+const DAY_MS = 24 * H;
+const D0 = Date.UTC(2026, 9, 20); // nến 1D 20/10 mở lúc này; nến đóng cuối lúc khởi động (03:59 20/10) là nến 19/10
+const REGIME = { 'COMMON.bot.modes': ['btc-regime'] };
+// Giá đóng 1D tăng đều 100/ngày, nến 19/10 đóng 59 900 → SMA50 = 57 450 → muốn Long; ATR(20) = 700 (biên ±300 + bước 100)
+const rising = (t: number) => 60_000 + 100 * Math.round((t - D0) / DAY_MS);
+const dailyClose = (closeTime: number): MarketEvent => ({
+  type: 'kline', symbol: 'BTCUSDT', interval: '1d',
+  candle: { openTime: closeTime + 1 - DAY_MS, closeTime, open: 60_000, high: 60_300, low: 59_700, close: 60_000, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 },
+});
+const regimeKlineCalls = (h: ReturnType<typeof harness>) => h.gets.filter((g) => g === '/fapi/v1/klines?symbol=BTCUSDT&interval=1d&limit=499').length;
+const btcAlgos = async (h: ReturnType<typeof harness>) =>
+  (await h.paper.api.request({ method: 'GET', path: '/fapi/v1/openAlgoOrders', params: { symbol: 'BTCUSDT' }, createsOrder: false })).body as Array<{ orderType: string; triggerPrice: string; closePosition: boolean | string }>;
+const btcPos = (h: ReturnType<typeof harness>) => h.paper.snapshot().positions.find((p) => p.symbol === 'BTCUSDT')?.positionAmt ?? 0;
+const regimeTrades = (h: ReturnType<typeof harness>) => Object.values(h.journal.state().trades).filter((t) => t.mode === 'btc-regime');
+
+test('btc-regime: mặc định nghe nến 1D BTC; khởi động lỡ quyết định → quyết định ngay (nến đóng cuối): > SMA50 → Long IOC + SL STOP_MARKET closePosition trên sàn, đòn bẩy 1×, rủi ro ≤ 2%', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.deepEqual([...h.streams[0]!.intervals], ['1d']);
+    const [t] = regimeTrades(h);
+    assert.ok(t !== undefined, h.logs.slice(-8).join('\n'));
+    assert.equal(t.symbol, 'BTCUSDT');
+    assert.equal(t.side, 'long');
+    assert.equal(t.plan.leverage, 1);
+    assert.equal(t.plan.stop, 58_250); // 60 000 − 2,5 × 700
+    assert.equal(t.plan.exitCostPct, 0.0775);
+    assert.equal(t.legs.TP1, undefined);
+    assert.equal(t.legs.TR, undefined);
+    assert.equal(t.status, 'open');
+    assert.equal(t.signalId, 'BTCUSDT|btc-regime|long|2026-10-20');
+    // giá trần 60 060, khoảng SL 1 810 → notional = 200 / (1810/60060 + 0,135%) = 6 351,8 → 0,105 BTC; rủi ro = 0,105 × (1 810 + 81,08) ≤ 200
+    assert.equal(btcPos(h), 0.105);
+    assert.ok(t.riskAmount! <= 200 && t.riskAmount! > 198, String(t.riskAmount));
+    assert.ok(t.notional! <= 10_000);
+    const algos = await btcAlgos(h);
+    assert.equal(algos.length, 1);
+    assert.equal(algos[0]!.orderType, 'STOP_MARKET');
+    assert.equal(Number(algos[0]!.triggerPrice), 58_250);
+    const d = h.journal.state().btcRegime!;
+    assert.equal(d.closeTime, D0 - 1);
+    assert.equal(d.action, 'enter');
+    assert.equal(d.want, 'long');
+    assert.equal(regimeKlineCalls(h), 1, 'một lần gọi klines cho quyết định ngày');
+    assert.ok(h.notes.some((n) => /BTC theo chế độ — nến 1D 2026-10-19/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    assert.ok(!h.notes.some((n) => n.level === 'urgent'), h.notes.filter((n) => n.level === 'urgent').map((n) => n.text).join('\n'));
+    // lượt định kỳ cùng ngày: đã quyết định → KHÔNG gọi REST lại, không lệnh mới
+    await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(regimeKlineCalls(h), 1);
+    assert.equal(regimeTrades(h).length, 1);
+  });
+});
+
+test('btc-regime: nến 1D đóng ≤ SMA50 khi đang giữ Long → đóng market reduce-only, SL bị hủy, lệnh đóng, quyết định "exit" ghi nhật ký', async () => {
+  await withConfigOverride(REGIME, async () => {
+    let crash = false;
+    const h = harness({ btcDaily: (t) => (crash && t >= D0 ? 50_000 : rising(t)) });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(btcPos(h), 0.105);
+    crash = true;
+    h.clock.t = D0 + DAY_MS + 1_000;
+    await h.drive(h.bot.onMarketEvent('trigger', dailyClose(D0 + DAY_MS - 1)).then(() => h.bot.idle()));
+    assert.equal(btcPos(h), 0, h.logs.slice(-10).join('\n'));
+    assert.equal((await btcAlgos(h)).length, 0, 'SL mồ côi đã hủy');
+    assert.equal(regimeTrades(h)[0]!.status, 'closed');
+    const d = h.journal.state().btcRegime!;
+    assert.equal(d.closeTime, D0 + DAY_MS - 1);
+    assert.equal(d.action, 'exit');
+    assert.equal(d.want, 'flat');
+    assert.ok(events(h.journal).some((e) => e.type === 'order_intent' && e.op === 'reduce'), 'đóng bằng lệnh reduce-only');
+    assert.ok(h.notes.some((n) => /tín hiệu tắt/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    // ngày kế tiếp vẫn ≤ SMA → đứng ngoài, không vào
+    h.clock.t = D0 + 2 * DAY_MS + 1_000;
+    await h.drive(h.bot.onMarketEvent('trigger', dailyClose(D0 + 2 * DAY_MS - 1)).then(() => h.bot.idle()));
+    assert.equal(h.journal.state().btcRegime!.action, 'stay_flat');
+    assert.equal(regimeTrades(h).length, 1);
+  });
+});
+
+test('btc-regime: chạm SL trong ngày mà tín hiệu còn bật → KHÔNG vào lại cùng ngày (kể cả lượt định kỳ), vào lại ở lần quyết định ngày KẾ TIẾP', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(btcPos(h), 0.105);
+    h.setBtcMark(58_000); // thủng SL 58 250 trên sàn giả lập
+    await h.drive(h.bot.periodic().then(() => h.bot.idle())); // nhịp mark → sàn giả lập khớp SL
+    await h.drive(h.bot.periodic().then(() => h.bot.idle())); // lượt đối chiếu sau: không còn vị thế → đóng lệnh
+    assert.equal(btcPos(h), 0);
+    assert.equal(regimeTrades(h)[0]!.status, 'closed');
+    assert.ok(h.notes.some((n) => /chạm dừng lỗ/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    h.setBtcMark(60_100);
+    h.clock.t += 3 * H;
+    await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(regimeTrades(h).length, 1, 'không vào lại trong ngày');
+    h.clock.t = D0 + DAY_MS + 2_000;
+    await h.drive(h.bot.onMarketEvent('trigger', dailyClose(D0 + DAY_MS - 1)).then(() => h.bot.idle()));
+    const ts = regimeTrades(h);
+    assert.equal(ts.length, 2, h.logs.slice(-10).join('\n'));
+    assert.equal(ts[1]!.signalId, 'BTCUSDT|btc-regime|long|2026-10-21');
+    assert.equal(h.journal.state().btcRegime!.action, 'enter');
+    assert.ok(btcPos(h) > 0);
+  });
+});
+
+test('btc-regime: khởi động lại (máy tắt qua 00:00) → đồng bộ vị thế + SL từ nhật ký/sàn, không đặt lệnh trùng, quyết định nến đã lỡ ngay lúc khởi động', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    const before = placeIntents(events(h.journal));
+    await h.drive(h.bot.stop());
+    const h2 = harness({ dir: h.dir, btcDaily: rising });
+    h2.clock.t = D0 + DAY_MS + 3 * H; // lỡ quyết định 00:00 21/10
+    await h2.drive(h2.bot.start());
+    await h2.drive(h2.bot.idle());
+    assert.equal(placeIntents(events(h2.journal)).length, before.length, 'không đặt lệnh mới (vào/SL)');
+    assert.equal((await btcAlgos(h2)).length, 1, 'SL vẫn nằm trên sàn');
+    assert.equal(btcPos(h2), 0.105);
+    const d = h2.journal.state().btcRegime!;
+    assert.equal(d.closeTime, D0 + DAY_MS - 1);
+    assert.equal(d.action, 'hold');
+    assert.equal(regimeKlineCalls(h2), 1);
+    // khởi động lại lần nữa cùng ngày: đã quyết định → không gọi klines 1D 499
+    await h2.drive(h2.bot.stop());
+    const h3 = harness({ dir: h.dir, btcDaily: rising });
+    h3.clock.t = D0 + DAY_MS + 4 * H;
+    await h3.drive(h3.bot.start());
+    await h3.drive(h3.bot.idle());
+    assert.equal(regimeKlineCalls(h3), 0);
+    assert.equal(regimeTrades(h3).length, 1);
+  });
+});
+
+test('btc-regime FAIL CLOSED: nến 1D đứt quãng → không hành động, không ghi quyết định, cảnh báo; lượt định kỳ thử lại khi dữ liệu đủ', async () => {
+  await withConfigOverride(REGIME, async () => {
+    let gap = true;
+    const h = harness({ btcDaily: (t) => (gap && t === D0 - 10 * DAY_MS ? null : rising(t)) });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(regimeTrades(h).length, 0);
+    assert.equal(h.journal.state().btcRegime, null);
+    assert.ok(h.notes.some((n) => n.level === 'warn' && /thiếu dữ liệu — nến 1D đứt quãng/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    gap = false;
+    await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(regimeTrades(h).length, 1);
+    assert.equal(h.journal.state().btcRegime!.action, 'enter');
+  });
+});
+
+test('btc-regime: /dung → không vào (quyết định ghi "skip"); cầu chì/trần danh mục chặn như mọi lệnh', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising });
+    h.journal.append({ type: 'protection_tripped', name: USER_PAUSE, reason: 'người dùng gõ /dung' });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(regimeTrades(h).length, 0);
+    assert.equal(h.journal.state().btcRegime!.action, 'skip');
+    assert.match(h.journal.state().btcRegime!.note, /tạm dừng/);
+    const h2 = harness({ btcDaily: rising });
+    h2.journal.append({ type: 'protection_tripped', name: 'loss_streak', reason: '5 lệnh thua' });
+    await h2.drive(h2.bot.start());
+    await h2.drive(h2.bot.idle());
+    assert.equal(regimeTrades(h2).length, 0);
+    assert.match(h2.journal.state().btcRegime!.note, /protections.*loss_streak/);
   });
 });

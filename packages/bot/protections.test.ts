@@ -229,6 +229,18 @@ test('Cooldown: cùng cặp + cùng chiều bị chặn tới khi đủ 2 nến 
   assert.equal(checkEntry(entry({ now: Date.UTC(2026, 9, 20, 11, 50), recentCloses: sc, signal: { symbol: 'AAAUSDT', side: 'short', grade: 'A', fresh: true }, newTrade: nt({ side: 'short', stop: 102 }) })).allowed, false);
 });
 
+test('Cooldown btc-regime (cooldownBars 0, nến 1D): chạm SL trong ngày → chặn tới 00:00 UTC kế tiếp (lần quyết định ngày sau được vào lại)', () => {
+  const DAY = 86_400_000;
+  const closedAt = Date.UTC(2026, 9, 20, 14, 0, 0);
+  const closes = [out({ symbol: 'AAAUSDT', side: 'long', closedAt })];
+  const at = (now: number) => checkEntry(entry({ now, barMs: DAY, cooldownBars: 0, recentCloses: closes, signal: { symbol: 'AAAUSDT', side: 'long', grade: 'A', fresh: true }, newTrade: nt({ stop: 98 }) }));
+  assert.equal(at(Date.UTC(2026, 9, 20, 23, 0, 0)).allowed, false);
+  assert.match(at(Date.UTC(2026, 9, 20, 23, 0, 0)).reasons.join(' '), /chờ 0 nến/);
+  assert.equal(at(Date.UTC(2026, 9, 21, 0, 0, 5)).allowed, true);
+  // mặc định (vắng cooldownBars) vẫn là 2 nến
+  assert.equal(checkEntry(entry({ now: Date.UTC(2026, 9, 21, 0, 0, 5), barMs: DAY, recentCloses: closes, signal: { symbol: 'AAAUSDT', side: 'long', grade: 'A', fresh: true }, newTrade: nt({ stop: 98 }) })).allowed, false);
+});
+
 test('checkEntry: trần danh mục qua canOpen — 10 lệnh còn rủi ro thì chặn; lệnh đã qua TP1 không tính; tổng rủi ro mở ≤ 10% giảm khối lượng', () => {
   const ten = checkEntry(entry({ openTrades: opens(10) }));
   assert.equal(ten.allowed, false);

@@ -1,6 +1,6 @@
 import { COMMON } from '../core/config.ts';
 import { snapToTick, tickDecimals } from '../core/price.ts';
-import type { Contract, Mode, Side } from '../core/types.ts';
+import type { BotMode, Contract, Side } from '../core/types.ts';
 import {
   builders, makeClientId,
   type StopLossInput, type StopPurpose, type TakeProfitInput, type TrailingInput,
@@ -49,6 +49,8 @@ export type TradePlanState = {
   qtyStep: number; // exitRule.qtyStep
   tp1Pct: number; // exitRule.tp1Pct
   limitCancelAt: number | null; // hủy chân limit (E2) khi giá mark chạm mức này (TP1 tới trước)
+  // Phí + trượt CHIỀU RA (%) cho chốt chặn funding; vắng = costPct / 2. Hệ btc-regime ghi phí taker + trượt (như mô phỏng đã khóa).
+  exitCostPct?: number;
 };
 
 export type TradeState = {
@@ -71,7 +73,7 @@ export type TradeState = {
   equityAtEntry?: number;
   riskAmount?: number;
   notional?: number;
-  mode?: Mode;
+  mode?: BotMode;
   outcomeRecorded?: boolean; // đã ghi trade_outcome (PnL sau phí + funding) — không tính lại
 };
 
@@ -474,7 +476,9 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
     const beRaw = avg * (1 + (d * t.plan.costPct) / 100);
     const beReal = snapToTick(beRaw, c.tickSize, d > 0 ? 'up' : 'down');
     const stopAtActivation = t.plan.activatePrice * (1 - (d * t.plan.callbackPct) / 100);
-    const realFloorBroken = d * (stopAtActivation - beRaw) < 0; // callback không còn bảo đảm "mức dừng ≥ giá khớp thật + phí"
+    // Lệnh CHỈ có SL (hệ btc-regime: không TP1, không trailing) — không có lệnh thoát nào khác để đặt/đổi cỡ, không có sàn hòa vốn
+    const slOnly = t.legs.TP1 === undefined && t.legs.TR === undefined;
+    const realFloorBroken = !slOnly && d * (stopAtActivation - beRaw) < 0; // callback không còn bảo đảm "mức dừng ≥ giá khớp thật + phí"
     const needsFloor = t.plan.needsBreakevenFloor || realFloorBroken;
 
     const sls = algosOf('SL');
@@ -531,11 +535,14 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       // ---- Rủi ro thực ở giá khớp thật (nghĩa vụ B3 #3): > 2% → giảm bằng reduce-only, SAU khi SL đã nằm trên sàn ----
       let base = floorStep(F > 0 ? Math.min(F, posQty) : posQty, step);
       const perUnit = Math.abs(avg - stopPx) + (avg * t.plan.costPct) / 100;
-      const budget = (ctx.capital * COMMON.risk.perTradePct) / 100;
+      // btc-regime giữ lệnh nhiều tuần: ngân sách theo vốn LÚC VÀO (luật đã khóa "≤ 2% vốn lúc vào") — vốn hiện tại gồm PnL chưa chốt của
+      // CHÍNH vị thế này, dùng nó thì giá giảm về SL sẽ làm "rủi ro" vượt ngân sách và cắt bớt vị thế (luật không có giảm vị thế)
+      const budgetBase = t.mode === 'btc-regime' && typeof t.equityAtEntry === 'number' && t.equityAtEntry > 0 ? t.equityAtEntry : ctx.capital;
+      const budget = (budgetBase * COMMON.risk.perTradePct) / 100;
       const risk = posQty * perUnit;
       if (risk > budget * (1 + 1e-9)) {
         const allowed = floorStep(budget / perUnit, step);
-        const pct = ((risk / ctx.capital) * 100).toFixed(2).replace('.', ',');
+        const pct = ((risk / budgetBase) * 100).toFixed(2).replace('.', ',');
         if (allowed < Math.max(c.minQty, c.marketMinQty)) {
           closeNow(`rủi ro thực ${pct}% sau trượt giá > ${COMMON.risk.perTradePct}%, khối lượng cho phép ${allowed} dưới mức tối thiểu — không giảm được`, 5);
           return;
@@ -552,6 +559,7 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
       }
 
       // ---- TP1 + trailing theo khối lượng ĐÃ khớp (nghĩa vụ B3 #4) ----
+      if (slOnly) return;
       const want = exitSplit(base, step);
       ensureExit('TP1', want.tp1Qty);
       ensureExit('TR', want.trailQty);

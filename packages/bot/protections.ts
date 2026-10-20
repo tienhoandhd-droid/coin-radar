@@ -130,7 +130,10 @@ export function cooldownUntil(closedAt: number, barMs: number, bars: number = PR
 
 export type EntryCheckInput = {
   now: number;
-  barMs: number; // độ dài nến khung vào lệnh (15m Lướt nhanh / 4H Swing)
+  barMs: number; // độ dài nến khung vào lệnh (15m Lướt nhanh / 4H Swing / 1D btc-regime)
+  // Số nến cooldown cùng cặp + chiều; vắng = PROTECTION_CONFIG.cooldownBars. btc-regime truyền 0: luật đã khóa "chạm SL mà tín hiệu còn
+  // bật → vào lại ở lần quyết định ngày KẾ TIẾP" (cooldown 0 nến 1D = hết lúc 00:00 UTC sau lần đóng)
+  cooldownBars?: number;
   signal: { symbol: string; side: Side; grade: 'A' | 'B' | null; fresh: boolean };
   protections: Readonly<Record<string, ProtectionState>>;
   recentCloses: readonly TradeOutcome[];
@@ -156,8 +159,9 @@ export function checkEntry(i: EntryCheckInput): EntryCheck {
   }
   const last = i.recentCloses.filter((o) => o.symbol === s.symbol && o.side === s.side).reduce((m, o) => Math.max(m, o.closedAt), -Infinity);
   if (Number.isFinite(last)) {
-    const until = cooldownUntil(last, i.barMs);
-    if (i.now < until) reasons.push(`Cooldown ${s.symbol} ${s.side}: chờ ${PROTECTION_CONFIG.cooldownBars} nến sau lần đóng lệnh trước (tới ${new Date(until).toISOString()})`);
+    const bars = i.cooldownBars ?? PROTECTION_CONFIG.cooldownBars;
+    const until = cooldownUntil(last, i.barMs, bars);
+    if (i.now < until) reasons.push(`Cooldown ${s.symbol} ${s.side}: chờ ${bars} nến sau lần đóng lệnh trước (tới ${new Date(until).toISOString()})`);
   }
   const lc = i.liveCaps;
   if (lc !== undefined) {

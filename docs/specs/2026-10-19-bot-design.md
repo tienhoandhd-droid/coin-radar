@@ -34,6 +34,19 @@ Không phải mục tiêu bản này: giao dịch sao chép, viết bài (giai �
 | D10 | **Trailing đặt TRÊN SÀN** (`TRAILING_STOP_MARKET` qua Algo Order, kích hoạt tại TP1, theo MARK_PRICE), khoảng cách (callback %) do bot tính sao cho **mức dừng lúc kích hoạt ≥ giá khớp thật + phí** → phần 50% còn lại gần như hòa vốn (trừ trượt giá khi lệnh trailing khớp bằng market; đánh giá độc lập I8). Nếu khoảng cách cần thiết < mức tối thiểu sàn cho phép thì giữ thêm một lệnh dừng ở giá vào làm lưới an toàn; nếu khoảng cách theo ATR > mức tối đa sàn cho phép thì dùng mức tối đa và ghi rõ | Trailing là lệnh dừng nằm trên sàn → vị thế luôn được bảo vệ kể cả khi máy nhà tắt; tránh bẫy “trailing rộng hơn quãng tới TP1 → vẫn lỗ” |
 | D11 | **Rủi ro mỗi lệnh 2% vốn bot** (người dùng chốt 19/10/2026, “sẽ đánh vốn lớn”); **tối đa 10 lệnh còn rủi ro cùng lúc — đủ 10 thì không vào lệnh mới** (lệnh đã qua TP1, phần còn lại do trailing quản — “kèo không rủi ro” — KHÔNG tính vào trần 10 lệnh nhưng vẫn tính ký quỹ và MAX_NUM_ORDERS của sàn; người dùng chốt 19/10/2026), **và tổng rủi ro đang mở ≤ 10% vốn** (lệnh đã qua TP1 tính 0) (người dùng chốt 19/10/2026 sau đánh giá độc lập C1); kiểm ký quỹ khả dụng trước mỗi lệnh (C3) — **cài ở `packages/core/portfolio.ts` `canOpen` (B0b), bot chỉ dùng hàm này** với danh mục thật (khối lượng giảm/bỏ, rủi ro thực in rõ, trần notional theo thanh khoản, khối lượng sau giảm qua bộ lọc sàn); đòn bẩy vẫn ≤ trần (Swing 5×, Lướt nhanh 10×) và giá thanh lý cách SL ≥ 1 khoảng SL — nếu đòn bẩy trần không đủ để vào khối lượng 2% thì vào khối lượng tối đa cho phép và báo rõ | Vào ít lệnh nhưng chặt; giữ khóa đòn bẩy và thanh lý |
 
+## Chế độ `btc-regime` (bổ sung 20/10/2026 — mặc định của `COMMON.bot.modes`)
+
+Hệ giữ BTC theo chế độ "S-sma 2%+SL", luật đã khóa và kiểm mù (`docs/verification/khoa-luat-mo-phong-mu-C.md`, mô phỏng tham chiếu
+`backtest/research/btc-regime-sim.ts` GUARD=1). Không đi qua `runScan`/Hạng A: tín hiệu là `packages/core/btc-regime.ts` (SMA50 / ATR20
+Wilder trên nến 1D đã đóng — so khớp ngày vào/ra với mô phỏng bằng test). Lệnh vào do `packages/bot/btc-regime.ts` dựng thành
+`PlannerResult` (E1 LIMIT IOC + SL STOP_MARKET closePosition, không TP1/trailing, đòn bẩy 1×) rồi đi ĐÚNG đường gửi lệnh/nhật ký/đối chiếu
+của Swing; cổng `checkEntry` (cầu chì, trần danh mục, trần live) áp như mọi lệnh, cooldown 0 nến 1D (luật: chạm SL → vào lại ngày kế tiếp).
+Vòng đời (`main.ts`): nến 1D BTC đóng → quyết định; khởi động/định kỳ → quyết định nến đã lỡ (nhật ký `btc_regime_decision` chống quyết
+định lại). Đối chiếu: lệnh chỉ có SL không đặt TP1/trailing; ngân sách 2% tính theo vốn lúc vào (không cắt vị thế khi giá giảm).
+Chốt chặn funding dùng chung (`funding-runtime.ts`), phí chiều ra = phí taker + trượt của luật (`plan.exitCostPct`).
+Sai khác so với mô phỏng: chốt chặn chạy mỗi kỳ funding (mô phỏng: mỗi ngày) — chỉ siết sớm hơn, không lỏng hơn; giá vào là giá khớp IOC
+thật (mô phỏng: giá mở nến) và khoảng SL để định cỡ đo từ giá trần IOC (khối lượng chỉ nhỏ hơn).
+
 ## Kiến trúc
 
 ```

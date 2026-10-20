@@ -60,6 +60,9 @@ export type PlannerInput = {
   // trend-d1 (COMMON.trend): chỉ bộ mô phỏng truyền true. Bot KHÔNG truyền → kế hoạch trendD1 bị từ chối (bot chưa đặt lại STOP_MARKET theo
   // giá đóng 1D mỗi ngày — chỉ có SL ban đầu thì lệnh không có lối thoát có lãi).
   trendSim?: boolean;
+  // Bộ mô phỏng (backtest/simulate-run.ts) truyền true: bỏ qua cổng COMMON.bot.modes — đó là cờ TRIỂN KHAI của bot (bot chạy chế độ nào,
+  // mặc định chỉ 'btc-regime' từ 20/10/2026), không phải luật chiến lược; mô phỏng luôn chạy đúng chế độ được yêu cầu (--mode).
+  simulation?: boolean;
   // risk-cluster (COMMON.portfolio.cluster): nến 1D ĐÃ ĐÓNG tại lúc lập lệnh của mã mới, mọi mã đang mở và BTCUSDT (core/risk-cluster.ts).
   // Luật bật mà không có → từ chối (fail closed). Bot hiện chưa tải → bật luật thì bot không vào lệnh mới.
   clusterDaily?: ReadonlyMap<string, readonly Candle[]>;
@@ -128,7 +131,7 @@ export function planOrders(i: PlannerInput): PlannerResult {
   // ---- 1. Tín hiệu và kế hoạch -----------------------------------------------------------------
   const p = i.plan;
   if (i.signal === null) return reject('Không có tín hiệu (signal = null) — không vào lệnh');
-  if (!COMMON.bot.modes.includes(i.mode)) return reject(`Bot: chế độ ${i.mode} đang tắt (COMMON.bot.modes = ${COMMON.bot.modes.join(', ')})`);
+  if (i.simulation !== true && !COMMON.bot.modes.includes(i.mode)) return reject(`Bot: chế độ ${i.mode} đang tắt (COMMON.bot.modes = ${COMMON.bot.modes.join(', ')})`);
   if (i.grade !== 'A') problems.push(`Chỉ giao dịch tín hiệu Hạng A (tín hiệu này: ${i.grade === null ? 'chưa chấm hạng' : `Hạng ${i.grade}`})`);
   if (!i.signal.fresh) problems.push('Chỉ giao dịch tín hiệu MỚI — tín hiệu này đang giữ từ lần quét trước');
   if (!p.valid) problems.push(`Kế hoạch không hợp lệ: ${p.invalidReason ?? '(không rõ lý do)'}`);

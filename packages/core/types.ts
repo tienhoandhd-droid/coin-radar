@@ -11,6 +11,8 @@ export type Candle = {
 };
 
 export type Mode = 'fast' | 'swing';
+// Chế độ bot: hai chế độ quét (Mode) + hệ giữ BTC theo chế độ 'btc-regime' (packages/core/btc-regime.ts — không quét, không có CONFIG riêng)
+export type BotMode = Mode | 'btc-regime';
 export type Side = 'long' | 'short';
 
 export type Contract = {

@@ -11,5 +11,7 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node"]
   },
-  "include": ["packages", "scanner", "scripts", "backtest"]
+  "include": ["packages", "scanner", "scripts", "backtest"],
+  // Mô phỏng tham chiếu của luật đã khóa: băm sha256 ghi trong docs/verification/khoa-luat-mo-phong-mu-C.md → không được sửa (kể cả để qua strict)
+  "exclude": ["backtest/research/btc-regime-sim.ts"]
 }

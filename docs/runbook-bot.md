@@ -18,11 +18,22 @@ Mô phỏng mù 30 ngày (`docs/verification/ket-qua-mo-phong-mu.md`, `reports/�
   không có lệnh nào. Đó là hành vi đúng, không phải lỗi.
 - Lộ trình (đã thống nhất): paper ≥ 100 lệnh **và** ≥ 4 tuần, kỳ vọng R > 0 sau phí → Demo 2–4 tuần không lỗi cơ khí → live vốn nhỏ.
 
-### Chọn chiến lược: nên đặt `['swing']`
+### Chọn chiến lược: mặc định `['btc-regime']` (20/10/2026)
 
-Mặc định trong `packages/core/config.ts` là `COMMON.bot.modes = ['swing', 'fast']` (anh quyết định). Backtest khuyến nghị **tắt Lướt nhanh**:
-sửa dòng `bot: { modes: ['swing', 'fast'] as Mode[] }` thành `bot: { modes: ['swing'] as Mode[] }`, rồi khởi động lại bot.
-Bot ghi rõ lúc khởi động: `chế độ chiến lược: swing (khung quyết định 4h)`.
+Mặc định trong `packages/core/config.ts` là `COMMON.bot.modes = ['btc-regime']` (anh quyết định: Swing altcoin lỗ trên mọi lần kiểm).
+`'swing'` / `'fast'` vẫn chọn được (sửa `bot: { modes: [...] }`), nhưng không mặc định. Bot ghi rõ lúc khởi động:
+`chế độ chiến lược: btc-regime (khung quyết định 1d)`.
+
+**Hệ BTC theo chế độ (`btc-regime`)** — luật đã khóa `docs/verification/khoa-luat-mo-phong-mu-C.md`:
+- Chỉ BTCUSDT, chỉ Long. Mỗi ngày ngay sau khi nến 1D đóng (00:00 UTC = 07:00 giờ VN), dùng nến 1D đã đóng: giá đóng > SMA50 → giữ Long;
+  ngược lại đứng ngoài.
+- Vào: lệnh LIMIT IOC (giá trần = mark + 0,1%), đòn bẩy 1×, ISOLATED; SL trên sàn (STOP_MARKET closePosition) = giá vào − 2,5 × ATR(20) 1D.
+  Khối lượng: giá trị = min(1 × vốn, 2% vốn / (khoảng SL % + 2 × 0,0575% + 0,02%)).
+- Ra: tín hiệu tắt → đóng market reduce-only (SL bị hủy). Chạm SL mà tín hiệu còn bật → vào lại ở lần quyết định ngày kế tiếp.
+- Không trailing. Chốt chặn funding (mỗi kỳ chốt funding): siết SL để lỗ tại SL + phí + trượt + funding đã trả ≤ 2% vốn lúc vào.
+- Máy tắt: SL nằm trên sàn. Bật lại: bot đồng bộ vị thế + SL, lỡ quyết định 00:00 thì quyết định ngay lúc khởi động (nhật ký ghi
+  `btc_regime_decision` — không quyết định lại cùng nến). Thiếu dữ liệu nến → không làm gì, báo Telegram, thử lại ở lượt định kỳ.
+- Tính vào cầu chì / trần 10 lệnh / tổng rủi ro mở 10% như mọi lệnh. Tin Telegram mỗi ngày: "BTC theo chế độ — nến 1D …".
 
 ## 1. Cài đặt
 

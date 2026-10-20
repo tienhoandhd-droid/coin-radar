@@ -1,4 +1,4 @@
-import type { Mode } from './types.ts';
+import type { BotMode, Mode } from './types.ts';
 import type { ExitPolicy } from './exit.ts';
 
 // MỌI ngưỡng dưới đây là điểm khởi đầu theo spec mục 3 — ĐỀ XUẤT, CHƯA BACKTEST.
@@ -274,7 +274,9 @@ export const COMMON = {
   // postFillStopBudgetMs (B8b vòng 1): lần đặt SL ĐẦU TIÊN trong khoảng này sau lần khớp vào sớm nhất (chân SL chưa từng gửi) là bình thường →
   // cảnh báo mức info; quá khoảng này / SL đã từng có rồi mất / bị từ chối → KHẨN. Đề xuất, chưa kiểm trên Demo.
   // fundingGuardMaxAttempts / fundingGuardMaxDelayMs: chốt chặn funding của một kỳ chốt lỗi quá số lần này HOẶC quá lâu sau giờ chốt → KHẨN + chặn vào lệnh mới mã đó.
-  bot: { modes: ['swing'] as Mode[], // người dùng chốt 20/10/2026: bỏ Lướt nhanh cho altcoin; Lướt nhanh chỉ còn dự kiến cho BTC khi thị trường đi ngang (chưa có luật, chưa backtest)
+  // modes: người dùng chốt 20/10/2026 — bỏ Lướt nhanh cho altcoin; rồi (20/10/2026) mặc định chỉ 'btc-regime' vì Swing altcoin lỗ trên mọi lần
+  // kiểm; 'swing' / 'fast' vẫn chọn được (ghi đè cấu hình) nhưng không mặc định.
+  bot: { modes: ['btc-regime'] as BotMode[],
     postFillStopBudgetMs: 10_000, fundingGuardMaxAttempts: 2, fundingGuardMaxDelayMs: 10 * 60_000 },
   // Luật vào lệnh MỚI thử ở Task 8 (kế hoạch 2) — reports/Nghiên cứu cải thiện lợi nhuận.md. Mặc định = hành vi hiện tại (tắt). Áp sau khi quét
   // (packages/core/entry-filters.ts → ScanResult.entryBlocks): máy quét in lý do, bot/mô phỏng không vào lệnh mới bị chặn. Đề xuất, chưa backtest.
@@ -322,6 +324,15 @@ export const COMMON = {
   // theo giá ĐÓNG 1D = đỉnh giá đóng từ khi vào ∓ trailAtr × ATR(atrDays) 1D, không nới quá SL ban đầu; giữ tối đa maxHoldDays ngày; không TP.
   trend: { enabled: false as boolean, donchianDays: 50, atrDays: 20, stopAtr: 2, trailAtr: 3, maxHoldDays: 180,
     sides: ['long'] as Array<'long' | 'short'>, replaceZones: true as boolean },
+  // Hệ giữ BTC theo chế độ "S-sma 2%+SL" — LUẬT ĐÃ KHÓA (docs/verification/khoa-luat-mo-phong-mu-C.md; mô phỏng tham chiếu
+  // backtest/research/btc-regime-sim.ts với GUARD=1, kind 'sma', sized=true). KHÔNG chỉnh tham số mà không đăng ký trước + kiểm lại.
+  // Bot (chế độ 'btc-regime' trong COMMON.bot.modes): mỗi ngày ngay sau khi nến 1D đóng (00:00 UTC), chỉ dùng nến 1D ĐÃ ĐÓNG:
+  // giá đóng > SMA(smaDays) giá đóng → muốn giữ Long; ngược lại đứng ngoài. SL trên sàn = giá vào − slAtr × ATR(atrDays) 1D (Wilder);
+  // giá trị vị thế = min(maxNotionalX × vốn, 2% vốn / (khoảng SL % + 2 × sideCostPct + slippagePct)); đòn bẩy 1×.
+  // entryCapPct: chân vào là LIMIT IOC giá trần = giá mark × (1 + mức này %) — như chân "market" của Swing; định cỡ dùng giá trần này
+  // (khoảng SL tính từ giá xấu nhất → khối lượng chỉ nhỏ hơn luật). Đề xuất, chưa kiểm trên Demo.
+  btcRegime: { symbol: 'BTCUSDT', smaDays: 50, atrDays: 20, slAtr: 2.5, maxNotionalX: 1, sideCostPct: 0.0575, slippagePct: 0.02, entryCapPct: 0.1,
+    klinesLimit: 499 }, // 499 nến: đủ khởi động ATR Wilder (sai khác so với chuỗi dài < 1e-10), trọng số REST 2 (< 500)
   // Phí sàn USDⓈ-M (ví dụ Regular User: maker 0,02%, taker 0,05% — bài hỗ trợ Binance 360033544231, sàn ghi là ví dụ). makerTakerSplit = false
   // (mặc định): mọi lần khớp trả nửa phí nhóm costRoundTripPct (gồm trượt). true: lệnh LIMIT vào lệnh (GTD, maker) chỉ trả makerPct, không
   // trượt; lệnh khớp kiểu market (IOC, STOP/TP/TRAILING_STOP_MARKET) giữ nửa phí nhóm (= taker + trượt nền). Dùng ở sàn chi phí (#1) và mô phỏng.

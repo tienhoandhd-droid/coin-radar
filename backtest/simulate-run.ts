@@ -310,6 +310,7 @@ async function simulate(o: RunOptions) {
       const plan = buildTrendPlan({ signal: sig, markPrice: premium.markPrice, h4: await input.klines(sym, '4h', 31), tickSize: contract.tickSize,
         stepSize: contract.stepSize, capital, riskPct: COMMON.risk.perTradePct, cost: costModel, fundingBuffer });
       const pr = planOrders({
+        simulation: true, // không theo cờ triển khai COMMON.bot.modes
         plan, grade: 'A', // hệ trend-d1 không chấm hạng (không qua máy quét) — mọi tín hiệu đi tiếp như --filter all
         signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t, costModel, fundingBuffer,
@@ -377,6 +378,7 @@ async function simulate(o: RunOptions) {
       if (m.plan === null) { stats.mtfNoPlan++; inc(skip, bucket(m.reason)); continue; }
       if (fb.fallback) stats.fundingFallback++;
       const pr = planOrders({
+        simulation: true, // không theo cờ triển khai COMMON.bot.modes
         plan: m.plan, grade: 'A', // hệ mtf-pullback không chấm hạng (không qua máy quét) — mọi tín hiệu đi tiếp như --filter all
         signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t, costModel, fundingBuffer,
@@ -455,6 +457,7 @@ async function simulate(o: RunOptions) {
       if (m.plan === null) { stats.alignNoPlan++; inc(skip, bucket(m.reason)); continue; }
       if (fb.fallback) stats.fundingFallback++;
       const pr = planOrders({
+        simulation: true, // không theo cờ triển khai COMMON.bot.modes
         plan: m.plan, grade: 'A', // hệ mtf-align không chấm hạng (không qua máy quét)
         signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: mark, runId: 'sim', now: t, costModel, fundingBuffer,
@@ -540,6 +543,7 @@ async function simulate(o: RunOptions) {
       }
       if (fb.fallback) stats.fundingFallback++;
       const pr = planOrders({
+        simulation: true, // không theo cờ triển khai COMMON.bot.modes
         plan: pick.plan, grade: o.filter === 'all' ? 'A' : (a.grade?.grade ?? null), signal: { id: a.signal!.id, fresh: a.signal!.fresh },
         mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
         maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t,

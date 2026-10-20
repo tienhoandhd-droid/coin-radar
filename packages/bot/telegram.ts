@@ -102,6 +102,13 @@ export const alerts = {
     mk('info', `Đã mở lại cầu chì ${fuseVn(a.name)} (bởi ${a.by}). Bot được mở lệnh mới trở lại.`),
   drawdownWarning: (a: { drawdownPct: number; equity: number; peak: number }) =>
     mk('warn', `Cảnh báo: vốn sụt ${num(a.drawdownPct, 1)}% từ đỉnh (ngưỡng cảnh báo 30%): hiện ${num(a.equity, 2)} USDT, đỉnh ${num(a.peak, 2)} USDT. Bot VẪN chạy, chỉ cảnh báo.`),
+  // Hệ BTC theo chế độ (btc-regime): quyết định ngày, vào lệnh (không TP1), đóng lệnh
+  regimeDecision: (a: { day: string; close: number; sma: number; want: 'long' | 'flat'; action: string }) =>
+    mk('info', `BTC theo chế độ — nến 1D ${a.day}: giá đóng ${num(a.close, 2)} ${a.want === 'long' ? '>' : '≤'} SMA50 ${num(a.sma, 2)} → ${a.want === 'long' ? 'giữ Long' : 'đứng ngoài'}; ${a.action}.`),
+  regimeEntry: (a: { symbol: string; entry: number; stop: number; qty: number; notional: number; riskUsdt: number }) =>
+    mk('info', `Đặt lệnh vào ${a.symbol} MUA (long) theo chế độ BTC: giá trần ${num(a.entry, 2)}, dừng lỗ ${num(a.stop, 2)}, khối lượng ${num(a.qty)} (${num(a.notional, 2)} USDT, đòn bẩy 1×), rủi ro ${num(a.riskUsdt, 2)} USDT. Không TP — thoát khi tín hiệu tắt hoặc chạm dừng lỗ.`),
+  regimeClosed: (a: { symbol: string; price: number; pnlUsdt: number; why: string }) =>
+    mk(a.pnlUsdt >= 0 ? 'info' : 'warn', `Đóng ${a.symbol} (chế độ BTC — ${a.why}) tại ${num(a.price, 2)}: lãi/lỗ ${signed(a.pnlUsdt)} USDT.`),
   dailySummary: (a: { day: string; trades: number; wins: number; pnlUsdt: number; equity: number; openCount: number }) =>
     mk('info', `Tóm tắt ngày ${a.day} (UTC): ${a.trades} lệnh đóng, ${a.wins} lãi; lãi/lỗ ${signed(a.pnlUsdt)} USDT; vốn ${num(a.equity, 2)} USDT; đang mở ${a.openCount} lệnh.`),
 };
