@@ -90,12 +90,14 @@ export function macd(closes: number[], fast: number, slow: number, signal: numbe
   return { macd: line, signal: sig, hist };
 }
 
-export function pivotHighs(highs: number[], n: number): number[] {
-  return pivots(highs, n, (a, b) => a > b);
+// allowEqual = false (mặc định, cách cũ): đỉnh phải CAO HƠN HẲN n nến hai bên → hai đỉnh bằng nhau không đỉnh nào được nhận.
+// allowEqual = true (vùng 'clean'): đỉnh bằng đỉnh lân cận vẫn tính (đỉnh đôi bằng nhau) — cả hai nến bằng nhau đều là pivot.
+export function pivotHighs(highs: number[], n: number, allowEqual = false): number[] {
+  return pivots(highs, n, allowEqual ? (a, b) => a >= b : (a, b) => a > b);
 }
 
-export function pivotLows(lows: number[], n: number): number[] {
-  return pivots(lows, n, (a, b) => a < b);
+export function pivotLows(lows: number[], n: number, allowEqual = false): number[] {
+  return pivots(lows, n, allowEqual ? (a, b) => a <= b : (a, b) => a < b);
 }
 
 function pivots(xs: number[], n: number, better: (a: number, b: number) => boolean): number[] {

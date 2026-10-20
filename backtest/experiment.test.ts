@@ -166,3 +166,17 @@ test('độ nhạy chi phí: 4 biến thể chỉ ghi đè costRoundTripPct, ghi
   assert.match(d, /độ nhạy/);
   assert.doesNotMatch(d, /gốc của các lần thử sau/);
 });
+
+test('sr-confirm (lần thử #17): Swing, ghim gốc f1-funding-fix, bật vùng clean + luật xác nhận; cost-cal-sr = độ nhạy chi phí ghim sr-confirm', () => {
+  const v = VARIANTS['sr-confirm']!;
+  assert.ok(v.wired && v.notTrial === undefined && v.sensitivity !== true);
+  assert.deepEqual(v.configOverride, { 'COMMON.zones.method': 'clean', 'COMMON.entryRules.srConfirm': true });
+  assert.deepEqual(v.modes, ['swing']);
+  assert.doesNotThrow(() => checkBase(v, 'f1-funding-fix'));
+  assert.throws(() => checkBase(v, 'baseline'), /chỉ chạy với --base f1-funding-fix/);
+  const c = VARIANTS['cost-cal-sr']!;
+  assert.ok(c.wired && c.sensitivity === true && notTrialNames().has('cost-cal-sr'));
+  assert.deepEqual(c.configOverride, { 'COMMON.costRoundTripPct': COST_CALIBRATED });
+  assert.equal(c.pinnedBase, 'sr-confirm');
+  assert.deepEqual(c.modes, ['swing']);
+});

@@ -3,6 +3,7 @@ import { isClosed } from './candles.ts';
 import { volumeZ } from './flow.ts';
 import { scoreSide, type SideScore } from './score.ts';
 import { findZones } from './zones.ts';
+import { findCleanZones } from './zones-clean.ts';
 import { buildPlan, tp1R, worstTp1NetR, type TradePlan, type CostTier } from './plan.ts';
 import { evaluateGates, liquidationCheck, ratePer8h, fundingNote, inPatternScope, dailyTrend, patternTrendGate, contextGate, type GateResult } from './gates.ts';
 import { eventWindow, eventCalendarStatus, type MacroEvent } from './events.ts';
@@ -143,11 +144,17 @@ function costTier(rankPct: number): CostTier {
 export function analyze(i: AnalyzeInput): Analysis {
   const dailyAtr = last(atr(i.daily, 14));
   const atrEntry = last(atr(i.entry, 14));
-  const zones = findZones({
-    entry: i.entry, trend: i.trend,
-    entryLabel: label4(CONFIG[i.mode].entryInterval), trendLabel: label4(CONFIG[i.mode].trendInterval),
-    atr: atrEntry, tickSize: i.contract.tickSize,
-  });
+  // COMMON.zones.method: 'clean' chỉ cho Swing (khung 4H + 1D, zones-clean.ts); Lướt nhanh luôn dùng cách cũ
+  const zones = COMMON.zones.method === 'clean' && i.mode === 'swing'
+    ? findCleanZones({
+      entry: i.entry, trend: i.trend, entryInterval: CONFIG[i.mode].entryInterval, trendInterval: CONFIG[i.mode].trendInterval,
+      price: i.premium.markPrice, now: i.now.getTime(),
+    })
+    : findZones({
+      entry: i.entry, trend: i.trend,
+      entryLabel: label4(CONFIG[i.mode].entryInterval), trendLabel: label4(CONFIG[i.mode].trendInterval),
+      atr: atrEntry, tickSize: i.contract.tickSize,
+    });
   const price = last(i.entry.map((k) => k.close));
   const risk = contractRisk({ daily: i.daily, price, contract: i.contract, liquidityRankPct: i.liquidityRankPct, now: i.now });
   // P-01: rủi ro mỗi lệnh = i.riskPct (mặc định COMMON.risk.perTradePct = 2%, người dùng chốt 19/10/2026). Không còn hạ xuống 0,25% theo chế độ/mức rủi ro; mức rủi ro chỉ để hiển thị và lọc Hạng A.
@@ -259,6 +266,11 @@ export function analyze(i: AnalyzeInput): Analysis {
         continue;
       }
       if (hidden || daily === null || (r.state !== 'breakout' && r.state !== 'retested') || r.side === null || r.breakoutIndex === null) continue;
+      // Luật S/R xác nhận (COMMON.entryRules.srConfirm): Swing chỉ vào lệnh vùng đã được nến 4H xác nhận → không lập lệnh mô hình
+      if (COMMON.entryRules.srConfirm && i.mode === 'swing') {
+        info.notes.push('Kế hoạch mô hình: bỏ — luật S/R xác nhận đang bật, chỉ vào lệnh tại vùng hỗ trợ/kháng cự đã xác nhận');
+        continue;
+      }
       const side: Side = r.side === 'up' ? 'long' : 'short';
       const pg2 = patternTrendGate({ kind: g.kind, side, daily, regime: i.regime });
       info.notes.push(pg2.note);

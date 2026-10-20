@@ -108,6 +108,27 @@ export const COMMON = {
     directEntryMaxAtr: 0.5, // giá cách mép vùng hỗ trợ (Long) ≤ 0,5×ATR → vào trực tiếp; xa hơn → đặt limit chờ hồi
     limitBufferAtr: 0.1, // giá limit = mép trên vùng hỗ trợ + 0,1×ATR (Short: mép dưới vùng kháng cự − 0,1×ATR)
     limitExpiryBars: { fast: 8, swing: 6 }, // limit hết hiệu lực sau 8 nến 15m (2h) / 6 nến 4H (24h)
+    // Cách dựng vùng (kiểm toán S/R 20/10/2026 — research_notes/Luật giao dịch của quỹ lớn/sr_audit_data.md). 'legacy' (mặc định) = cách cũ
+    // ở zones.ts; 'clean' = packages/core/zones-clean.ts, CHỈ cho Swing (khung 4H + 1D; Lướt nhanh luôn dùng 'legacy'). Đề xuất, chưa backtest.
+    method: 'legacy' as 'legacy' | 'clean',
+    clean: {
+      atrPeriod: 14, // ATR(14) của TỪNG khung để gom pivot, độ rộng tối thiểu, phá vỡ
+      minWidthAtr: 0.25, // vùng rộng ≥ 0,25×ATR khung của nó (kể cả vùng 1 pivot)
+      breakAtr: 0.5, // hỗ trợ bị phá khi một nến đã đóng đóng cửa dưới mép dưới − 0,5×ATR (kháng cự: đối xứng)
+      maxAgeDays: { '4h': 60, '1d': 180 } as Record<string, number>, // pivot mới nhất của vùng cũ hơn mức này (ngày) → bỏ vùng
+      hvnDays: 60, // hồ sơ khối lượng từ 60 ngày nến 4H gần nhất
+      hvnBinAtr: 0.25, // ô giá rộng 0,25×ATR(4H)
+      hvnMinMedianMult: 1.5, // ô cực đại cục bộ có khối lượng ≥ 1,5 × trung vị các ô → vùng HVN
+      bounceAtr: 1, // một lần bật = chạm vùng rồi đi ≥ 1×ATR(4H) theo hướng bật trước khi có nến đóng xuyên vùng
+      maxPerSide: 3, // giữ tối đa 3 vùng gần giá nhất mỗi phía
+    },
+    // Nến xác nhận cho luật COMMON.entryRules.srConfirm (người dùng duyệt trước, 20/10/2026 — không chỉnh sau khi xem kết quả)
+    confirm: {
+      minStrength: 2, // vùng xác nhận và vùng TP1 phải có độ mạnh ≥ 2
+      minWickPct: 0.5, // râu dưới (Long) / râu trên (Short) ≥ 50% biên độ nến
+      takerRatio: 0.5, // Long: takerBuyQuote/quoteVolume ≥ 0,5; Short: ≤ 0,5
+      slBufferAtr: 0.25, // SL ngoài vùng đã xác nhận 0,25×ATR(4H)
+    },
   },
   // Mô hình biểu đồ — ĐỀ XUẤT, CHƯA BACKTEST (nguồn: reports/Mô hình biểu đồ cho BTC.md, mục (2))
   patterns: {
@@ -260,6 +281,10 @@ export const COMMON = {
     swingLongRsTopHalf: false as boolean, // #7: Long Swing cần z sức mạnh tương đối ≥ trung vị các mã đã chấm
     fundingXsPct: null as number | null, // #8: Long khi phân vị funding TB ≤ mức này (%), Short khi ≥ mức này; null = tắt
     fundingXsDays: 7, // #8: số ngày tính funding TB
+    // Luật S/R (người dùng duyệt 20/10/2026, đăng ký trước): "Chỉ vào lệnh khi hỗ trợ/kháng cự đã rõ ràng và được xác nhận". Chỉ Swing.
+    // Áp trong buildPlan (plan.ts) vì đổi cả SL/TP1, không chỉ chặn: nến 4H đã đóng cuối chạm vùng mạnh ≥ 2, đóng lại đúng phía, râu ≥ 50%,
+    // taker đúng phía (COMMON.zones.confirm) → vào market; không thì kế hoạch không hợp lệ kèm lý do. Tín hiệu mô hình Swing bị bỏ.
+    srConfirm: false as boolean,
   },
   // Phí sàn USDⓈ-M (ví dụ Regular User: maker 0,02%, taker 0,05% — bài hỗ trợ Binance 360033544231, sàn ghi là ví dụ). makerTakerSplit = false
   // (mặc định): mọi lần khớp trả nửa phí nhóm costRoundTripPct (gồm trượt). true: lệnh LIMIT vào lệnh (GTD, maker) chỉ trả makerPct, không

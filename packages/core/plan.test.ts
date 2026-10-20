@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { roundStep, liquidationPrice, maxSafeLeverage, positionSize, splitQuantity, buildPlan as buildPlanRaw, tp1R, tp1NetRAt, worstTp1NetR, type PlanArgs } from './plan.ts';
 import { COMMON } from './config.ts';
+import { applyConfigOverride } from './config-override.ts';
+import { atr } from './indicators.ts';
 import type { Zone } from './zones.ts';
 import type { Candle } from './types.ts';
 
@@ -687,4 +689,87 @@ test('B3b tp1SkipWeak = false: TP1 ở vùng đầu tiên bất kể độ mạn
 test('B3b TradePlan mang capital đã dùng để tính khối lượng', () => {
   const p = buildPlan({ ...baseArgs, side: 'long', entry: flat(96.3), zones: supports });
   assert.equal(p.capital, 1000);
+});
+
+// ---- Luật S/R xác nhận (COMMON.entryRules.srConfirm) ----
+// Nến 0..58 đi ngang quanh 97 (ATR ≈ 1); nến cuối (đã đóng) là nến xác nhận tùy chỉnh. Giá mark = giá đóng nến cuối.
+function withConfirm(last: { open: number; high: number; low: number; close: number; taker?: number }): Candle[] {
+  const c = flat(97, 59);
+  const tk = last.taker ?? 0.6;
+  c.push({ openTime: 59, closeTime: 59, open: last.open, high: last.high, low: last.low, close: last.close, volume: 1, quoteVolume: 1, takerBuyQuote: tk });
+  return c;
+}
+function withSr<T>(fn: () => T, extra: Record<string, unknown> = {}): T {
+  const restore = applyConfigOverride({ 'COMMON.entryRules.srConfirm': true, ...extra });
+  try { return fn(); } finally { restore(); }
+}
+const srArgs = { ...baseArgs, capital: 10_000, riskPct: 2 };
+// Long hợp lệ: chạm hỗ trợ [95, 96] (độ mạnh 2), râu dưới (96,6 − 95,5)/1,5 = 73%, đóng 96,8 > 96, taker 0,6
+const longBar = { open: 96.6, high: 97, low: 95.5, close: 96.8 };
+const srZones = [zone(95, 96, 2), zone(100, 101, 3), zone(98, 98.5, 1)];
+
+test('srConfirm Long đạt: vào market, SL = mép dưới − 0,25×ATR(4H), TP1 = kháng cự mạnh ≥ 2 gần nhất (bỏ vùng yếu), nhãn Hỗ trợ/Kháng cự', () => {
+  const entry = withConfirm(longBar);
+  const a4 = atr(entry, 14)[entry.length - 1]!;
+  const p = withSr(() => buildPlan({ ...srArgs, side: 'long', entry, zones: srZones }));
+  assert.equal(p.valid, true, p.invalidReason ?? '');
+  assert.equal(p.entryType, 'market');
+  assert.equal(r6(p.entry), 96.8);
+  assert.equal(r6(p.stop), r6(Math.floor((95 - 0.25 * a4) / 0.001 + 1e-9) * 0.001));
+  assert.equal(r6(p.targets[0]!.price!), r6(Math.floor((100 - 0.2 * a4) / 0.001 + 1e-9) * 0.001)); // trước kháng cự [100, 101] 0,2×ATR (tpBufferAtr như cũ); vùng yếu 98 bị bỏ qua
+  assert.match(p.stopReason, /Dưới Hỗ trợ 95,000–96,000 \(Trung bình, độ mạnh 2/);
+  assert.match(p.targets[0]!.reason, /Trước Kháng cự 100,000–101,000 \(Mạnh, độ mạnh 3/);
+  assert.match(p.entryReason, /Xác nhận S\/R: nến 4H đã đóng chạm Hỗ trợ/);
+  assert.ok(p.estLoss <= 10_000 * 0.02 + 1e-9, 'giữ trần rủi ro 2%');
+});
+
+test('srConfirm Short đạt (đối xứng): chạm kháng cự, râu trên ≥ 50%, đóng dưới vùng, taker ≤ 0,5', () => {
+  const entry = withConfirm({ open: 99.4, high: 100.5, low: 99, close: 99.2, taker: 0.4 });
+  const zs = [zone(100, 101, 2), zone(94, 95, 2)];
+  const p = withSr(() => buildPlan({ ...srArgs, side: 'short', entry, zones: zs }));
+  assert.equal(p.valid, true, p.invalidReason ?? '');
+  assert.equal(p.entryType, 'market');
+  assert.ok(p.stop > 101 && p.stop < 101 + 0.3 * 1.2, `SL ${p.stop}`);
+  assert.match(p.stopReason, /Trên Kháng cự 100,000–101,000/);
+  assert.match(p.targets[0]!.reason, /Trước Hỗ trợ 94,000–95,000/);
+});
+
+test('srConfirm chặn: vùng yếu / không chạm / râu ngắn / taker sai phía / không đóng lại / không có TP1 mạnh / TP1 < 1R', () => {
+  const run = (bar: typeof longBar & { taker?: number }, zs: Zone[]) => withSr(() => buildPlan({ ...srArgs, side: 'long', entry: withConfirm(bar), zones: zs }));
+  const cases: Array<[string, ReturnType<typeof run>, RegExp]> = [
+    ['vùng yếu', run(longBar, [zone(95, 96, 1), zone(100, 101, 3)]), /không có vùng hỗ trợ nào độ mạnh ≥ 2/],
+    ['không chạm', run({ open: 96.6, high: 97, low: 96.2, close: 96.8 }, srZones), /không chạm vùng hỗ trợ mạnh nào/],
+    ['râu ngắn', run({ open: 96.2, high: 97, low: 95.8, close: 96.9 }, srZones), /râu dưới chỉ 33%/],
+    ['taker', run({ ...longBar, taker: 0.45 }, srZones), /taker mua 0,45 < 0,5/],
+    ['không đóng lại', run({ open: 96.6, high: 96.7, low: 95.1, close: 95.9 }, srZones), /không đóng cửa lại trên vùng|Giá đang nằm trong vùng/],
+    ['không có TP1 mạnh', run(longBar, [zone(95, 96, 2), zone(100, 101, 1)]), /Không có kháng cự mạnh \(độ mạnh ≥ 2\) phía trên để đặt TP1/],
+    ['TP1 < 1R', run(longBar, [zone(95, 96, 2), zone(98, 99, 2)]), /TP1 chỉ .*R < 1R/],
+  ];
+  for (const [name, p, re] of cases) {
+    assert.equal(p.valid, false, name);
+    assert.match(p.invalidReason ?? '', re, `${name}: ${p.invalidReason}`);
+  }
+  assert.match(cases[0]![1].invalidReason!, /^Không có hỗ trợ rõ ràng \(vùng mạnh ≥ 2\) \/ chưa có nến xác nhận/);
+});
+
+test('srConfirm chỉ áp Swing; tắt (mặc định) thì kế hoạch y như cũ', () => {
+  const entry = withConfirm(longBar);
+  const off = buildPlan({ ...srArgs, side: 'long', entry, zones: srZones });
+  const fastOn = withSr(() => buildPlan({ ...srArgs, mode: 'fast', side: 'long', entry, zones: srZones }));
+  const fastOff = buildPlan({ ...srArgs, mode: 'fast', side: 'long', entry, zones: srZones });
+  assert.deepEqual(fastOn, fastOff);
+  assert.doesNotMatch(off.stopReason, /Hỗ trợ/); // cách cũ: "Dưới vùng hỗ trợ …", không gắn nhãn độ mạnh
+  assert.match(off.stopReason, /Dưới vùng hỗ trợ/);
+});
+
+test('srConfirm: nến xác nhận xuyên qua mức SL (mép vùng ∓ 0,25×ATR) → chặn, kể cả khi đóng lại và râu dài; Short đối xứng', () => {
+  // Long: low 94,5 < 95 − 0,25×ATR(≈1,04) ≈ 94,74; đóng 96,8 > 96, râu dưới (96,6 − 94,5)/2,5 = 84%, taker 0,6
+  const longP = withSr(() => buildPlan({ ...srArgs, side: 'long', entry: withConfirm({ open: 96.6, high: 97, low: 94.5, close: 96.8 }), zones: srZones }));
+  assert.equal(longP.valid, false);
+  assert.match(longP.invalidReason ?? '', /^Không có hỗ trợ rõ ràng .*đã xuyên qua mức SL 94,7\d\d \(đáy nến 94,500\) — vùng không giữ được/);
+  // Short: high 101,5 > 101 + 0,25×ATR; đóng 99,2 < 100, râu trên (101,5 − 99,4)/2,5 = 84%, taker 0,4
+  const shortP = withSr(() => buildPlan({ ...srArgs, side: 'short', entry: withConfirm({ open: 99.4, high: 101.5, low: 99, close: 99.2, taker: 0.4 }),
+    zones: [zone(100, 101, 2), zone(94, 95, 2)] }));
+  assert.equal(shortP.valid, false);
+  assert.match(shortP.invalidReason ?? '', /^Không có kháng cự rõ ràng .*đã xuyên qua mức SL 101,3\d\d \(đỉnh nến 101,500\)/);
 });

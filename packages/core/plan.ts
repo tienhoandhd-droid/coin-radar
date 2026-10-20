@@ -1,6 +1,6 @@
 import { atr, last, roundStep } from './indicators.ts';
 import { CONFIG, COMMON } from './config.ts';
-import { stopSideZones, targetZonesSplit, zoneContaining, describeZone, type Zone } from './zones.ts';
+import { stopSideZones, targetZonesSplit, zoneContaining, describeZone, describeZoneSr, confirmedZone, type Zone } from './zones.ts';
 import { snapToTick, formatTick, tickDecimals } from './price.ts';
 import { buildExit, type ExitPlan, type ExitPolicy } from './exit.ts';
 import { marginTier, defaultBrackets, type MarginBracket, type MarginSource } from './margin.ts';
@@ -185,9 +185,15 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const towardDir = a.side === 'long' ? 'down' : 'up';
   const sideWord = a.side === 'long' ? 'hỗ trợ' : 'kháng cự';
   const dirWord = a.side === 'long' ? 'dưới' : 'trên';
+  // Luật S/R xác nhận (COMMON.entryRules.srConfirm, chỉ Swing): vùng đặt SL = vùng mạnh được nến 4H đã đóng cuối cùng xác nhận
+  const srOn = COMMON.entryRules.srConfirm && a.mode === 'swing';
+  const srText = (z: Zone) => describeZoneSr(z, marketPrice, tick);
+  const confirmation = srOn ? confirmedZone(a.zones, a.entry[a.entry.length - 1]!, marketPrice, a.side, atrEntry, tick) : null;
 
   // Vùng đặt SL: vùng đầu tiên (gần giá nhất) đủ mạnh và nằm hẳn một phía của giá thị trường
-  const support = stopSideZones(a.zones, marketPrice, a.side).find((z) => z.strength >= zc.minSlStrength) ?? null;
+  const support = confirmation !== null
+    ? confirmation.zone
+    : stopSideZones(a.zones, marketPrice, a.side).find((z) => z.strength >= zc.minSlStrength) ?? null;
   // Mép vùng phía giá: Long = mép trên vùng hỗ trợ; Short = mép dưới vùng kháng cản
   const nearEdge = support === null ? marketPrice : a.side === 'long' ? support.high : support.low;
   const distAtr = support === null ? 0 : (dir * (marketPrice - nearEdge)) / atrEntry;
@@ -195,7 +201,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const insideZone = zoneContaining(a.zones, marketPrice);
   let entryType: 'market' | 'limit' = 'market';
   let entry = marketPrice;
-  if (support !== null && distAtr > zc.directEntryMaxAtr) {
+  if (!srOn && support !== null && distAtr > zc.directEntryMaxAtr) { // srConfirm: luôn vào market ở nến kế tiếp
     entryType = 'limit';
     entry = snapToTick(nearEdge + dir * zc.limitBufferAtr * atrEntry, tick, a.side === 'long' ? 'down' : 'up');
   }
@@ -205,7 +211,13 @@ export function buildPlan(a: PlanArgs): TradePlan {
   let stopReason: string;
   if (support === null) {
     stop = snapToTick(entry - dir * atrEntry, tick, awayDir); // khoảng tạm để mọi số vẫn hữu hạn; kế hoạch bị đánh dấu không hợp lệ
-    stopReason = `Không có vùng ${sideWord} đủ mạnh để đặt SL`;
+    stopReason = confirmation !== null ? confirmation.reason : `Không có vùng ${sideWord} đủ mạnh để đặt SL`;
+  } else if (srOn) {
+    // SL ngay ngoài vùng đã xác nhận 0,25×ATR(4H); KHÔNG nới tới 1×ATR ngày, KHÔNG đẩy qua số tròn (luật đăng ký trước)
+    const buf = COMMON.zones.confirm.slBufferAtr;
+    const farEdge = a.side === 'long' ? support.low : support.high;
+    stop = snapToTick(farEdge - dir * buf * atrEntry, tick, awayDir);
+    stopReason = `${a.side === 'long' ? 'Dưới' : 'Trên'} ${srText(support)} ${a.side === 'long' ? '−' : '+'} ${vn(buf, 2)}×ATR = ${fp(stop)}`;
   } else {
     const farEdge = a.side === 'long' ? support.low : support.high;
     stop = snapToTick(farEdge - dir * zc.slBufferAtr * atrEntry, tick, awayDir);
@@ -235,7 +247,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
   const found: Target[] = [];
   let blockedBy: Zone | null = null; // vùng cản đầu tiên nằm sát giá vào, không còn chỗ đặt TP1
   // B3b: chỉ vùng đủ mạnh (độ mạnh ≥ minSlStrength) là vật cản; vùng yếu trước TP1 bị bỏ qua và ghi lại
-  const { blocking: candidates, skipped: skippedZones } = targetZonesSplit(a.zones, entry, a.side);
+  const { blocking, skipped: skippedZones } = targetZonesSplit(a.zones, entry, a.side);
+  // srConfirm: TP1 = vùng đối diện gần nhất có độ mạnh ≥ confirm.minStrength (không phụ thuộc cờ tp1SkipWeak)
+  const candidates = srOn ? blocking.filter((z) => z.strength >= COMMON.zones.confirm.minStrength) : blocking;
   for (const z of candidates) {
     if (found.length >= zc.exitPcts.length) break;
     const tp = snapToTick((a.side === 'long' ? z.low : z.high) - dir * zc.tpBufferAtr * atrEntry, tick, towardDir);
@@ -243,7 +257,7 @@ export function buildPlan(a: PlanArgs): TradePlan {
     const prev = found.length ? found[found.length - 1]!.price! : entry;
     if (dir * (tp - prev) <= 0) continue;
     found.push({ name: `TP${found.length + 1}` as Target['name'], price: tp, pct: 0, qty: 0, r: (dir * (tp - entry)) / riskPerUnit, rNet: null,
-      reason: `Trước vùng cản ${dz(z)}` });
+      reason: srOn ? `Trước ${srText(z)}` : `Trước vùng cản ${dz(z)}` });
   }
   const names = ['TP1', 'TP2', 'TP3'] as const;
   const targets: Target[] = names.map((name, idx) => {
@@ -266,13 +280,16 @@ export function buildPlan(a: PlanArgs): TradePlan {
     invalidReason = `Giá đang nằm trong vùng ${dz(insideZone)} — chờ giá thoát hẳn khỏi vùng`;
   } else if (support === null) {
     valid = false;
-    invalidReason = `Không có vùng ${sideWord} đủ mạnh phía ${dirWord} để đặt SL`;
+    invalidReason = confirmation !== null ? confirmation.reason : `Không có vùng ${sideWord} đủ mạnh phía ${dirWord} để đặt SL`;
   } else if (blockedBy !== null) {
     valid = false;
     invalidReason = `${a.side === 'long' ? 'Kháng cự' : 'Hỗ trợ'} ngay sát ${a.side === 'long' ? 'trên' : 'dưới'} giá vào ${dz(blockedBy)} — không có chỗ đặt TP1`;
   } else if (targets[0]!.r !== null && targets[0]!.r < zc.minTp1R) {
     valid = false;
     invalidReason = `Kháng cự đầu tiên quá gần: TP1 chỉ ${vn(targets[0]!.r, 2)}R < ${zc.minTp1R}R`;
+  } else if (srOn && targets[0]!.price === null) {
+    valid = false;
+    invalidReason = `Không có ${a.side === 'long' ? 'kháng cự' : 'hỗ trợ'} mạnh (độ mạnh ≥ ${COMMON.zones.confirm.minStrength}) phía ${a.side === 'long' ? 'trên' : 'dưới'} để đặt TP1 — luật S/R xác nhận không vào lệnh`;
   }
 
   // Giá limit không được nằm trong một vùng
@@ -318,7 +335,9 @@ export function buildPlan(a: PlanArgs): TradePlan {
       : { low: maxEntry, high: snapToTick(Math.max(inner, marketPrice), tick, 'up') };
     entryReason = support === null || insideZone !== null
       ? invalidReason!
-      : `Giá đang sát vùng ${sideWord} ${dz(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${fp(maxEntry)}${maxEntryNote}`;
+      : confirmation !== null
+        ? `Xác nhận S/R: ${confirmation.reason} — vào trực tiếp (market) ở nến kế tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${fp(maxEntry)}${maxEntryNote}`
+        : `Giá đang sát vùng ${sideWord} ${dz(support)} — vào trực tiếp, không ${a.side === 'long' ? 'mua cao' : 'bán thấp'} hơn ${fp(maxEntry)}${maxEntryNote}`;
   }
 
   const exitPolicy = a.exitPolicy ?? COMMON.exit.defaultPolicy;

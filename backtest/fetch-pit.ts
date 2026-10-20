@@ -1,5 +1,13 @@
 // Tải thêm 15m cho mọi mã từng lọt top-N thanh khoản THEO THỜI ĐIỂM (cùng cách xếp hạng với phát lại) trong kỳ D và kỳ mù B.
 //   node backtest/fetch-pit.ts [--dir data/cache]
+// Kỳ mù C (--period blind-c): tải dữ liệu Swing cho cả kỳ C [2026-01-01, 2026-06-21) — CHỈ TẢI, không phát lại/mô phỏng:
+//   node backtest/fetch-pit.ts --period blind-c [--dir data/cache]
+//   B1. 1h cho MỌI hợp đồng hiện tại niêm yết trước cuối C (cần cho xếp hạng thanh khoản theo thời điểm, như phát lại)
+//   B2. vũ trụ = mã từng lọt top COMMON.entryRules.swingUniverseSize tại một mốc quyết định Swing (mỗi giờ) trong C, luôn kèm BTCUSDT
+//   B3. 1d, 4h, 15m (chuỗi giá đường đi của bộ mô phỏng khi không có 5m) + funding cho vũ trụ đó
+//   Khởi động = needFrom(khung, đầu C) — cùng mốc createReplay nạp. Mọi khung tải tới DATA_END (không chỉ cuối C): tệp tháng đang có
+//   (6/2026 trở đi) được giữ hoặc tải lại NGUYÊN tháng, không bao giờ ghi đè bằng tệp ngắn hơn làm mất dữ liệu D/B; tệp funding một
+//   tệp/mã nên phải phủ [đầu khởi động C, DATA_END) để không làm hụt phần D/B.
 // Lý do: lần tải đầu (backtest/fetch.ts) chỉ lấy 15m cho top 150 HÔM NAY; phát lại Lướt nhanh xếp hạng tại từng thời điểm nên
 // nhiều mã khác lọt top 150 trong kỳ mà thiếu 15m. 5m KHÔNG tải cho nhóm này (bộ mô phỏng sẽ tải 1m theo nhu cầu khi nến mơ hồ).
 import { parseArgs } from 'node:util';
@@ -8,9 +16,9 @@ import { join } from 'node:path';
 import { createClient } from '../packages/binance/client.ts';
 import { COMMON } from '../packages/core/config.ts';
 import { liquidityRanks } from '../scanner/rank.ts';
-import type { Candle, Contract } from '../packages/core/types.ts';
-import { createFetcher, fetchAll, loadCandles, needFrom, planRange, type Plan } from './data.ts';
-import { BLIND_PERIOD, DATA_END, DEV_PERIOD, decisionTimes, loadContracts, tickersAt, type Window } from './replay.ts';
+import type { Candle, Contract, Mode } from '../packages/core/types.ts';
+import { createFetcher, fetchAll, loadCandles, needFrom, planRange, type Fetcher, type Plan } from './data.ts';
+import { BLIND_C_PERIOD, BLIND_PERIOD, DATA_END, DEV_PERIOD, decisionTimes, loadContracts, tickersAt, type Window } from './replay.ts';
 
 // Tập mã từng nằm trong top `size` thanh khoản tại một mốc nào đó của cửa sổ. Duyệt ĐÚNG các mốc quyết định Lướt nhanh (mỗi 15m,
 // decisionTimes của replay): cửa sổ 24h của tickersAt gồm 24 nến 1H tại :00 nhưng 23 nến tại :15/:30/:45 → hạng khác nhau giữa các mốc.
@@ -21,8 +29,19 @@ export function pitFastUniverse(
   w: Window,
   size: number,
 ): Set<string> {
+  return pitUniverse('fast', contracts, hourly, w, size);
+}
+
+// Như trên cho một chế độ bất kỳ: Swing duyệt mốc mỗi giờ (decisionTimes('swing')), cắt top `size` như runScan (swingUniverseSize).
+export function pitUniverse(
+  mode: Mode,
+  contracts: readonly Pick<Contract, 'symbol' | 'onboardDate'>[],
+  hourly: ReadonlyMap<string, readonly Candle[]>,
+  w: Window,
+  size: number,
+): Set<string> {
   const out = new Set<string>();
-  for (const t of decisionTimes('fast', w)) {
+  for (const t of decisionTimes(mode, w)) {
     const list = contracts.filter((c) => c.onboardDate <= t && hourly.has(c.symbol)).map((c) => ({ symbol: c.symbol, hourly: hourly.get(c.symbol)! }));
     const ranks = liquidityRanks(tickersAt(list, t));
     // liquidityRanks trả phân vị 0..1 (không phải thứ tự) → sắp tăng dần rồi lấy `size` mã đầu, y như runScan (universe.slice(0, fastUniverseSize))
@@ -32,8 +51,10 @@ export function pitFastUniverse(
 }
 
 async function main() {
-  const { values: v } = parseArgs({ options: { dir: { type: 'string', default: 'data/cache' } } });
+  const { values: v } = parseArgs({ options: { dir: { type: 'string', default: 'data/cache' }, period: { type: 'string', default: 'dev+blind' } } });
   const dir = v.dir!;
+  if (v.period === 'blind-c') return mainBlindC(dir);
+  if (v.period !== 'dev+blind') throw new Error(`--period phải là dev+blind (mặc định) hoặc blind-c, nhận "${v.period}"`);
   const contracts = await loadContracts(dir);
   const plan: Plan = planRange(DATA_END);
   const hourly = new Map<string, Candle[]>();
@@ -88,6 +109,77 @@ async function main() {
   });
   console.log('--- Tổng kết ---');
   console.log(`mã ${extra.length}; lệnh ${s.requests}; weight ${s.weight}; ${(s.bytesWritten / 1e6).toFixed(1)} MB; ${((Date.now() - started) / 60000).toFixed(1)} phút; khoảng trống sàn ${s.gaps.length}`);
+  process.exit(exitCode);
+}
+
+// Kế hoạch tải cho một cửa sổ: fetchAll chỉ dùng plan.oosStart (mốc tính khởi động needFrom) và plan.end.
+// end = DATA_END (không phải cuối cửa sổ) — xem giải thích ở đầu tệp.
+export function planForWindow(w: Window): Plan {
+  return { end: DATA_END, evalStart: w.start, oosStart: w.start };
+}
+
+function progress(fetcher: Fetcher, started: number, every: number) {
+  return (done: number, total: number, symbol: string) => {
+    const s = fetcher.stats;
+    if (done % every === 0 || done === total) console.log(`[${done}/${total}] ${symbol} | lệnh ${s.requests} | weight ${s.weight} | ${(s.bytesWritten / 1e6).toFixed(1)} MB | ${((Date.now() - started) / 60000).toFixed(1)} phút`);
+  };
+}
+
+async function mainBlindC(dir: string) {
+  const w: Window = { ...BLIND_C_PERIOD };
+  const plan = planForWindow(w);
+  const all = await loadContracts(dir);
+  const contracts = all.filter((c) => c.onboardDate < w.end); // niêm yết sau cuối C → không thể có mặt trong C
+  const started = Date.now();
+  const client = createClient({ fetch: (url) => fetch(url, { signal: AbortSignal.timeout(30_000) }), weightCeiling: 1800 });
+  const fetcher = createFetcher({ client, dir, log: (m) => console.log('  ! ' + m) });
+  const failures: { symbol: string; what: string; error: string }[] = [];
+  let exitCode = 0;
+  let universe: string[] = [];
+  const skipped1h: string[] = [];
+  try {
+    // B1. 1h cho mọi hợp đồng (xếp hạng thanh khoản theo thời điểm cần cả mã ngoài top)
+    console.log(`Kỳ C [${new Date(w.start).toISOString()}, ${new Date(w.end).toISOString()}): B1 tải 1h cho ${contracts.length}/${all.length} hợp đồng (niêm yết trước cuối C)`);
+    const r1 = await fetchAll({ fetcher, plan, symbols: contracts.map((c) => c.symbol), fastSymbols: [], intervals: ['1h'], withFunding: false, withOi: false,
+      onProgress: progress(fetcher, started, 25) });
+    failures.push(...r1.failures);
+    // B2. vũ trụ Swing theo thời điểm — CÙNG tickersAt/liquidityRanks với phát lại; chỉ in số lượng (kỳ C phải giữ mù)
+    const hourly = new Map<string, Candle[]>();
+    for (const c of contracts) {
+      try { hourly.set(c.symbol, loadCandles(dir, c.symbol, '1h', needFrom('1h', w.start), w.end).candles); }
+      catch (e) { skipped1h.push(c.symbol); console.log(`  ! bỏ qua ${c.symbol}: không nạp được 1h (${(e as Error).message})`); }
+    }
+    const size = COMMON.entryRules.swingUniverseSize ?? contracts.length;
+    const inC = pitUniverse('swing', contracts, hourly, w, size);
+    universe = [...new Set(['BTCUSDT', ...inC])].sort();
+    console.log(`B2 vũ trụ Swing theo thời điểm (top ${size} tại mỗi giờ của C): ${inC.size} mã, kèm BTCUSDT → ${universe.length}; bỏ qua ${skipped1h.length} vì thiếu 1h`);
+    // B3. 1d, 4h, 15m + funding cho vũ trụ
+    console.log(`B3 tải 1d, 4h, 15m + funding cho ${universe.length} mã`);
+    const r3 = await fetchAll({ fetcher, plan, symbols: universe, fastSymbols: universe, intervals: ['1d', '4h', '15m'], withFunding: true, withOi: false,
+      onProgress: progress(fetcher, started, 10) });
+    failures.push(...r3.failures);
+  } catch (e) {
+    console.log(`DỪNG: ${(e as Error).message}`);
+    exitCode = 2;
+  }
+  for (const f of failures) console.log(`LỖI ${f.symbol} ${f.what}: ${f.error}`);
+  if (exitCode === 0 && failures.length > 0) exitCode = 1;
+  const s = fetcher.stats;
+  const manifestPath = join(dir, 'manifest.json');
+  const prev = existsSync(manifestPath) ? (JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>) : {};
+  const iso = (t: number) => new Date(t).toISOString();
+  fetcher.write(manifestPath, {
+    ...prev,
+    blindC: {
+      writtenAt: new Date().toISOString(), complete: exitCode === 0,
+      window: { start: iso(w.start), end: iso(w.end) },
+      note: `Kỳ mù C — CHỈ TẢI. 1h cho mọi hợp đồng hiện tại niêm yết trước cuối C; 1d/4h/15m + funding cho mã từng lọt top ${COMMON.entryRules.swingUniverseSize} Swing theo thời điểm (kèm BTCUSDT). Không có 5m/1m/OI cho C. Thiên lệch sống sót: chỉ hợp đồng còn giao dịch trong exchangeInfo đã lưu.`,
+      from: Object.fromEntries((['1d', '4h', '1h', '15m'] as const).map((iv) => [iv, iso(needFrom(iv, w.start))])), fundingFrom: iso(needFrom('1d', w.start)), to: iso(DATA_END),
+      contracts1h: contracts.length, skippedMissing1h: skipped1h, swingUniverse: universe, failures, gaps: s.gaps.length,
+    },
+  });
+  console.log('--- Tổng kết kỳ C ---');
+  console.log(`vũ trụ ${universe.length}; lệnh ${s.requests}; weight ${s.weight}; ghi ${s.filesWritten} tệp / ${(s.bytesWritten / 1e6).toFixed(1)} MB; bỏ qua ${s.filesSkipped} tệp đã đủ; khoảng trống sàn ${s.gaps.length}; lỗi ${failures.length}; ${((Date.now() - started) / 60000).toFixed(1)} phút`);
   process.exit(exitCode);
 }
 

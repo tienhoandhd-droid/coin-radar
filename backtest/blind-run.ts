@@ -1,6 +1,9 @@
-// Chạy kỳ mù B ĐÚNG MỘT LẦN mỗi ứng viên đã khóa (kế hoạch 2, "Quy trình mô phỏng MÙ"). Chỉ ghi kết quả thô — báo cáo do điều phối viết.
+// Chạy một kỳ mù (B hoặc C) ĐÚNG MỘT LẦN mỗi ứng viên đã khóa (kế hoạch 2, "Quy trình mô phỏng MÙ"). Chỉ ghi kết quả thô — báo cáo do điều phối viết.
+// Kỳ được chọn bằng chính tệp khóa (replay.ts BLIND_PERIODS): mỗi kỳ có tệp khóa riêng và thư mục kết quả riêng (B: output/blind/,
+// C: output/blind-C/) → marker "một lần" tách theo kỳ: B đã chạy không chặn C, và C cũng chỉ chạy một lần.
 //
-//   node backtest/blind-run.ts --lock docs/verification/khoa-luat-mo-phong-mu.md [--rerun-after-crash <id>] [--dir data/cache]
+//   node backtest/blind-run.ts --lock docs/verification/khoa-luat-mo-phong-mu.md   [--rerun-after-crash <id>] [--dir data/cache]   (kỳ B)
+//   node backtest/blind-run.ts --lock docs/verification/khoa-luat-mo-phong-mu-C.md [--rerun-after-crash <id>] [--dir data/cache]   (kỳ C)
 //   node backtest/blind-run.ts --print-config-hash      (in configHash của mặc định CONFIG + COMMON hiện tại, để ghi vào tệp khóa)
 //
 // TỆP KHÓA (Markdown) chứa đúng MỘT khối ```json lock … ``` với ĐỦ các khóa (thiếu/lạ → từ chối):
@@ -11,8 +14,8 @@
 //
 // TỪ CHỐI nếu: HEAD ≠ lockedCommit; có thay đổi chưa commit ở BẤT KỲ tệp đã theo dõi nào trừ tệp khóa, hoặc tệp mới trong packages/
 // scanner/ backtest/ data/events/; output/blind/ đã có lần chạy dưới tệp khóa khác (id lạ, lockedCommit/configHash/sha256 tệp khóa khác); configHash ≠
-// mặc định hiện tại; thủ tục mở kỳ mù sai (replay.ts checkBlindAuth — tệp khóa phải đúng LOCK_FILE và tồn tại); biến thể không có/chưa nối/
-// lệch chế độ, policy hoặc filter của chính biến thể; output/blind/<id>/ đã có lần chạy.
+// mặc định hiện tại; thủ tục mở kỳ mù sai (replay.ts checkBlindAuth — tệp khóa phải đúng tệp của kỳ và tồn tại); biến thể không có/chưa nối/
+// lệch chế độ, policy hoặc filter của chính biến thể; <thư mục kỳ>/<id>/ đã có lần chạy. (Dưới đây "output/blind/" = thư mục của kỳ.)
 // MỘT LẦN MỖI ỨNG VIÊN: output/blind/<id>/started.json được ghi TRƯỚC khi mô phỏng bắt đầu → tiến trình đổ giữa chừng không cho chạy lại âm
 // thầm; muốn chạy lại phải có --rerun-after-crash <id> (chỉ khi chưa có summary.json; cờ được ghi vào started.json và summary.json, và
 // lượt đó chạy lại ứng viên ấy rồi các ứng viên CHƯA bắt đầu; ứng viên đã xong không chạy lại). summary.json ghi SAU CÙNG = đã xong.
@@ -29,7 +32,7 @@ import { COMMON, CONFIG } from '../packages/core/config.ts';
 import { parseEvents } from '../packages/core/events.ts';
 import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Mode } from '../packages/core/types.ts';
-import { assertWindowAllowed, BLIND_PERIOD, loadContracts, type BlindAuth, type Window } from './replay.ts';
+import { assertWindowAllowed, blindPeriodOfLock, loadContracts, type BlindAuth, type Window } from './replay.ts';
 import { report, runSimulation, type Filter } from './simulate-run.ts';
 import { requireWired, stackRun, BASELINE_SPEC, type RunSpec } from './experiment.ts';
 import { computeStats, type StatTrade } from './stats.ts';
@@ -151,7 +154,7 @@ export type SimRequest = {
 export type SimResult = Awaited<ReturnType<typeof runSimulation>>;
 export type BlindDeps = {
   repoRoot: string;
-  period: Window; // kỳ mù B thật mặc định; kiểm thử truyền cửa sổ giả
+  period?: Window; // bỏ trống = cửa sổ thật của kỳ mù ứng với tệp khóa; kiểm thử truyền cửa sổ giả
   git: (args: string[]) => string;
   now: () => Date;
   log: (m: string) => void;
@@ -194,9 +197,12 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
   const lock = parseLock(text);
   const lockSha = sha256(text);
   const lockRel = relative(d.repoRoot, lockPath).split(sep).join('/');
-  // 2. Thủ tục mở kỳ mù (cùng cổng với replay.ts / runSimulation) — trước mọi ghi tệp
+  // 2. Kỳ mù theo tệp khóa + thủ tục mở kỳ mù (cùng cổng với replay.ts / runSimulation) — trước mọi ghi tệp
   const auth: BlindAuth = { blind: true, lockFile: a.lock };
-  assertWindowAllowed(d.period, auth);
+  const bp = blindPeriodOfLock(lockRel); // đường dẫn tương đối gốc repo, so với BLIND_PERIODS[].lockFile
+  const window: Window | null = d.period ?? (bp === null ? null : { start: bp.start, end: bp.end });
+  if (window !== null) assertWindowAllowed(window, auth);
+  if (bp === null || window === null) throw new Error(`Từ chối: ${lockRel} không phải tệp khóa của kỳ mù nào (B: docs/verification/khoa-luat-mo-phong-mu.md, C: docs/verification/khoa-luat-mo-phong-mu-C.md)`);
   // 3. Mã đã khóa
   const head = d.git(['rev-parse', 'HEAD']).trim();
   if (head !== lock.lockedCommit) throw new Error(`Từ chối: HEAD ${head} khác lockedCommit ${lock.lockedCommit}`);
@@ -207,9 +213,9 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
   // 4. Ứng viên: biến thể hợp lệ (kiểm hết trước khi chạy)
   const effective = new Map(lock.candidates.map((c) => [c.id, effectiveSpec(c)]));
   // 5. Một lần mỗi ứng viên
-  const outRoot = join(d.repoRoot, 'output/blind');
+  const outRoot = join(d.repoRoot, bp.outDir); // RIÊNG từng kỳ
   const dirOf = (id: string) => join(outRoot, id);
-  // 5a. B chỉ một lần cho MỌI tệp khóa: mọi thư mục đã có trong output/blind/ phải là của ĐÚNG tệp khóa này (cùng nội dung, SHA, configHash, id)
+  // 5a. Mỗi kỳ chỉ một lần cho MỌI tệp khóa: mọi thư mục đã có trong thư mục của kỳ phải là của ĐÚNG tệp khóa này (cùng nội dung, SHA, configHash, id)
   const ids = new Set(lock.candidates.map((c) => c.id));
   for (const name of existsSync(outRoot) ? readdirSync(outRoot).sort() : []) {
     const mp = join(outRoot, name, 'started.json');
@@ -220,7 +226,7 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
     if (m.lockedCommit !== lock.lockedCommit) why.push(`lockedCommit ${m.lockedCommit} ≠ ${lock.lockedCommit}`);
     if (m.configHash !== lock.configHash) why.push(`configHash ${m.configHash} ≠ ${lock.configHash}`);
     if (m.lockSha256 !== lockSha) why.push(`tệp khóa khác (sha256 ${m.lockSha256} ≠ ${lockSha})`);
-    if (why.length > 0) throw new Error(`Từ chối: kỳ mù B đã chạy dưới tệp khóa khác (${mp}): ${why.join('; ')} — B chỉ chạy một lần, không tệp khóa mới nào được chạy`);
+    if (why.length > 0) throw new Error(`Từ chối: kỳ mù ${bp.id} đã chạy dưới tệp khóa khác (${mp}): ${why.join('; ')} — ${bp.id} chỉ chạy một lần, không tệp khóa mới nào được chạy`);
   }
   const rerun = a.rerunAfterCrash;
   let todo = lock.candidates;
@@ -250,22 +256,22 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
     const mp = join(dir, 'started.json');
     const prev: Attempt[] = existsSync(mp) ? readMarker(mp).attempts : [];
     const isRerun = rerun === c.id;
-    const marker: Marker = { candidate: c, lockedCommit: lock.lockedCommit, configHash: hash, lockSha256: lockSha, inputs, window: { start: iso(d.period.start), end: iso(d.period.end) },
+    const marker: Marker = { candidate: c, lockedCommit: lock.lockedCommit, configHash: hash, lockSha256: lockSha, inputs, window: { start: iso(window.start), end: iso(window.end) },
       attempts: [...prev, { startedAt: d.now().toISOString(), rerunAfterCrash: isRerun }] };
     writeFileSync(mp, JSON.stringify(marker, null, 2)); // TRƯỚC khi mô phỏng
     const eff = effective.get(c.id)!;
     writeFileSync(join(dir, 'effective.json'), JSON.stringify(eff, null, 2));
     d.log(`[${c.id}] bắt đầu: ${c.mode} ${c.filter} ${c.policy} biến thể ${c.variant}${isRerun ? ' (CHẠY LẠI SAU KHI ĐỔ)' : ''}`);
-    const req: SimRequest = { candidate: c, mode: c.mode, window: { ...d.period }, filter: eff.filter, policy: eff.policy, capital: lock.capital,
+    const req: SimRequest = { candidate: c, mode: c.mode, window: { ...window }, filter: eff.filter, policy: eff.policy, capital: lock.capital,
       pauseHours: lock.pauseHours, configOverride: eff.configOverride, auth };
     const res = await d.simulate(req);
-    writeOutputs(dir, req, res, { lockedCommit: lock.lockedCommit, configHash: hash, criteria: lock.criteria, rerunAfterCrash: isRerun, attempts: marker.attempts,
+    writeOutputs(dir, req, res, bp.name, { blindPeriod: bp.id, lockedCommit: lock.lockedCommit, configHash: hash, criteria: lock.criteria, rerunAfterCrash: isRerun, attempts: marker.attempts,
       lockFile: a.lock, lockSha256: lockSha, inputs, finishedAt: d.now().toISOString() });
     d.log(`[${c.id}] xong → ${dir}`);
   }
 }
 
-function writeOutputs(dir: string, req: SimRequest, res: SimResult, meta: Record<string, unknown>): void {
+function writeOutputs(dir: string, req: SimRequest, res: SimResult, period: string, meta: Record<string, unknown>): void {
   writeFileSync(join(dir, 'trades.jsonl'), res.done.map((r) => JSON.stringify(r)).join('\n') + (res.done.length > 0 ? '\n' : ''));
   const curve = res.book.curve.filter((_, i, arr) => i === arr.length - 1 || arr[i + 1]!.t !== arr[i]!.t);
   writeFileSync(join(dir, 'equity.json'), JSON.stringify(curve));
@@ -273,7 +279,7 @@ function writeOutputs(dir: string, req: SimRequest, res: SimResult, meta: Record
   const filled = res.done.filter((r) => r.filled);
   const worst = filled.reduce<(typeof filled)[number] | null>((w, r) => (w === null || r.pctEquity < w.pctEquity ? r : w), null);
   const opts = { mode: req.mode, window: req.window, filter: req.filter, policy: req.policy, capital: req.capital, pauseHours: req.pauseHours, dir: '' };
-  const summary = { ...report(res, opts), period: 'blind', blind: { candidate: req.candidate, configOverride: req.configOverride, ...meta } };
+  const summary = { ...report(res, opts), period, blind: { candidate: req.candidate, configOverride: req.configOverride, ...meta } };
   const stats = {
     boot: BOOT,
     overall: computeStats(trades, { ...BOOT, equity: { capital: req.capital, curve: res.book.curve } }),
@@ -293,10 +299,10 @@ async function main() {
     dir: { type: 'string', default: 'data/cache' },
   } });
   if (v['print-config-hash']) { console.log(configHash()); return; }
-  if (v.lock === undefined) throw new Error('thiếu --lock docs/verification/khoa-luat-mo-phong-mu.md');
+  if (v.lock === undefined) throw new Error('thiếu --lock docs/verification/khoa-luat-mo-phong-mu.md (kỳ B) hoặc --lock docs/verification/khoa-luat-mo-phong-mu-C.md (kỳ C)');
   const dir = v.dir!;
   const deps: BlindDeps = {
-    repoRoot: REPO_ROOT, period: { ...BLIND_PERIOD },
+    repoRoot: REPO_ROOT, // cửa sổ = kỳ mù của tệp khóa (runBlind tự xác định)
     git: (args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }),
     now: () => new Date(),
     log: (m) => console.log(m),

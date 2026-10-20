@@ -151,7 +151,14 @@ const list: Variant[] = [
       'COMMON.entryRules.shortAsym': true, 'COMMON.entryRules.fundingXsPct': 70 }, { modes: ['swing'] }),
   wired('p8-funding-xs70', 8, '#8 lọc funding mặt cắt ngang: Long khi phân vị funding TB 7 ngày ≤ 70%, Short khi ≥ 70%',
     `${RESEARCH} #8 — basis/carry là tín hiệu mặt cắt ngang`, {}, { 'COMMON.entryRules.fundingXsPct': 70 }, { modes: ['swing'] }),
+  // Lần thử #17, luật người dùng duyệt TRƯỚC khi chạy (20/10/2026): "Chỉ vào lệnh khi hỗ trợ/kháng cự đã rõ ràng và được xác nhận" — tham số
+  // ở COMMON.zones.clean / COMMON.zones.confirm, không chỉnh sau khi xem kết quả. Nguồn: research_notes/Luật giao dịch của quỹ lớn/sr_audit_data.md
+  wired('sr-confirm', null,
+    'luật S/R: vùng "clean" (gom pivot bằng ATR từng khung, rộng ≥ 0,25×ATR, bỏ vùng cũ/bị phá, lật vai trò, HVN 60 ngày, độ mạnh = số lần bật, 3 vùng/phía) + chỉ vào khi nến 4H đã đóng chạm vùng mạnh ≥ 2, đóng lại, râu ≥ 50%, taker đúng phía; SL ngoài vùng 0,25×ATR, TP1 = vùng đối diện mạnh ≥ 2',
+    'kiểm toán S/R 20/10/2026: vùng cũ không giữ giá hơn mức ngẫu nhiên (70,1% vs 70,2%), không có xác nhận trước khi vào — luật đăng ký trước', {},
+    { 'COMMON.zones.method': 'clean', 'COMMON.entryRules.srConfirm': true }, { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
   costSensitivity('cost-cal-f1', 'f1-funding-fix', 'swing'),
+  costSensitivity('cost-cal-sr', 'sr-confirm', 'swing'),
   costSensitivity('cost-cal-combo', 'combo-loc', 'swing'),
   costSensitivity('cost-cal-p2fast', 'p2-fast-4h', 'fast'),
   costSensitivity('cost-cal-base', 'baseline', 'fast'),

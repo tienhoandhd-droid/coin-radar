@@ -9,6 +9,7 @@ import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { HOUR, MINUTE, INTERVAL_MS, loadCandles, type Interval } from './data.ts';
 import {
   previousBlindRuns, signalDedupeKey, DEV_PERIOD, BLIND_PERIOD, LOCK_FILE, resolvePeriod, createReplay, decisionTimes, fundingAt, tickersAt, spreadPctAt, booksAt, markAt,
+  BLIND_C_PERIOD, LOCK_FILE_C, assertWindowAllowed, blindPeriodsOverlapping, blindPeriodOfLock,
   type FundingRow,
 } from './replay.ts';
 
@@ -132,6 +133,50 @@ test('createReplay: cửa sổ chạm kỳ mù mà không được phép → t�
   const r = createReplay({ ...base, window: DEV_PERIOD });
   await assert.rejects(r.replayStep(BLIND_PERIOD.start, EMPTY), /ngoài cửa sổ/);
   await assert.rejects(r.replayStep(DEV_PERIOD.start - HOUR, EMPTY), /ngoài cửa sổ/);
+});
+
+// ---------- Kỳ mù C ----------
+test('kỳ C: [2026-01-01, 2026-06-21), kết thúc đúng lúc D bắt đầu; tệp khóa riêng', () => {
+  assert.equal(BLIND_C_PERIOD.start, Date.parse('2026-01-01T00:00:00Z'));
+  assert.equal(BLIND_C_PERIOD.end, Date.parse('2026-06-21T00:00:00Z'));
+  assert.equal(BLIND_C_PERIOD.end, DEV_PERIOD.start);
+  assert.equal(LOCK_FILE_C, 'docs/verification/khoa-luat-mo-phong-mu-C.md');
+  assert.equal(blindPeriodOfLock(LOCK_FILE_C)?.id, 'C');
+  assert.equal(blindPeriodOfLock('./' + LOCK_FILE)?.id, 'B');
+  assert.equal(blindPeriodOfLock('docs/khac.md'), null);
+});
+
+test('blindPeriodsOverlapping: chạm kỳ mù dù 1 ms; chạm mép (end = start) thì không', () => {
+  const ids = (w: { start: number; end: number }) => blindPeriodsOverlapping(w).map((p) => p.id);
+  const C = BLIND_C_PERIOD;
+  assert.deepEqual(ids(DEV_PERIOD), []);
+  assert.deepEqual(ids(C), ['C']);
+  assert.deepEqual(ids({ start: C.start - 10 * HOUR, end: C.start }), []); // kết thúc đúng lúc C bắt đầu
+  assert.deepEqual(ids({ start: C.start - 10 * HOUR, end: C.start + 1 }), ['C']);
+  assert.deepEqual(ids({ start: C.end - 1, end: DEV_PERIOD.start + HOUR }), ['C']); // 1 ms cuối của C
+  assert.deepEqual(ids({ start: C.start + HOUR, end: C.start + 2 * HOUR }), ['C']); // nằm trong
+  assert.deepEqual(ids({ start: C.start - HOUR, end: BLIND_PERIOD.end + HOUR }), ['B', 'C']); // trùm cả hai
+});
+
+test('kỳ C bị TỪ CHỐI nếu thiếu --blind, thiếu/sai tệp khóa (kể cả tệp khóa của B), hoặc tệp chưa tồn tại', () => {
+  const yes = () => true, no = () => false;
+  assert.throws(() => resolvePeriod('blind-c', { blind: false, lockFile: LOCK_FILE_C }, yes), /kỳ mù C.*--blind/);
+  assert.throws(() => resolvePeriod('blind-c', { blind: true, lockFile: null }, yes), /kỳ mù C.*khóa luật/);
+  assert.throws(() => resolvePeriod('blind-c', { blind: true, lockFile: LOCK_FILE }, yes), /kỳ mù C.*khoa-luat-mo-phong-mu-C\.md/);
+  assert.throws(() => resolvePeriod('blind-c', { blind: true, lockFile: LOCK_FILE_C }, no), /kỳ mù C.*chưa tồn tại/);
+  assert.deepEqual(resolvePeriod('blind-c', { blind: true, lockFile: LOCK_FILE_C }, yes), { name: 'blind-c', ...BLIND_C_PERIOD });
+  // tệp khóa của C không mở được B
+  assert.throws(() => resolvePeriod('blind', { blind: true, lockFile: LOCK_FILE_C }, yes), /kỳ mù B/);
+  // cửa sổ chỉ cần chạm C (không cần là cả kỳ) cũng phải qua thủ tục C
+  const edge = { start: BLIND_C_PERIOD.end - HOUR, end: DEV_PERIOD.start + HOUR };
+  assert.throws(() => assertWindowAllowed(edge, undefined, yes), /kỳ mù C/);
+  assert.throws(() => assertWindowAllowed(edge, { blind: true, lockFile: LOCK_FILE }, yes), /kỳ mù C/);
+  assertWindowAllowed(edge, { blind: true, lockFile: LOCK_FILE_C }, yes);
+  assertWindowAllowed(DEV_PERIOD, undefined, no);
+  // createReplay / runSimulation dùng cùng cổng
+  const base = { dir: '/nonexistent', mode: 'swing' as const, contracts: CONTRACTS, events: EVENTS, capital: 1000, limit: null };
+  assert.throws(() => createReplay({ ...base, window: BLIND_C_PERIOD }), /kỳ mù C/);
+  assert.throws(() => createReplay({ ...base, window: BLIND_C_PERIOD, auth: { blind: true, lockFile: LOCK_FILE }, exists: yes }), /kỳ mù C/);
 });
 
 test('decisionTimes: Swing mỗi giờ, Lướt nhanh mỗi lần đóng nến 15m, trong [start, end)', () => {
@@ -351,6 +396,11 @@ test('previousBlindRuns: kỳ mù chỉ chạy một lần mỗi chế độ', (
     mkdirSync(join(root, 'replay-swing-blind-2026'));
     assert.deepEqual(previousBlindRuns(root, 'swing'), ['replay-swing-blind-2026']);
     assert.deepEqual(previousBlindRuns(root, 'fast'), []);
+    // marker riêng từng kỳ: lần chạy C không bị tính là B và ngược lại
+    assert.deepEqual(previousBlindRuns(root, 'swing', 'blind-c'), []);
+    mkdirSync(join(root, 'replay-swing-blind-c-2026'));
+    assert.deepEqual(previousBlindRuns(root, 'swing', 'blind-c'), ['replay-swing-blind-c-2026']);
+    assert.deepEqual(previousBlindRuns(root, 'swing', 'blind'), ['replay-swing-blind-2026']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

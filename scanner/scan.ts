@@ -76,6 +76,9 @@ for (const side of ['long', 'short'] as const) {
   for (const a of top(side)) {
     const failed = a.gates.filter((g) => !g.pass).map((g) => g.code).join(',') || '—';
     console.log(`  ${a.symbol.padEnd(16)} ${String(a.best.score).padStart(5)}  ${a.label.padEnd(18)} rủi ro ${a.risk.tier.padEnd(7)} cổng trượt: ${failed}`);
+    // Luật S/R xác nhận: in lý do của kế hoạch vùng (G-12) — vd. "Không có hỗ trợ rõ ràng (vùng mạnh ≥ 2) / chưa có nến xác nhận: …"
+    const g12 = a.gates.find((g) => g.code === 'G-12');
+    if (COMMON.entryRules.srConfirm && mode === 'swing' && g12 !== undefined && !g12.pass) console.log(`      S/R: ${g12.note}`);
   }
 }
 

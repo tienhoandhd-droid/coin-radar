@@ -7,7 +7,7 @@ import {
   parseLock, configHash, canonicalJson, runBlind, effectiveSpec, type BlindDeps, type Lock, type SimRequest,
 } from './blind-run.ts';
 import { stackRun, BASELINE_SPEC, VARIANTS } from './experiment.ts';
-import { BLIND_PERIOD, DEV_PERIOD, LOCK_FILE } from './replay.ts';
+import { BLIND_C_PERIOD, BLIND_PERIOD, DEV_PERIOD, LOCK_FILE, LOCK_FILE_C } from './replay.ts';
 import { createBook, bookFlow, bookClose, type TradeRecord } from './simulate.ts';
 import type { runSimulation } from './simulate-run.ts';
 
@@ -290,6 +290,69 @@ test('marker và summary ghi sha256 tệp khóa + ảnh chụp đầu vào (thư
   const sum = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-base/summary.json'), 'utf8'));
   assert.equal(sum.blind.lockSha256, m.lockSha256);
   assert.deepEqual(sum.blind.inputs, m.inputs);
+});
+
+// ---------------------------------------------------------------- kỳ mù C: marker riêng ----------------------------------------------
+// Thế giới có CẢ hai tệp khóa; mô phỏng giả ghi lại thư mục marker của kỳ để kiểm marker có TRƯỚC khi chạy
+function worldBC(): World {
+  const w = world();
+  writeFileSync(join(w.root, LOCK_FILE_C), md(lockObj()));
+  w.deps.simulate = async (req) => {
+    w.calls.push(req);
+    const inB = existsSync(join(w.root, 'output/blind', req.candidate.id, 'started.json'));
+    const inC = existsSync(join(w.root, 'output/blind-C', req.candidate.id, 'started.json'));
+    assert.ok(inB || inC, 'marker phải ghi trước khi chạy');
+    return fakeResult(req.capital);
+  };
+  return w;
+}
+
+test('kỳ C: marker riêng — B đã chạy không chặn C; C ghi vào output/blind-C và chỉ chạy một lần', async () => {
+  const w = worldBC();
+  await runBlind(args, w.deps); // B (cửa sổ giả)
+  assert.equal(w.calls.length, 2);
+  await runBlind({ lock: LOCK_FILE_C }, w.deps); // C không bị marker của B chặn
+  assert.equal(w.calls.length, 4);
+  for (const id of ['swing-base', 'swing-tp1']) {
+    assert.ok(existsSync(join(w.root, 'output/blind-C', id, 'summary.json')));
+    const sum = JSON.parse(readFileSync(join(w.root, 'output/blind-C', id, 'summary.json'), 'utf8'));
+    assert.equal(sum.period, 'blind-c');
+    assert.equal(sum.blind.blindPeriod, 'C');
+    assert.equal(JSON.parse(readFileSync(join(w.root, 'output/blind', id, 'summary.json'), 'utf8')).period, 'blind');
+  }
+  await assert.rejects(runBlind({ lock: LOCK_FILE_C }, w.deps), /đã chạy/); // C lần hai
+  await assert.rejects(runBlind(args, w.deps), /đã chạy/); // B lần hai
+  assert.equal(w.calls.length, 4);
+});
+
+test('kỳ C: một lần TOÀN CỤC theo kỳ — đã có lần chạy C dưới tệp khóa khác → từ chối C, B vẫn chạy được', async () => {
+  const w = worldBC();
+  writeFileSync(join(w.root, LOCK_FILE_C), md(lockObj({ candidates: [lockObj().candidates[0]!] })));
+  await runBlind({ lock: LOCK_FILE_C }, w.deps);
+  writeFileSync(join(w.root, LOCK_FILE_C), md(lockObj()));
+  await assert.rejects(runBlind({ lock: LOCK_FILE_C }, w.deps), /kỳ mù C đã chạy dưới tệp khóa khác/);
+  assert.equal(w.calls.length, 1);
+  await runBlind(args, w.deps); // marker của C không chặn B
+  assert.equal(w.calls.length, 3);
+});
+
+test('kỳ C: cửa sổ C thật với tệp khóa của B, hoặc tệp khóa không thuộc kỳ nào → từ chối TRƯỚC khi ghi marker/chạy', async () => {
+  const w = worldBC();
+  w.deps.period = { ...BLIND_C_PERIOD };
+  await assert.rejects(runBlind(args, w.deps), /Từ chối chạy trên kỳ mù C/);
+  delete w.deps.period;
+  writeFileSync(join(w.root, 'docs/khac.md'), md(lockObj()));
+  await assert.rejects(runBlind({ lock: 'docs/khac.md' }, w.deps), /không phải tệp khóa của kỳ mù nào/);
+  assert.equal(w.calls.length, 0);
+  assert.equal(existsSync(join(w.root, 'output')), false);
+});
+
+test('runSimulation: cửa sổ chạm C mà không có auth (hoặc auth của B) → ném lỗi', async () => {
+  const { runSimulation } = await import('./simulate-run.ts');
+  const base = { dir: '/khong/co', mode: 'swing' as const, window: { start: BLIND_C_PERIOD.end - H, end: BLIND_C_PERIOD.end + H }, filter: 'all' as const,
+    policy: 'C2' as const, capital: 1000, pauseHours: 24, contracts: [], events: [], fetcher: null, log: () => {} };
+  await assert.rejects(runSimulation(base), /Từ chối chạy trên kỳ mù C/);
+  await assert.rejects(runSimulation({ ...base, auth: { blind: true, lockFile: LOCK_FILE } }), /kỳ mù C.*tệp khóa luật phải là/);
 });
 
 // ---------------------------------------------------------------- chạy đúng ---------------------------------------------------------

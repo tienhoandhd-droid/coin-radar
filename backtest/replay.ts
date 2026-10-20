@@ -3,6 +3,7 @@
 //
 //   node backtest/replay.ts --period dev --mode swing|fast [--limit N] [--from ISO] [--to ISO] [--capital 1000] [--dir data/cache]
 //   Kỳ mù B chỉ chạy được với: --period blind --blind --lock docs/verification/khoa-luat-mo-phong-mu.md (tệp phải tồn tại).
+//   Kỳ mù C chỉ chạy được với: --period blind-c --blind --lock docs/verification/khoa-luat-mo-phong-mu-C.md (tệp phải tồn tại).
 //
 // QUY ƯỚC THAY THẾ (không có lịch sử thật — ghi rõ để đọc kết quả đúng):
 //  1. Nến: chỉ nến có closeTime < t (isClosed — cùng ranh giới với máy quét), tối đa `limit − 1` nến gần nhất: máy quét gọi
@@ -40,41 +41,63 @@ import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } f
 import { HOUR, MINUTE, DAY, INTERVAL_MS, loadCandles, needFrom, planRange, type Interval } from './data.ts';
 import { meanFundingRate } from '../packages/core/sizing.ts';
 
-// ---- Kỳ phát triển D / kỳ mù B (docs/superpowers/plans/2026-10-19-ke-hoach-2-doi-chung-du-lieu-that.md, "Quy trình mô phỏng MÙ") ----
+// ---- Kỳ phát triển D / kỳ mù B, C (docs/superpowers/plans/2026-10-19-ke-hoach-2-doi-chung-du-lieu-that.md, "Quy trình mô phỏng MÙ") ----
 export const DATA_END = Date.UTC(2026, 9, 19); // mốc cuối của bộ đệm (backtest/fetch.ts --end mặc định)
 export const DEV_PERIOD = { start: Date.UTC(2026, 5, 21), end: Date.UTC(2026, 8, 19) };
-export const BLIND_PERIOD = { start: Date.UTC(2026, 8, 19), end: DATA_END };
+export const BLIND_PERIOD = { start: Date.UTC(2026, 8, 19), end: DATA_END }; // kỳ mù B (đã dùng)
+// Kỳ mù C (người dùng duyệt 20/10/2026): nửa đầu 2026, ngay TRƯỚC kỳ D — bảo vệ y như B, tệp khóa và marker riêng
+export const BLIND_C_PERIOD = { start: Date.UTC(2026, 0, 1), end: Date.UTC(2026, 5, 21) };
 export const LOCK_FILE = 'docs/verification/khoa-luat-mo-phong-mu.md';
+export const LOCK_FILE_C = 'docs/verification/khoa-luat-mo-phong-mu-C.md';
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 export type Window = { start: number; end: number };
 export type BlindAuth = { blind: boolean; lockFile: string | null };
 type Exists = (path: string) => boolean;
 
-// Kỳ mù chỉ mở khi có ĐỦ: cờ --blind + đường dẫn đúng tệp khóa luật + tệp đó tồn tại (luật đã khóa: commit SHA + bản sao config).
-function checkBlindAuth(auth: BlindAuth | undefined, exists: Exists): void {
-  const why = `kỳ mù B [${new Date(BLIND_PERIOD.start).toISOString()}, ${new Date(BLIND_PERIOD.end).toISOString()})`;
-  if (!auth?.blind) throw new Error(`Từ chối chạy trên ${why}: cần cờ --blind và --lock ${LOCK_FILE} (chỉ chạy B đúng một lần sau khi khóa luật)`);
-  if (auth.lockFile === null || auth.lockFile === '') throw new Error(`Từ chối chạy trên ${why}: thiếu tệp khóa luật (--lock ${LOCK_FILE})`);
-  const given = isAbsolute(auth.lockFile) ? normalize(auth.lockFile) : normalize(join(REPO_ROOT, auth.lockFile));
-  const want = normalize(join(REPO_ROOT, LOCK_FILE));
-  if (given !== want) throw new Error(`Từ chối chạy trên ${why}: tệp khóa luật phải là ${LOCK_FILE}, nhận "${auth.lockFile}"`);
-  if (!exists(want)) throw new Error(`Từ chối chạy trên ${why}: tệp khóa luật ${LOCK_FILE} chưa tồn tại — khóa luật trước (commit SHA + bản sao config.ts)`);
+// Mỗi kỳ mù: tên kỳ cho --period, tệp khóa luật riêng, thư mục kết quả blind-run riêng (marker "một lần" tách theo kỳ).
+// B giữ output/blind (đã có marker từ lần chạy B) — không đổi đường dẫn cũ.
+export type BlindPeriod = Window & { id: 'B' | 'C'; name: 'blind' | 'blind-c'; lockFile: string; outDir: string };
+export const BLIND_PERIODS: readonly BlindPeriod[] = [
+  { id: 'B', name: 'blind', ...BLIND_PERIOD, lockFile: LOCK_FILE, outDir: 'output/blind' },
+  { id: 'C', name: 'blind-c', ...BLIND_C_PERIOD, lockFile: LOCK_FILE_C, outDir: 'output/blind-C' },
+];
+
+const overlaps = (w: Window, p: Window) => w.start < p.end && w.end > p.start;
+const absPath = (path: string) => (isAbsolute(path) ? normalize(path) : normalize(join(REPO_ROOT, path)));
+
+// Các kỳ mù mà cửa sổ chạm vào (dù 1 ms).
+export function blindPeriodsOverlapping(w: Window): BlindPeriod[] {
+  return BLIND_PERIODS.filter((p) => overlaps(w, p));
 }
 
-export function resolvePeriod(name: string, auth: BlindAuth, exists: Exists = existsSync): { name: 'dev' | 'blind' } & Window {
+// Kỳ mù ứng với một tệp khóa luật (so đường dẫn đã chuẩn hóa); null nếu tệp không phải tệp khóa của kỳ nào.
+export function blindPeriodOfLock(lockFile: string): BlindPeriod | null {
+  return BLIND_PERIODS.find((p) => absPath(p.lockFile) === absPath(lockFile)) ?? null;
+}
+
+// Kỳ mù chỉ mở khi có ĐỦ: cờ --blind + đường dẫn đúng tệp khóa luật CỦA KỲ ĐÓ + tệp đó tồn tại (luật đã khóa: commit SHA + bản sao config).
+function checkBlindAuth(p: BlindPeriod, auth: BlindAuth | undefined, exists: Exists): void {
+  const why = `kỳ mù ${p.id} [${new Date(p.start).toISOString()}, ${new Date(p.end).toISOString()})`;
+  if (!auth?.blind) throw new Error(`Từ chối chạy trên ${why}: cần cờ --blind và --lock ${p.lockFile} (chỉ chạy ${p.id} đúng một lần sau khi khóa luật)`);
+  if (auth.lockFile === null || auth.lockFile === '') throw new Error(`Từ chối chạy trên ${why}: thiếu tệp khóa luật (--lock ${p.lockFile})`);
+  const want = absPath(p.lockFile);
+  if (absPath(auth.lockFile) !== want) throw new Error(`Từ chối chạy trên ${why}: tệp khóa luật phải là ${p.lockFile}, nhận "${auth.lockFile}"`);
+  if (!exists(want)) throw new Error(`Từ chối chạy trên ${why}: tệp khóa luật ${p.lockFile} chưa tồn tại — khóa luật trước (commit SHA + bản sao config.ts)`);
+}
+
+export function resolvePeriod(name: string, auth: BlindAuth, exists: Exists = existsSync): { name: 'dev' | BlindPeriod['name'] } & Window {
   if (name === 'dev') return { name: 'dev', ...DEV_PERIOD };
-  if (name === 'blind') {
-    checkBlindAuth(auth, exists);
-    return { name: 'blind', ...BLIND_PERIOD };
-  }
-  throw new Error(`kỳ không hợp lệ: "${name}" (dev | blind)`);
+  const p = BLIND_PERIODS.find((x) => x.name === name);
+  if (p === undefined) throw new Error(`kỳ không hợp lệ: "${name}" (dev | ${BLIND_PERIODS.map((x) => x.name).join(' | ')})`);
+  checkBlindAuth(p, auth, exists);
+  return { name: p.name, start: p.start, end: p.end };
 }
 
-// Cửa sổ chạm kỳ mù (dù 1 ms) → phải qua đúng thủ tục mở kỳ mù.
+// Cửa sổ chạm bất kỳ kỳ mù nào (dù 1 ms) → phải qua đúng thủ tục mở kỳ mù đó (tệp khóa của chính kỳ đó).
 export function assertWindowAllowed(w: Window, auth: BlindAuth | undefined, exists: Exists = existsSync): void {
   if (!(w.start < w.end)) throw new Error(`cửa sổ phát lại rỗng [${w.start}, ${w.end})`);
-  if (w.start < BLIND_PERIOD.end && w.end > BLIND_PERIOD.start) checkBlindAuth(auth, exists);
+  for (const p of blindPeriodsOverlapping(w)) checkBlindAuth(p, auth, exists);
 }
 
 // Mốc quyết định: Swing mỗi giờ; Lướt nhanh mỗi lần đóng nến 15m. t = openTime nến kế tiếp (thời điểm sớm nhất nến trước được coi là đóng).
@@ -184,7 +207,8 @@ export type ReplayOptions = {
 
 export function createReplay(o: ReplayOptions) {
   assertWindowAllowed(o.window, o.auth, o.exists ?? existsSync);
-  const oos = planRange(DATA_END).oosStart;
+  // Khởi động tính từ mốc sớm hơn giữa oosStart (D/B) và đầu cửa sổ (kỳ C nằm trước D) — D/B không đổi
+  const oos = Math.min(planRange(DATA_END).oosStart, o.window.start);
   const fromOf = (iv: Interval) => o.dataFrom?.[iv] ?? needFrom(iv, oos);
   const store = new Map<string, Candle[] | Error>();
   const funding = new Map<string, FundingRow[] | Error>();
@@ -299,10 +323,12 @@ export function signalDedupeKey(s: { symbol: string; signalId: string | null; pa
   return `${s.symbol}|zone|${s.signalId}`;
 }
 
-// Kỳ mù chỉ chạy ĐÚNG MỘT LẦN mỗi chế độ: đã có thư mục đầu ra replay-<mode>-blind-* → từ chối lần chạy sau.
-export function previousBlindRuns(outRoot: string, mode: Mode): string[] {
+// Kỳ mù chỉ chạy ĐÚNG MỘT LẦN mỗi chế độ, RIÊNG từng kỳ: đã có replay-<mode>-<kỳ>-<mốc giờ> → từ chối lần chạy sau.
+// Sau tên kỳ phải là chữ số (mốc giờ) để "blind" không khớp nhầm thư mục của "blind-c".
+export function previousBlindRuns(outRoot: string, mode: Mode, period: BlindPeriod['name'] = 'blind'): string[] {
   if (!existsSync(outRoot)) return [];
-  return readdirSync(outRoot).filter((n) => n.startsWith(`replay-${mode}-blind-`)).sort();
+  const prefix = `replay-${mode}-${period}-`;
+  return readdirSync(outRoot).filter((n) => n.startsWith(prefix) && /^\d/.test(n.slice(prefix.length))).sort();
 }
 
 // ---- CLI ----
@@ -363,8 +389,8 @@ async function main() {
   const capital = Number(v.capital);
   if (!Number.isFinite(capital) || capital <= 0) throw new Error(`--capital không hợp lệ: "${v.capital}"`);
   const period = resolvePeriod(v.period!, { blind: v.blind!, lockFile: v.lock ?? null });
-  if (period.name === 'blind') {
-    const prior = previousBlindRuns(resolve(REPO_ROOT, 'output/backtest'), mode);
+  if (period.name !== 'dev') {
+    const prior = previousBlindRuns(resolve(REPO_ROOT, 'output/backtest'), mode, period.name);
     if (prior.length > 0) throw new Error(`Từ chối: kỳ mù chỉ chạy đúng một lần, đã có ${prior.join(', ')}`);
   }
   const parseIso = (raw: string, name: string) => {

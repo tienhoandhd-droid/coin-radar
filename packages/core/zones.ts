@@ -139,3 +139,68 @@ export function describeZone(z: Zone, tickSize?: number): string {
 export function skippedZoneLine(z: Zone, tickSize?: number): string {
   return `bỏ qua vùng ${describeZoneRange(z, tickSize)} (độ mạnh ${String(z.strength).replace('.', ',')}) — TP1 lấy vùng kế tiếp`;
 }
+
+// ---- Luật S/R xác nhận (COMMON.entryRules.srConfirm) và nhãn vùng ----
+
+// Nhãn độ mạnh của vùng 'clean' (độ mạnh = số lần bật đã xác nhận + 1 nếu có HVN hoặc hợp lưu 1D + 4H — zones-clean.ts):
+//   Yếu ≤ 1 | Trung bình = 2 | Mạnh ≥ 3
+export function strengthLabel(strength: number): 'Yếu' | 'Trung bình' | 'Mạnh' {
+  if (strength >= 3) return 'Mạnh';
+  if (strength >= 2) return 'Trung bình';
+  return 'Yếu';
+}
+
+// Vai trò theo giá hiện tại: nằm HẲN dưới giá = Hỗ trợ; nằm HẲN trên giá = Kháng cự; chứa giá = không thuộc phía nào (không vào lệnh)
+export function zoneRole(z: Zone, price: number): 'Hỗ trợ' | 'Kháng cự' | 'Vùng chứa giá' {
+  if (z.high < price) return 'Hỗ trợ';
+  if (z.low > price) return 'Kháng cự';
+  return 'Vùng chứa giá';
+}
+
+// "Hỗ trợ 1,20–1,25 (Trung bình, độ mạnh 2; đáy 4H ×2, hvn)" — dùng trong lý do của kế hoạch khi bật srConfirm
+export function describeZoneSr(z: Zone, price: number, tickSize?: number): string {
+  return `${zoneRole(z, price)} ${describeZoneRange(z, tickSize)} (${strengthLabel(z.strength)}, độ mạnh ${String(z.strength).replace('.', ',')}; ${z.sources.join(', ')})`;
+}
+
+export type SrConfirmation = { zone: Zone | null; reason: string };
+
+// Nến xác nhận (nến khung vào lệnh ĐÃ ĐÓNG cuối cùng) tại vùng mạnh, theo COMMON.zones.confirm:
+//   Long : low chạm một HỖ TRỢ độ mạnh ≥ 2 (low ≤ zone.high), đóng cửa TRÊN zone.high, râu dưới ≥ 50% biên độ, taker mua ≥ 0,5
+//   Short: high chạm một KHÁNG CỰ độ mạnh ≥ 2 (high ≥ zone.low), đóng cửa DƯỚI zone.low, râu trên ≥ 50% biên độ, taker mua ≤ 0,5
+//   Thêm: nến xác nhận KHÔNG được chạm mức SL (Long: low > zone.low − slBufferAtr×ATR; Short: high < zone.high + slBufferAtr×ATR) —
+//   nến đã xuyên qua mức SL thì SL sẽ nằm trong chính nến xác nhận, không phải "ngoài vùng". atrEntry = ATR(14) khung vào lệnh.
+// Hỗ trợ/kháng cự xét theo giá hiện tại `price`. Nhiều vùng thỏa → lấy vùng gần giá nhất. Không có → zone = null + lý do tiếng Việt.
+export function confirmedZone(zones: Zone[], bar: Candle, price: number, side: Side, atrEntry: number, tickSize?: number): SrConfirmation {
+  const cfg = COMMON.zones.confirm;
+  const sideWord = side === 'long' ? 'hỗ trợ' : 'kháng cự';
+  const head = `Không có ${sideWord} rõ ràng (vùng mạnh ≥ ${cfg.minStrength}) / chưa có nến xác nhận`;
+  const strong = stopSideZones(zones, price, side).filter((z) => z.strength >= cfg.minStrength);
+  if (strong.length === 0) return { zone: null, reason: `${head}: không có vùng ${sideWord} nào độ mạnh ≥ ${cfg.minStrength}` };
+  const touched = strong.filter((z) => (side === 'long' ? bar.low <= z.high : bar.high >= z.low));
+  if (touched.length === 0) return { zone: null, reason: `${head}: nến 4H vừa đóng không chạm vùng ${sideWord} mạnh nào` };
+  const range = bar.high - bar.low;
+  const wick = side === 'long' ? Math.min(bar.open, bar.close) - bar.low : bar.high - Math.max(bar.open, bar.close);
+  const wickPct = range > 0 ? wick / range : 0;
+  const taker = bar.quoteVolume > 0 ? bar.takerBuyQuote / bar.quoteVolume : NaN;
+  for (const z of touched) {
+    const closedBack = side === 'long' ? bar.close > z.high : bar.close < z.low;
+    if (!closedBack) continue;
+    const slLevel = side === 'long' ? z.low - cfg.slBufferAtr * atrEntry : z.high + cfg.slBufferAtr * atrEntry;
+    const breached = side === 'long' ? bar.low <= slLevel : bar.high >= slLevel;
+    if (breached) {
+      const f = (x: number) => (tickSize === undefined ? formatPrice(x) : formatTick(x, tickSize));
+      return { zone: null, reason: `${head}: nến chạm ${describeZoneSr(z, price, tickSize)} nhưng đã xuyên qua mức SL ${f(slLevel)} (${side === 'long' ? 'đáy' : 'đỉnh'} nến ${f(side === 'long' ? bar.low : bar.high)}) — vùng không giữ được` };
+    }
+    if (wickPct < cfg.minWickPct) {
+      return { zone: null, reason: `${head}: nến chạm ${describeZoneSr(z, price, tickSize)} nhưng râu ${side === 'long' ? 'dưới' : 'trên'} chỉ ${Math.round(wickPct * 100)}% biên độ (< ${cfg.minWickPct * 100}%)` };
+    }
+    const takerOk = side === 'long' ? taker >= cfg.takerRatio : taker <= cfg.takerRatio;
+    if (!takerOk) {
+      const tk = Number.isFinite(taker) ? taker.toFixed(2).replace('.', ',') : 'không có (khối lượng 0)';
+      const lim = String(cfg.takerRatio).replace('.', ',');
+      return { zone: null, reason: `${head}: nến chạm ${describeZoneSr(z, price, tickSize)} nhưng tỉ lệ taker mua ${tk} ${side === 'long' ? '<' : '>'} ${lim}` };
+    }
+    return { zone: z, reason: `nến 4H đã đóng chạm ${describeZoneSr(z, price, tickSize)}, đóng lại ${side === 'long' ? 'trên' : 'dưới'} vùng, râu ${Math.round(wickPct * 100)}%, taker mua ${taker.toFixed(2).replace('.', ',')}` };
+  }
+  return { zone: null, reason: `${head}: nến 4H vừa đóng chạm vùng ${sideWord} mạnh nhưng không đóng cửa lại ${side === 'long' ? 'trên' : 'dưới'} vùng` };
+}

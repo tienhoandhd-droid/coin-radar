@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Candle } from '../packages/core/types.ts';
 import { HOUR } from './data.ts';
-import { pitFastUniverse } from './fetch-pit.ts';
+import { pitFastUniverse, pitUniverse, planForWindow } from './fetch-pit.ts';
+import { BLIND_C_PERIOD, DATA_END } from './replay.ts';
+import { needFrom } from './data.ts';
 import { MINUTE } from './data.ts';
 
 const T0 = Date.UTC(2026, 5, 1);
@@ -45,4 +47,22 @@ test('pitFastUniverse: lấy mẫu đúng các mốc 15m của Lướt nhanh —
   assert.deepEqual([...pitFastUniverse(contracts, hourly, w, 1)].sort(), ['A', 'B']); // A ở :00, B ở :15/:30/:45
   const onlyOn = pitFastUniverse(contracts, hourly, { start: T0 + 30 * HOUR + 15 * MINUTE, end: T0 + 31 * HOUR }, 1);
   assert.deepEqual([...onlyOn], ['B']);
+});
+
+test('pitUniverse swing: chỉ lấy mẫu ở mốc mỗi giờ (không ở :15) — mã chỉ lọt top tại :15 thì không vào', () => {
+  const contracts = ['A', 'B'].map((symbol) => ({ symbol, onboardDate: 0 }));
+  const hourly = new Map<string, Candle[]>([
+    ['A', series(T0, 100, (i) => (i === 6 ? 1000 : 1))], // chỉ thắng ở mốc :00 của T0+30h
+    ['B', series(T0, 100, () => 10)],
+  ]);
+  assert.deepEqual([...pitUniverse('swing', contracts, hourly, { start: T0 + 30 * HOUR + 15 * MINUTE, end: T0 + 31 * HOUR + 15 * MINUTE }, 1)], ['B']);
+  assert.deepEqual([...pitUniverse('swing', contracts, hourly, { start: T0 + 30 * HOUR, end: T0 + 31 * HOUR }, 1)], ['A']);
+});
+
+test('planForWindow (kỳ C): khởi động tính từ đầu C, tải tới DATA_END (không làm ngắn tệp đệm của D/B)', () => {
+  const p = planForWindow(BLIND_C_PERIOD);
+  assert.equal(p.oosStart, BLIND_C_PERIOD.start);
+  assert.equal(p.end, DATA_END);
+  assert.equal(new Date(needFrom('1d', p.oosStart)).toISOString(), '2025-03-07T00:00:00.000Z'); // 300 nến 1D trước 1/1/2026
+  assert.equal(new Date(needFrom('4h', p.oosStart)).toISOString(), '2025-10-09T16:00:00.000Z'); // 500 nến 4H
 });
