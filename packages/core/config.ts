@@ -256,7 +256,7 @@ export const COMMON = {
     shortAsym: false as boolean, // #5: Short chỉ khi chế độ Xuống + RS so BTC thuộc nhóm yếu nhất + funding TB ≥ 0
     shortRsBottomPct: 20, // #5: % yếu nhất theo z sức mạnh tương đối (mặt cắt ngang các mã đã chấm, tại thời điểm quét)
     shortFundingDays: 3, // #5: số ngày tính funding TB (kỳ đã chốt)
-    swingUniverseSize: null as number | null, // #7: Swing chỉ quét N hợp đồng thanh khoản cao nhất (như fastUniverseSize); null = mọi hợp đồng
+    swingUniverseSize: 200 as number | null, // #7: Swing chỉ quét N hợp đồng thanh khoản cao nhất (như fastUniverseSize); null = mọi hợp đồng. Người dùng chốt 20/10/2026: top 200 (altcoin nhỏ khó phân tích kỹ thuật)
     swingLongRsTopHalf: false as boolean, // #7: Long Swing cần z sức mạnh tương đối ≥ trung vị các mã đã chấm
     fundingXsPct: null as number | null, // #8: Long khi phân vị funding TB ≤ mức này (%), Short khi ≥ mức này; null = tắt
     fundingXsDays: 7, // #8: số ngày tính funding TB
