@@ -436,8 +436,10 @@ async function simulate(o: RunOptions) {
         for (const rule of new Set(blocks.join(' ').match(/#[A-Za-z0-9]+/g) ?? ['?'])) inc(skip, `align: luật vào lệnh ${rule}`);
         continue;
       }
-      const premium = input.premiums.get(sym);
-      if (premium === undefined) { inc(skip, 'align: thiếu giá mark/funding'); continue; }
+      if (!input.premiums.has(sym)) { inc(skip, 'align: thiếu giá mark/funding'); continue; }
+      // Giá mark tại mốc 15m = giá đóng nến 15m vừa đóng (quy ước 4 của replay.ts cho khung 15m). premiums của máy phát lại Swing lấy
+      // giá đóng nến 1H đã đóng cuối → cũ tới 45 phút ở mốc :15/:30/:45 → giá tối đa/IOC sai.
+      const mark = lastM.close;
       const h1 = await barsOf('1h');
       const vb = h1.slice(-COMMON.slippage.volumeBars1h);
       const vol1m = vb.reduce((x, c) => x + c.quoteVolume, 0) / vb.length / 60;
@@ -448,14 +450,14 @@ async function simulate(o: RunOptions) {
       const fundingBuffer = { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours };
       const kindVn = setup.kind === 'trend' ? 'xu hướng' : 'hồi phục';
       const label = `mtf-align ${kindVn} ${side === 'long' ? 'Long' : 'Short'}`;
-      const m = buildAlignPlan({ side, m15, h1, h4: await barsOf('4h'), d1: await barsOf('1d'), now: t, markPrice: premium.markPrice,
+      const m = buildAlignPlan({ side, m15, h1, h4: await barsOf('4h'), d1: await barsOf('1d'), now: t, markPrice: mark,
         tickSize: contract.tickSize, stepSize: contract.stepSize, capital, riskPct: COMMON.risk.perTradePct, cost: costModel, fundingBuffer, cfg, label });
       if (m.plan === null) { stats.alignNoPlan++; inc(skip, bucket(m.reason)); continue; }
       if (fb.fallback) stats.fundingFallback++;
       const pr = planOrders({
         plan: m.plan, grade: 'A', // hệ mtf-align không chấm hạng (không qua máy quét)
         signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
-        maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t, costModel, fundingBuffer,
+        maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: mark, runId: 'sim', now: t, costModel, fundingBuffer,
         fundingMeanRate: meanFundingRate(funding(sym), t), ...(await clusterDaily(input, sym)),
       });
       if (!pr.allowed) {
