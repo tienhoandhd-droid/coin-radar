@@ -100,3 +100,12 @@ Xu hướng mỗi khung (15m, 1H, 4H, 1D), tính trên nến đã đóng: Lên =
 Xuống → Short); lệnh hồi phục chốt 100% tại TP1, giữ tối đa 48 giờ.
 Gốc f1-funding-fix, Swing, top 200; k = 26; thuộc họ vùng S/R khi chọn luật vào C. Báo cáo tách lệnh xu hướng / lệnh hồi phục.
 Lưu ý: người dùng đã bỏ Lướt nhanh cho altcoin; lệnh hồi phục giữ ≤ 48 giờ là ngoại lệ người dùng tự yêu cầu ở đây, chỉ để thử.
+
+## BỔ SUNG đăng ký trước — #27 "tf-15m", #28 "tf-1h", #29 "tf-4h" (người dùng 20/10/2026: "1 cái theo xu hướng 15 phút, 1 cái nhận
+định xu hướng 1h, 1 cái xu hướng 4h ⇒ tìm điểm vào và có thể lệnh dài … xem tỉ lệ lãi là bao nhiêu")
+
+Mỗi lần thử dùng MỘT khung để nhận định xu hướng (định nghĩa Lên/Xuống như #25: giá đóng > EMA50 và EMA20 > EMA50, đối xứng):
+#27 khung 15m, #28 khung 1H, #29 khung 4H. Lên → chỉ Long; Xuống → chỉ Short; Trung tính → không vào.
+Điểm vào, SL, TP1, bỏ khi chi phí > 0,10R: Y HỆT #25 (kích hoạt nến 15m hồi về EMA20 rồi đóng vượt). Thoát C2 (TP1 50% + trailing,
+"có thể lệnh dài" — phần trailing giữ tới khi bị dừng, theo thời gian giữ tối đa Swing hiện có). Gốc f1-funding-fix, top 200; k = 29;
+họ vùng S/R khi chọn luật vào C. Báo cáo: số lệnh, tỉ lệ thắng, kỳ vọng R, PF, tổng lãi %, DD, thời gian giữ trung vị, Long/Short.
