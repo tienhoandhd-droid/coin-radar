@@ -72,3 +72,16 @@ Mọi lần thử báo cả chi phí thận trọng (cấu hình) và chi phí h
 5. Chạy #18–#23 trên D + bản chi phí hiệu chỉnh; nghiên cứu nhiều năm.
 6. Chọn theo luật trên, viết `docs/verification/khoa-luat-mo-phong-mu-C.md`, commit, chạy kỳ C một lần.
 7. Báo cáo kết quả.
+
+## BỔ SUNG đăng ký trước — lần thử #24 "mtf-pullback" (người dùng đưa ý 20/10/2026, duyệt "sau đó test dữ liệu cho tôi")
+
+Ý người dùng: "xu hướng chung thị trường tăng và kỹ thuật nến giờ tăng hoặc hồi phục ⇒ mua, ngược lại bán; mua theo nến giờ, 4h,
+ngày với khoảng hỗ trợ và cản". Luật (gốc f1-funding-fix, Swing, top 200, một bộ tham số):
+1. Xu hướng chung: chế độ BTC 1D (marketRegime hiện có) = Lên → chỉ Long; Xuống → chỉ Short; Đi ngang → không vào.
+2. Xu hướng coin 4H: giá đóng 4H > EMA50 4H (Long) / < (Short).
+3. Vị trí: giá thấp nhất nến 1H vừa đóng chạm vùng hỗ trợ "clean" 1D/4H độ mạnh ≥ 2 hoặc cách mép trên vùng ≤ 0,5 ATR(14) 4H
+   (Short: vùng kháng cự, đối xứng).
+4. Nến 1H vừa đóng: nến tăng (đóng > mở), đóng > đỉnh nến 1H trước, đóng > EMA20 1H, và nến 1H trước đóng ≤ EMA20 1H (Short đối xứng).
+5. Vào lệnh thị trường ở nến 1H kế tiếp; SL = đáy vùng − 0,25 ATR(14) 4H; rủi ro 2% như hiện tại.
+6. TP1 = kháng cự "clean" gần nhất độ mạnh ≥ 2 với R:R ≥ 1,5 (không có → bỏ); thoát C2 (TP1 50% + trailing) như hiện tại.
+Gắn risk-cluster nếu risk-cluster đạt điều kiện ở mục chọn luật. k = 24. Thuộc họ vùng S/R khi chọn luật vào C.
