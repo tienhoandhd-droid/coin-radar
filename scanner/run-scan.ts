@@ -6,6 +6,7 @@ import { CONFIG, COMMON, type ModeConfig } from '../packages/core/config.ts';
 import { fundingFallbackRate } from '../packages/core/sizing.ts';
 import { entryBlocks } from '../packages/core/entry-filters.ts';
 import type { MacroEvent } from '../packages/core/events.ts';
+import type { FgiDecision } from '../packages/core/fgi.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } from '../packages/core/types.ts';
 import { liquidityRanks, applyTopRank } from './rank.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
@@ -42,6 +43,9 @@ export type ScanInput = {
   // Funding TB có dấu mỗi kỳ trong N ngày tới `now` (kỳ đã chốt) theo mã — cho luật vào lệnh #5/#8 (COMMON.entryRules). Không có → các luật
   // đó chặn vì thiếu funding (fail closed). Phát lại: từ bộ đệm; máy quét: chưa tải (luật mặc định tắt).
   fundingMean?: (symbol: string, days: number) => number | null;
+  // FGI-hướng (COMMON.entryRules.fgiDirection, nguồn Alternative.me) tại `now`: máy quét/bot tải (scanner/fgi.ts — lỗi → side null),
+  // phát lại tính từ data/cache/fgi.json. Luật bật mà không có → mọi lệnh Swing mới bị chặn (fail closed).
+  fgi?: FgiDecision;
   prevSignals: ReadonlyMap<string, SignalState>; // I5: tín hiệu gần nhất theo mã (đang mở hoặc đã kết thúc lúc nào) — cập nhật bằng advanceSignalState sau mỗi lần quét; máy quét: Map rỗng
 };
 
@@ -171,11 +175,18 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
   }
 
   const ranked = applyTopRank(results, ranks);
-  const entryBlocksMap = entryBlocks(ranked, { mode, regime: regime.regime, ...(input.fundingMean ? { fundingMean: input.fundingMean } : {}) });
+  const entryBlocksMap = entryBlocks(ranked, {
+    mode, regime: regime.regime, ...(input.fundingMean ? { fundingMean: input.fundingMean } : {}), ...(input.fgi ? { fgi: input.fgi } : {}),
+    now, onboardDate: new Map(contracts.map((c) => [c.symbol, c.onboardDate])),
+  });
   const warnings: string[] = [];
   const ER = COMMON.entryRules;
   if (input.fundingMean === undefined && (ER.shortAsym || ER.fundingXsPct !== null)) {
     warnings.push(`Luật vào lệnh ${[ER.shortAsym ? '#5' : null, ER.fundingXsPct !== null ? '#8' : null].filter((x) => x !== null).join(', ')} đang bật nhưng lần quét này thiếu funding TB (fundingMean) — mọi tín hiệu liên quan bị chặn`);
+  }
+  if (ER.fgiDirection !== null && mode === 'swing') {
+    warnings.push(input.fgi === undefined ? 'Luật FGI-hướng đang bật nhưng lần quét này thiếu chỉ số Sợ hãi & Tham lam — không vào lệnh Swing mới'
+      : `FGI-hướng: ${input.fgi.reason}`);
   }
   return { regime, breaker, btcReclaim, ranks, universeSize: universe.length, inScope, results: ranked, entryBlocks: entryBlocksMap, warnings, errors, banned };
 }

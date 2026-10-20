@@ -110,6 +110,17 @@ function costSensitivity(name: string, base: string, mode: Mode): Variant {
     { notTrial: SENS, sensitivity: true, modes: [mode], pinnedBase: base });
 }
 
+const PLAN_1020 = 'đăng ký trước 20/10/2026 (kế hoạch luật mới + kiểm mù C)';
+const FGI_DIRECTION = { lagDays: 1, meanDays: 7, threshold: 50 };
+const MTF_PULLBACK = { emaH4: 50, emaH1: 20, atrPeriod: 14, nearAtr: 0.5, slBufferAtr: 0.25, minStrength: 2, minRR: 1.5 };
+// #25–#29: cùng điểm vào/SL/TP1/sàn chi phí 0,10R/thoát C2, chỉ khác tập khung nhận định xu hướng (và lệnh hồi phục ở #26)
+const align = (frames: string[], recovery: boolean) => ({
+  'COMMON.entryRules.mtfAlign': { frames, emaFast: 20, emaSlow: 50, touchBars: 8, slBars: 12, slBufferAtr: 0.25, atrPeriod: 14, minStrength: 2, minRR: 1.5,
+    recovery, recoveryMaxHoldHours: 48 },
+  'COMMON.risk.maxCostR': 0.1,
+});
+const ALIGN_ENTRY = 'nến 15m chạm EMA20 15m trong 8 nến rồi đóng tăng > EMA20 và > đỉnh nến trước → market nến 15m kế tiếp; SL = đáy 12 nến 15m − 0,25×ATR(14) 1H; TP1 = vùng cản clean mạnh ≥ 2, R:R ≥ 1,5; bỏ nếu chi phí > 0,10R; thoát C2; thay lệnh vùng';
+
 const list: Variant[] = [
   wired('baseline', null, 'gốc: mọi Đạt, thoát C2 (TP1 50% + trailing)', 'đối chứng cho mọi biến thể', { policy: 'C2', filter: 'all' }),
   wired('filter-A', null, 'chỉ tín hiệu Hạng A (bot thật), thoát C2', `lọc Hạng A so với mọi Đạt — ${PRIOR}`, { policy: 'C2', filter: 'A' }),
@@ -157,11 +168,43 @@ const list: Variant[] = [
     'luật S/R: vùng "clean" (gom pivot bằng ATR từng khung, rộng ≥ 0,25×ATR, bỏ vùng cũ/bị phá, lật vai trò, HVN 60 ngày, độ mạnh = số lần bật, 3 vùng/phía) + chỉ vào khi nến 4H đã đóng chạm vùng mạnh ≥ 2, đóng lại, râu ≥ 50%, taker đúng phía; SL ngoài vùng 0,25×ATR, TP1 = vùng đối diện mạnh ≥ 2',
     'kiểm toán S/R 20/10/2026: vùng cũ không giữ giá hơn mức ngẫu nhiên (70,1% vs 70,2%), không có xác nhận trước khi vào — luật đăng ký trước', {},
     { 'COMMON.zones.method': 'clean', 'COMMON.entryRules.srConfirm': true }, { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  // Lần thử #18–#23, luật người dùng duyệt và ĐĂNG KÝ TRƯỚC 20/10/2026 (docs/superpowers/plans/2026-10-20-luat-moi-va-kiem-mu-C.md) — mỗi luật
+  // một bộ tham số, không quét, không chỉnh sau khi xem kết quả. Mỗi lần thử kèm bản chi phí hiệu chỉnh (cost-cal-<tên>).
+  wired('sr-long', null, 'luật S/R xác nhận + chỉ Long (COMMON.entryRules.sides = Long)', `#18 ${PLAN_1020}`, {},
+    { 'COMMON.entryRules.sides': ['long'] }, { modes: ['swing'], pinnedBase: 'sr-confirm' }),
+  wired('fgi-dir', null, 'FGI-hướng: TB 7 ngày chỉ số Sợ hãi & Tham lam (Alternative.me, trễ 1 ngày) ≥ 50 → chỉ Long, < 50 → chỉ Short; thiếu dữ liệu → không vào',
+    `#19 ${PLAN_1020}`, {}, { 'COMMON.entryRules.fgiDirection': FGI_DIRECTION }, { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('sr-fgi', null, 'luật S/R xác nhận + FGI-hướng (TB 7 ngày, trễ 1 ngày, ngưỡng 50)', `#20 ${PLAN_1020}`, {},
+    { 'COMMON.entryRules.fgiDirection': FGI_DIRECTION }, { modes: ['swing'], pinnedBase: 'sr-confirm' }),
+  wired('risk-cluster', null,
+    'kiểm soát rủi ro danh mục: từ chối lệnh cùng phía tương quan lợi suất ngày 30 ngày ≥ 0,7 với lệnh đang mở; Σ max(β 60 ngày, 0,5) × rủi ro ≤ 10% vốn; bỏ hợp đồng niêm yết < 30 ngày',
+    `#21 ${PLAN_1020}`, {}, { 'COMMON.portfolio.cluster': { corrDays: 30, corrMax: 0.7, betaDays: 60, betaFloor: 0.5, maxBetaRiskPct: 10 }, 'COMMON.entryRules.minListingDays': 30 },
+    { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('trend-d1', null,
+    'hệ xu hướng 1D chỉ Long, thay hoàn toàn lệnh vùng: đóng 1D > đỉnh đóng 50 ngày → market nến kế tiếp, SL 2×ATR(20) 1D, thoát 100% dừng theo giá đóng 1D = đỉnh đóng − 3×ATR(20), giữ ≤ 180 ngày',
+    `#22 ${PLAN_1020}`, {}, { 'COMMON.trend.enabled': true }, { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('trend-d1-fgi', null, 'hệ xu hướng 1D Long/Short (Short: đóng 1D < đáy đóng 50 ngày) theo FGI-hướng, thay hoàn toàn lệnh vùng (tham số như trend-d1)',
+    `#23 ${PLAN_1020}`, {}, { 'COMMON.trend.enabled': true, 'COMMON.trend.sides': ['long', 'short'], 'COMMON.entryRules.fgiDirection': FGI_DIRECTION },
+    { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('mtf-pullback', null,
+    'đa khung: BTC 1D Lên/Xuống chọn phía; đóng 4H so EMA50 4H; nến 1H vừa đóng chạm vùng clean 1D/4H mạnh ≥ 2 (hoặc ≤ 0,5×ATR 4H) và cắt qua EMA20 1H; SL đáy vùng − 0,25×ATR 4H; TP1 vùng cản mạnh ≥ 2, R:R ≥ 1,5; thoát C2; thay lệnh vùng',
+    `#24 ${PLAN_1020}`, {}, { 'COMMON.entryRules.mtfPullback': MTF_PULLBACK }, { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('mtf-align', null, `xu hướng 1D, 4H, 1H cùng phía (đóng > EMA50 và EMA20 > EMA50; đối xứng); ${ALIGN_ENTRY}`, `#25 ${PLAN_1020}`, {},
+    align(['1d', '4h', '1h'], false), { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('mtf-recovery', null, `như mtf-align + lệnh hồi phục (1D ngược chiều 4H và 1H cùng phía): chốt 100% tại TP1, giữ ≤ 48 giờ; ${ALIGN_ENTRY}`, `#26 ${PLAN_1020}`, {},
+    align(['1d', '4h', '1h'], true), { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('tf-15m', null, `xu hướng chỉ theo khung 15m (đóng > EMA50 và EMA20 > EMA50; đối xứng); ${ALIGN_ENTRY}`, `#27 ${PLAN_1020}`, {},
+    align(['15m'], false), { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('tf-1h', null, `xu hướng chỉ theo khung 1H (đóng > EMA50 và EMA20 > EMA50; đối xứng); ${ALIGN_ENTRY}`, `#28 ${PLAN_1020}`, {},
+    align(['1h'], false), { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
+  wired('tf-4h', null, `xu hướng chỉ theo khung 4H (đóng > EMA50 và EMA20 > EMA50; đối xứng); ${ALIGN_ENTRY}`, `#29 ${PLAN_1020}`, {},
+    align(['4h'], false), { modes: ['swing'], pinnedBase: 'f1-funding-fix' }),
   costSensitivity('cost-cal-f1', 'f1-funding-fix', 'swing'),
   costSensitivity('cost-cal-sr', 'sr-confirm', 'swing'),
   costSensitivity('cost-cal-combo', 'combo-loc', 'swing'),
   costSensitivity('cost-cal-p2fast', 'p2-fast-4h', 'fast'),
   costSensitivity('cost-cal-base', 'baseline', 'fast'),
+  ...['sr-long', 'fgi-dir', 'sr-fgi', 'risk-cluster', 'trend-d1', 'trend-d1-fgi', 'mtf-pullback', 'mtf-align', 'mtf-recovery', 'tf-15m', 'tf-1h', 'tf-4h'].map((n) => costSensitivity(`cost-cal-${n}`, n, 'swing')),
 ];
 export const VARIANTS: Record<string, Variant> = Object.fromEntries(list.map((v) => [v.name, v]));
 export function notTrialNames(): Set<string> {

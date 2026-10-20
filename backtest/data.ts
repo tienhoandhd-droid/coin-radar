@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import type { Candle } from '../packages/core/types.ts';
 import { parseKlines } from '../packages/binance/parse.ts';
 import { isClosed } from '../packages/core/candles.ts';
+import { parseFgi, type FgiRow } from '../packages/core/fgi.ts';
 
 export type Interval = '1d' | '4h' | '1h' | '15m' | '5m' | '1m';
 export const MINUTE = 60_000;
@@ -156,6 +157,17 @@ export function loadCandles(dir: string, symbol: string, interval: Interval, fro
     }
   }
   return { candles: out, gaps: findGaps(symbol, interval, out) };
+}
+
+// FGI (Alternative.me — ghi nguồn) cho luật FGI-hướng: data/cache/fgi.json = bản thô API lưu bởi backtest/fetch-fgi.ts
+// ({ fetchedAt, url, raw }). Chỉ giữ ngày < `to` (không nạp dữ liệu sau cửa sổ); fgiDirectionAt tự áp độ trễ theo thời điểm.
+export const FGI_FILE = 'fgi.json';
+export function loadFgi(dir: string, to: number): FgiRow[] {
+  const path = join(dir, FGI_FILE);
+  const saved = readJson(path) as { raw?: unknown } | null;
+  if (saved === null) throw new Error(`thiếu ${path} — chạy node backtest/fetch-fgi.ts trước (luật FGI-hướng đang bật)`);
+  if (saved.raw === undefined) throw new Error(`${path}: thiếu trường raw`);
+  return parseFgi(saved.raw).filter((r) => r.day < to);
 }
 
 // ---- Bộ tải ----

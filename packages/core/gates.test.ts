@@ -282,3 +282,16 @@ test('I4/I7 G-08 theo bậc ký quỹ: notional nhỏ qua; vượt bậc cao nh�
   assert.equal(real.ok, false);
   assert.match(real.note, /leverageBracket/);
 });
+
+test('liveUniverse (chỉ chạy thật): mặc định giữ nguyên; bật liveSkipScheduledDelivery → bỏ hợp đồng có deliveryDate trước mốc vĩnh cửu', async () => {
+  const { liveUniverse, hasScheduledDelivery } = await import('./gates.ts');
+  const { withConfigOverride } = await import('./config-override.ts');
+  // exchangeInfo 19/10/2026: vĩnh cửu thường 2100-12-25; EPICUSDT có ngày tất toán 2026-10-20
+  const list = [{ symbol: 'BTCUSDT', deliveryDate: Date.UTC(2100, 11, 25) }, { symbol: 'EPICUSDT', deliveryDate: Date.UTC(2026, 9, 20) }];
+  assert.equal(hasScheduledDelivery(list[0]!), false);
+  assert.equal(hasScheduledDelivery(list[1]!), true);
+  assert.deepEqual(liveUniverse(list), { kept: list, skipped: [] });
+  await withConfigOverride({ 'COMMON.entryRules.liveSkipScheduledDelivery': true }, async () => {
+    assert.deepEqual(liveUniverse(list), { kept: [list[0]], skipped: ['EPICUSDT'] });
+  });
+});

@@ -9,6 +9,8 @@ import { parseScanArgs, type ScanArgs } from './args.ts';
 import { planLines, patternPlanLines, oldPatternSignalLine, trackedLines, gradedReportLines, portfolioLines, headerWarningLines, type GradedItem } from './plan-print.ts';
 import { runScan } from './run-scan.ts';
 import { createFundingMaxAbsLoader } from './funding-history.ts';
+import { fetchFgiDecision, httpJson } from './fgi.ts';
+import { liveUniverse } from '../packages/core/gates.ts';
 
 const { values } = parseArgs({ options: {
   mode: { type: 'string', default: 'swing' },
@@ -35,7 +37,12 @@ const now = Date.now();
 // I/O ở đây; toàn bộ bước quét nằm trong runScan (dùng chung với phát lại/backtest)
 const events = parseEvents(JSON.parse(readFileSync(new URL('../data/events/events.json', import.meta.url), 'utf8')));
 const calendar = eventCalendarStatus(events, new Date(now));
-const contracts = parseContracts(await client.get('/fapi/v1/exchangeInfo'));
+// COMMON.entryRules.liveSkipScheduledDelivery (mặc định tắt): bỏ hợp đồng đã có lịch tất toán/hủy niêm yết khỏi vũ trụ quét
+const universe = liveUniverse(parseContracts(await client.get('/fapi/v1/exchangeInfo')));
+const contracts = universe.kept;
+if (universe.skipped.length > 0) console.log(`Bỏ khỏi vũ trụ quét (đã có lịch tất toán/hủy niêm yết): ${universe.skipped.join(', ')}`);
+// FGI-hướng (mặc định tắt) — nguồn Alternative.me; lỗi tải → không vào lệnh Swing mới (in cảnh báo)
+const fgi = COMMON.entryRules.fgiDirection === null ? undefined : await fetchFgiDecision({ fetchJson: httpJson, now, log: (m) => console.log(m) });
 const tickers = parseTickers(await client.get('/fapi/v1/ticker/24hr'));
 const books = new Map(parseBookTickers(await client.get('/fapi/v1/ticker/bookTicker')).map((b) => [b.symbol, b]));
 const premiums = new Map(parsePremium(await client.get('/fapi/v1/premiumIndex')).map((p) => [p.symbol, p]));
@@ -43,6 +50,7 @@ const premiums = new Map(parsePremium(await client.get('/fapi/v1/premiumIndex'))
 const fundingIntervals = parseFundingInfo(await client.get('/fapi/v1/fundingInfo'));
 const scan = await runScan({
   mode, contracts, tickers, books, premiums, fundingIntervals, now, events, capital, limit: args.limit, openTrades: [], prevSignals: new Map(),
+  ...(fgi !== undefined ? { fgi } : {}),
   // Đệm funding đúng như planner: |funding| lớn nhất 30 ngày, tải cho mã Đạt tiêu chí (không tải được → mức thận trọng + ghi chú trên kế hoạch)
   fundingMaxAbsLoader: createFundingMaxAbsLoader({ get: client.get, now }),
   klines: async (symbol, interval, limit) => parseKlines(await client.get(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`), now),

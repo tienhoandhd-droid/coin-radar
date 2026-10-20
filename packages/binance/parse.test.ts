@@ -152,3 +152,8 @@ test('parseFundingHistory: /fapi/v1/fundingRate → { fundingTime, fundingRate }
   assert.throws(() => parseFundingHistory([{ symbol: 'AAAUSDT', fundingTime: 1000, fundingRate: '' }]), /fundingRate AAAUSDT/);
   assert.throws(() => parseFundingHistory({ code: -1121 }), /kỳ vọng mảng/);
 });
+
+test('parseContracts: loại stablecoin neo USD (USDCUSDT, FDUSDUSDT) khỏi vũ trụ — SL cực sát làm notional phình gấp hàng chục lần vốn', () => {
+  const out = parseContracts({ symbols: [perp('BTCUSDT', 'COIN'), perp('USDCUSDT', 'COIN'), perp('FDUSDUSDT', 'COIN'), perp('ETHUSDT', 'COIN')] });
+  assert.deepEqual(out.map((c) => c.symbol), ['BTCUSDT', 'ETHUSDT']);
+});

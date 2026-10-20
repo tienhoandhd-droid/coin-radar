@@ -10,6 +10,10 @@ export function configProblems(): string[] {
   if (r.fundingBufferHorizon === 'expected' && !r.fundingRuntimeGuard) {
     out.push('COMMON.risk.fundingBufferHorizon = "expected" cần COMMON.risk.fundingRuntimeGuard = true (đệm funding ngắn chỉ an toàn khi có chốt chặn khi chạy)');
   }
+  // trend-d1 giữ lệnh tới 180 ngày, đệm funding chỉ phủ thời gian giữ DỰ KIẾN → lỗ thật ≤ 2% chỉ giữ được nhờ chốt chặn funding khi chạy
+  if (COMMON.trend.enabled && !r.fundingRuntimeGuard) {
+    out.push('COMMON.trend.enabled = true cần COMMON.risk.fundingRuntimeGuard = true (giữ lệnh lâu, lỗ thật ≤ 2% nhờ chốt chặn funding)');
+  }
   return out;
 }
 

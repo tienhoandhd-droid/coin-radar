@@ -18,6 +18,8 @@ import type { Analysis } from '../core/analyze.ts';
 import type { Candle, Contract, Mode } from '../core/types.ts';
 import { runScan, type ScanInput, type ScanResult } from '../../scanner/run-scan.ts';
 import { createFundingMaxAbsLoader } from '../../scanner/funding-history.ts';
+import { fetchFgiDecision, httpJson } from '../../scanner/fgi.ts';
+import { liveUniverse } from '../core/gates.ts';
 import { openJournal, type Journal } from './journal.ts';
 import { planOrders, type PlannerPlan } from './planner.ts';
 import { reconcile, roleOfClientId, tradeFromPlan, type Action, type AlertLevel, type ExPosition, type TradeState } from './reconcile.ts';
@@ -97,6 +99,8 @@ export type BotDeps = {
   events: MacroEvent[];
   scanLimit: number | null;
   freshWaitMs?: number; // chờ dữ liệu mới của mã ứng viên (mặc định 20 s)
+  // FGI-hướng (COMMON.entryRules.fgiDirection, nguồn Alternative.me): tải JSON theo URL. Vắng khi luật bật → không vào lệnh Swing mới (fail closed)
+  fetchJson?: (url: string) => Promise<unknown>;
 };
 
 // Telegram tắt (không có token/chat ID): mọi tin ghi log; /dung không dùng được nhưng dấu tạm dừng trong nhật ký vẫn có hiệu lực
@@ -517,8 +521,14 @@ export function createBot(deps: BotDeps) {
     const prefix = `${mode}|`;
     const prevSignals = new Map([...journal.prevSignalsMap()].filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k.slice(prefix.length), v]));
     const loader = createFundingMaxAbsLoader({ get: deps.publicGet, now });
+    // Luật mới (mặc định tắt): FGI-hướng — lỗi tải → không vào lệnh Swing mới; bỏ hợp đồng đã có lịch tất toán khỏi vũ trụ quét
+    const fgi = COMMON.entryRules.fgiDirection === null ? undefined
+      : deps.fetchJson === undefined ? { side: null, reason: 'bot chưa có nguồn tải FGI (deps.fetchJson)' }
+        : await fetchFgiDecision({ fetchJson: deps.fetchJson, now, log });
+    const uni = liveUniverse([...contracts.values()]);
+    if (uni.skipped.length > 0) log(`Bỏ khỏi vũ trụ quét (đã có lịch tất toán/hủy niêm yết): ${uni.skipped.join(', ')}`);
     const scan = await scanFn({
-      mode, contracts: [...contracts.values()], tickers, books, premiums, fundingIntervals, now, events: deps.events, capital, limit: deps.scanLimit,
+      mode, contracts: uni.kept, tickers, ...(fgi !== undefined ? { fgi } : {}), books, premiums, fundingIntervals, now, events: deps.events, capital, limit: deps.scanLimit,
       openTrades: portfolio(), prevSignals, ...(brackets !== undefined ? { leverageBrackets: brackets } : {}), fundingMaxAbsLoader: loader,
       klines: (s, i, l) => klinesRest(s, i, l),
     });
@@ -1143,6 +1153,7 @@ async function cli(): Promise<void> {
       ? disabledTelegram({ journal, log })
       : createTelegram({ token: settings.telegram.token, chatId: settings.telegram.chatId, getStatus: hooks.getStatus, getDayLossPct: hooks.getDayLossPct, journal, log, secrets }),
     events, scanLimit: settings.scanLimit,
+    fetchJson: httpJson, // FGI (Alternative.me) — chỉ gọi khi luật FGI-hướng bật
   });
 
   let shuttingDown = false;

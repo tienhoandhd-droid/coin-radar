@@ -70,6 +70,19 @@ export function liquidationCheck(a: { stopDistFrac: number; notional: number; le
     : { ok: false, note: `${head}; thanh lý quá gần cắt lỗ ngay cả ở 1×` };
 }
 
+// G-06 / COMMON.entryRules.liveSkipScheduledDelivery: hợp đồng vĩnh cửu có deliveryDate trước mốc mặc định = đã có lịch tất toán (thường là hủy niêm yết)
+export function hasScheduledDelivery(c: { deliveryDate: number }): boolean {
+  return c.deliveryDate < COMMON.perpetualDeliveryFloor;
+}
+
+// Vũ trụ quét KHI CHẠY THẬT (máy quét, bot): bật liveSkipScheduledDelivery → bỏ hợp đồng có lịch tất toán. Không dùng khi kiểm lịch sử
+// (exchangeInfo hôm nay không cho biết deliveryDate tại thời điểm cũ). Trả cả danh sách bị bỏ để in ra.
+export function liveUniverse<T extends { symbol: string; deliveryDate: number }>(contracts: readonly T[]): { kept: T[]; skipped: string[] } {
+  if (!COMMON.entryRules.liveSkipScheduledDelivery) return { kept: [...contracts], skipped: [] };
+  const kept = contracts.filter((c) => !hasScheduledDelivery(c));
+  return { kept, skipped: contracts.filter((c) => hasScheduledDelivery(c)).map((c) => c.symbol) };
+}
+
 export function evaluateGates(c: GateContext): GateResult[] {
   const dir = c.side === 'long' ? 1 : -1;
   const regimeVerdict = regimeCheck(c.regime, c.side, c.score, c.rsZ, c.riskTier);
@@ -107,7 +120,7 @@ export function evaluateGates(c: GateContext): GateResult[] {
       note: `${Math.floor(c.ageDays)} ngày tuổi`,
     },
     // I4: G-06 chỉ kiểm được ngày tất toán (deliveryDate); hack 7 ngày / thông báo hủy niêm yết / lệch neo stablecoin CHƯA có nguồn
-    c.deliveryDate < COMMON.perpetualDeliveryFloor
+    hasScheduledDelivery(c)
       ? { code: 'G-06', pass: false, note: `Hợp đồng có ngày tất toán ${new Date(c.deliveryDate).toISOString().slice(0, 16).replace('T', ' ')} UTC — có thể sắp hủy niêm yết` }
       : { code: 'G-06', pass: true, note: 'Chỉ kiểm ngày tất toán (không có); hack/thông báo hủy niêm yết/lệch neo: CHƯA ĐÁNH GIÁ (chưa có nguồn)' },
     {

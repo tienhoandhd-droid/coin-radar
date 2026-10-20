@@ -62,3 +62,38 @@ test('#8 funding mặt cắt ngang: Long khi phân vị funding TB 7 ngày ≤ 7
     assert.deepEqual([...S.keys()].sort(), ['A0', 'A1', 'A2', 'A3', 'A4', 'A5']); // phân vị 10…60%
   });
 });
+
+test('luật đăng ký trước 20/10/2026: sides — chỉ Long chặn Short (mọi chế độ), thẻ #sides', async () => {
+  await withConfigOverride({ 'COMMON.entryRules.sides': ['long'] }, async () => {
+    const b = entryBlocks([an('L', 'long', 0), an('S', 'short', 0)], { mode: 'swing', regime: 'up' });
+    assert.equal(b.size, 1);
+    assert.match(b.get('S')!, /^#sides/);
+    assert.equal(entryBlocks([an('S', 'short', 0)], { mode: 'fast', regime: 'up' }).size, 1);
+  });
+});
+
+test('FGI-hướng (chỉ Swing): chặn phía ngược FGI; thiếu FGI hoặc FGI null → chặn mọi lệnh Swing mới (fail closed); Lướt nhanh không áp dụng', async () => {
+  await withConfigOverride({ 'COMMON.entryRules.fgiDirection': { lagDays: 1, meanDays: 7, threshold: 50 } }, async () => {
+    const list = [an('L', 'long', 0), an('S', 'short', 0)];
+    const greed = entryBlocks(list, { mode: 'swing', regime: 'up', fgi: { side: 'long', reason: 'FGI TB 60' } });
+    assert.deepEqual([...greed.keys()], ['S']);
+    assert.match(greed.get('S')!, /#FGI FGI TB 60 — bỏ Short/);
+    assert.equal(entryBlocks(list, { mode: 'swing', regime: 'up' }).size, 2, 'không có FGI → chặn hết');
+    const missing = entryBlocks(list, { mode: 'swing', regime: 'up', fgi: { side: null, reason: 'FGI thiếu ngày 2026-07-01' } });
+    assert.equal(missing.size, 2);
+    assert.match(missing.get('L')!, /thiếu ngày/);
+    assert.equal(entryBlocks(list, { mode: 'fast', regime: 'up' }).size, 0);
+  });
+});
+
+test('minListingDays: niêm yết chưa đủ N ngày tại thời điểm quyết định → chặn; thiếu ngày niêm yết → chặn', async () => {
+  const now = Date.UTC(2026, 7, 1);
+  const onboardDate = new Map([['OLD', now - 31 * 86_400_000], ['NEW', now - 29 * 86_400_000]]);
+  await withConfigOverride({ 'COMMON.entryRules.minListingDays': 30 }, async () => {
+    const b = entryBlocks([an('OLD', 'long', 0), an('NEW', 'long', 0), an('X', 'long', 0)], { mode: 'swing', regime: 'up', now, onboardDate });
+    assert.deepEqual([...b.keys()].sort(), ['NEW', 'X']);
+    assert.match(b.get('NEW')!, /#listing niêm yết 29,0 ngày < 30/);
+    assert.match(b.get('X')!, /thiếu ngày niêm yết/);
+  });
+  assert.equal(entryBlocks([an('NEW', 'long', 0)], { mode: 'swing', regime: 'up', now, onboardDate }).size, 0, 'mặc định tắt');
+});

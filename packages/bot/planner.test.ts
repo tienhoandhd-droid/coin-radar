@@ -536,3 +536,54 @@ test('COMMON.bot.modes: mặc định bot chỉ giao dịch Swing (người dùn
     assert.equal(planOrders(input(plan, { mode: 'fast' })).allowed, true);
   });
 });
+
+// ---- Luật đăng ký trước 20/10/2026: trend-d1 (chỉ mô phỏng) + risk-cluster ----
+const trendPlan = (side: Side) => ({ ...noTp1(side), targets: [], trendD1: true as const });
+
+test('trend-d1: bot (không có trendSim) bị từ chối; mô phỏng → chỉ chân vào + SL, không TP1/trailing, tp1Pct = 0, lỗ thật ≤ 2%', () => {
+  const bot = planOrders(input(trendPlan('long')));
+  assert.equal(bot.allowed, false);
+  assert.match(bot.reasons.join(' '), /chỉ chạy trong mô phỏng/);
+  for (const side of ['long', 'short'] as const) {
+    const r = planOrders(input(trendPlan(side), { trendSim: true }));
+    assert.equal(r.allowed, true, r.reasons.join('; '));
+    assert.deepEqual(r.legs.map((l) => l.role), ['E1', 'SL']);
+    assert.equal(r.exitRule.tp1Pct, 0);
+    assert.ok(r.sizing!.realRiskPct <= COMMON.risk.perTradePct + 1e-9);
+    assert.deepEqual(r.exitByFill.map((s) => [s.tp1Qty, s.trailQty]), [[0, r.sizing!.qty]]);
+  }
+});
+
+test('risk-cluster: tắt mặc định; bật mà thiếu nến 1D → từ chối (fail closed); trần beta làm giảm khối lượng; cùng cụm → từ chối', async () => {
+  const { withConfigOverride } = await import('../core/config-override.ts');
+  const DAY = 86_400_000;
+  const rets = Array.from({ length: 70 }, (_, i) => 0.02 * Math.sin(i * 1.3));
+  const series = (k: number) => {
+    let p = 100;
+    return [0, ...rets].map((r, i) => {
+      p *= Math.exp(k * r);
+      return { openTime: i * DAY, closeTime: (i + 1) * DAY - 1, open: p, high: p, low: p, close: p, volume: 1, quoteVolume: 1, takerBuyQuote: 0.5 };
+    });
+  };
+  const clusterDaily = new Map([['BTCUSDT', series(1)], ['AAAUSDT', series(2)], ['BBBUSDT', series(1.5)]]); // β AAA = 2, BBB = 1,5, tương quan 1
+  const plan = mkPlan('long', 'market', false, { capital: 10_000, qty: 10_000 }); // khối lượng kế hoạch lớn → planner cắt về 2% vốn
+  const free = planOrders(input(plan));
+  await withConfigOverride({ 'COMMON.portfolio.cluster': { corrDays: 30, corrMax: 0.7, betaDays: 60, betaFloor: 0.5, maxBetaRiskPct: 10 } }, async () => {
+    assert.match(planOrders(input(plan)).reasons.join(' '), /risk-cluster bật nhưng thiếu nến 1D/);
+    // không lệnh mở: AAA β = 2 → rủi ro tối đa 10% / 2 = 5% vốn > 2% → khối lượng như cũ
+    const alone = planOrders(input(plan, { clusterDaily }));
+    assert.equal(alone.allowed, true, alone.reasons.join('; '));
+    assert.equal(alone.sizing!.qty, free.sizing!.qty);
+    // lệnh Short BBB rủi ro 4,5% vốn (β 1,5 → 6,75% có trọng số) → còn 3,25% / β 2 = 1,625% vốn < 2% → giảm khối lượng
+    const open: OpenTrade[] = [{ symbol: 'BBBUSDT', side: 'short', notional: 1_000, leverage: 2, riskAmount: 450, pastTp1: false }];
+    const cut = planOrders(input(plan, { clusterDaily, openTrades: open }));
+    assert.equal(cut.allowed, true, cut.reasons.join('; '));
+    assert.ok(cut.sizing!.qty < free.sizing!.qty);
+    assert.ok(Math.abs(cut.sizing!.realRiskPct - 1.625) < 0.01, String(cut.sizing!.realRiskPct));
+    assert.match(cut.reasons.join(' '), /risk-cluster: trọng số beta 2,00/);
+    // cùng phía, tương quan 1 → một lệnh mỗi cụm
+    const same = planOrders(input(plan, { clusterDaily, openTrades: [{ ...open[0]!, side: 'long', riskAmount: 100 }] }));
+    assert.equal(same.allowed, false);
+    assert.match(same.reasons.join(' '), /một lệnh mỗi cụm/);
+  });
+});

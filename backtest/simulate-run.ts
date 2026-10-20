@@ -33,6 +33,13 @@ import type { Candle, Contract, Mode } from '../packages/core/types.ts';
 import { createReplay, decisionTimes, signalDedupeKey, loadContracts, assertWindowAllowed, DEV_PERIOD, type BlindAuth, type FundingRow, type Window } from './replay.ts';
 import { fundingFallbackRate, maxAbsFundingRate, meanFundingRate } from '../packages/core/sizing.ts';
 import { donchianBreakout } from '../packages/core/breakout.ts';
+import { trendSignal, buildTrendPlan } from '../packages/core/trend.ts';
+import { mtfSide, h1Trigger, h4TrendOk, buildMtfPlan, frameTrend, alignSetup, m15Trigger, buildAlignPlan, type FrameTrend, type TrendFrame } from '../packages/core/mtf-pullback.ts';
+import { marketRegime } from '../packages/core/regime.ts';
+import { sideRuleBlocks } from '../packages/core/entry-filters.ts';
+import { clusterSymbols } from '../packages/core/risk-cluster.ts';
+import { liquidityRanks } from '../scanner/rank.ts';
+import type { ScanInput } from '../scanner/run-scan.ts';
 import { loadCandles, createFetcher, fetchWindow1m, HOUR, MINUTE, DAY, type Interval, type Fetcher } from './data.ts';
 import {
   createTrade, advanceTrade, forceClose, tradeRecord, portfolioView, createBook, bookFlow, bookClose, isPaused, summarize, groupStats, isDone,
@@ -42,6 +49,13 @@ import {
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 export type Filter = 'A' | 'all';
+
+// Mốc mỗi 15 phút trong cửa sổ (t = openTime nến 15m kế tiếp — như decisionTimes)
+export function quarterHours(w: Window): number[] {
+  const out: number[] = [];
+  for (let t = Math.ceil(w.start / (15 * MINUTE)) * 15 * MINUTE; t < w.end; t += 15 * MINUTE) out.push(t);
+  return out;
+}
 export type PickState = { used: Set<string>; cooldownUntil: Map<string, number>; active: Set<string> };
 export type Pick = { a: Analysis; plan: PlannerPlan; key: string; kind: 'zone' | 'pattern' };
 
@@ -65,7 +79,7 @@ export function pickCandidates(results: readonly Analysis[], filter: Filter, st:
     if (filter === 'A' && a.grade?.grade !== 'A') { inc(skip, 'không phải Hạng A'); continue; }
     const blocked = blocks.get(a.symbol);
     if (blocked !== undefined) {
-      for (const rule of new Set(blocked.match(/#\d+/g) ?? ['?'])) inc(skip, `luật vào lệnh ${rule}`);
+      for (const rule of new Set(blocked.match(/#[A-Za-z0-9]+/g) ?? ['?'])) inc(skip, `luật vào lệnh ${rule}`);
       continue;
     }
     const key = signalDedupeKey({ symbol: a.symbol, signalId: a.signal.id, pattern: ps === null ? null : { patternId: ps.patternId, breakoutTime: ps.breakoutTime } });
@@ -139,7 +153,9 @@ export async function runSimulation(o: RunOptions) {
 
 async function simulate(o: RunOptions) {
   const rep = createReplay({ dir: o.dir, mode: o.mode, window: o.window, contracts: o.contracts, events: o.events, capital: o.capital, limit: null, ...(o.auth !== undefined ? { auth: o.auth } : {}) });
-  const times = decisionTimes(o.mode, o.window);
+  // #25–#29 mtf-align: điểm vào theo nến 15m → mốc quyết định mỗi 15 phút (Swing mặc định mỗi giờ)
+  const alignOn = COMMON.entryRules.mtfAlign !== null && o.mode === 'swing';
+  const times = alignOn ? quarterHours(o.window) : decisionTimes(o.mode, o.window);
   const book = createBook({ capital: o.capital, ...DEFAULT_BOOK, pauseHours: o.pauseHours });
   const active: SimTrade[] = [];
   const done: TradeRecord[] = [];
@@ -153,8 +169,9 @@ async function simulate(o: RunOptions) {
   const pathIntervalOf = new Map<string, Interval>(); // độ phủ: khung đã dùng cho từng mã
   const fundingOf = new Map<string, FundingRow[]>();
   const h4Of = new Map<string, Candle[]>(); // C3: nến 4H (khởi động ATR + trong kỳ, cắt tại cuối cửa sổ)
+  const d1Of = new Map<string, Candle[]>(); // trend-d1: nến 1D (khởi động 300 ngày cho ATR + trong kỳ, cắt tại cuối cửa sổ)
   const stats = { steps: 0, scanErrors: 0, signalsDat: 0, signalsA: 0, pausedSignals: 0, plannerRejected: 0, opened: 0,
-    fundingFallback: 0, m1Asked: 0, m1FromCache: 0, m1Fetched: 0, m1Missing: 0, m1FetchErrors: 0, m1FetchDisabled: false as boolean, forcedPeriodEnd: 0 };
+    fundingFallback: 0, trendSignals: 0, trendOpened: 0, mtfTriggers: 0, mtfNoPlan: 0, mtfOpened: 0, alignSetups: 0, alignNoPlan: 0, alignOpenedTrend: 0, alignOpenedRecovery: 0, m1Asked: 0, m1FromCache: 0, m1Fetched: 0, m1Missing: 0, m1FetchErrors: 0, m1FetchDisabled: false as boolean, forcedPeriodEnd: 0 };
   const m1Errors: string[] = [];
 
   function path(symbol: string): { interval: Interval; candles: Candle[] } {
@@ -179,6 +196,14 @@ async function simulate(o: RunOptions) {
     if (c === undefined) {
       c = loadCandles(o.dir, symbol, '4h', o.window.start - 60 * 4 * HOUR, o.window.end).candles;
       h4Of.set(symbol, c);
+    }
+    return c;
+  }
+  function d1(symbol: string): Candle[] {
+    let c = d1Of.get(symbol);
+    if (c === undefined) {
+      c = loadCandles(o.dir, symbol, '1d', o.window.start - 300 * DAY, o.window.end).candles;
+      d1Of.set(symbol, c);
     }
     return c;
   }
@@ -225,7 +250,7 @@ async function simulate(o: RunOptions) {
       const i = active.indexOf(tr);
       if (i >= 0) active.splice(i, 1);
       st.active.delete(tr.k.symbol);
-      if (!active.some((x) => x.k.symbol === tr.k.symbol)) { pathOf.delete(tr.k.symbol); fundingOf.delete(tr.k.symbol); h4Of.delete(tr.k.symbol); }
+      if (!active.some((x) => x.k.symbol === tr.k.symbol)) { pathOf.delete(tr.k.symbol); fundingOf.delete(tr.k.symbol); h4Of.delete(tr.k.symbol); d1Of.delete(tr.k.symbol); }
       if (tr.b.firstFillAt !== null) st.cooldownUntil.set(`${tr.k.symbol}|${tr.k.side}`, tr.b.closedAt! + cooldownMs(o.mode));
       done.push(tradeRecord(tr));
     }
@@ -233,15 +258,253 @@ async function simulate(o: RunOptions) {
 
   async function advanceAll(until: number) {
     for (const tr of active) {
-      await advanceTrade(tr, path(tr.k.symbol).candles, until, { funding: funding(tr.k.symbol), resolve, ...(o.policy === 'C3' ? { h4: h4(tr.k.symbol) } : {}) });
+      await advanceTrade(tr, path(tr.k.symbol).candles, until, { funding: funding(tr.k.symbol), resolve, ...(o.policy === 'C3' ? { h4: h4(tr.k.symbol) } : {}),
+        ...(tr.k.trend ? { d1: d1(tr.k.symbol) } : {}) });
     }
     closeOut(settle(book, active, marks));
   }
 
+  // risk-cluster (COMMON.portfolio.cluster): nến 1D đã đóng tại t (qua máy phát lại — closeTime < t) của mã mới, mã đang mở và BTC
+  async function clusterDaily(input: ScanInput, symbol: string): Promise<{ clusterDaily: Map<string, Candle[]> } | Record<string, never>> {
+    const cl = COMMON.portfolio.cluster;
+    if (cl === null) return {};
+    const n = Math.max(cl.corrDays, cl.betaDays) + 2; // máy phát lại trả limit − 1 nến đã đóng → đủ max(corrDays, betaDays) lợi suất
+    const m = new Map<string, Candle[]>();
+    for (const s of clusterSymbols(symbol, portfolioView(active))) m.set(s, await input.klines(s, '1d', n));
+    return { clusterDaily: m };
+  }
+
+  // trend-d1 (COMMON.trend, chỉ Swing): đúng lúc nến 1D đóng (t = 00:00 UTC) xét vũ trụ top swingUniverseSize thanh khoản tại t (như runScan),
+  // tín hiệu Donchian giá đóng → kế hoạch (core/trend.ts) → CÙNG planner (định cỡ 2%, danh mục, risk-cluster) → lệnh market ở nến kế tiếp.
+  // Không qua cổng/điểm của máy quét (hệ riêng, theo đăng ký trước); luật sides/FGI-hướng/minListingDays áp như lệnh vùng (sideRuleBlocks).
+  async function trendStep(t: number, input: ScanInput, capital: number): Promise<void> {
+    const ranks = liquidityRanks(input.tickers);
+    let universe = [...input.contracts].sort((a, b) => (ranks.get(a.symbol) ?? 1) - (ranks.get(b.symbol) ?? 1));
+    if (COMMON.entryRules.swingUniverseSize !== null) universe = universe.slice(0, COMMON.entryRules.swingUniverseSize);
+    const onboardDate = new Map(input.contracts.map((c) => [c.symbol, c.onboardDate]));
+    for (const contract of universe) {
+      const sym = contract.symbol;
+      const daily = await input.klines(sym, '1d', CONFIG.swing.trendLimit);
+      const sig = trendSignal(daily, t);
+      if (sig === null) continue;
+      stats.trendSignals++;
+      const key = `${sym}|trend|${sig.side}|${sig.barOpenTime}`;
+      if (st.used.has(key)) { inc(skip, 'trend: trùng khóa tín hiệu'); continue; }
+      if (st.active.has(sym)) { inc(skip, 'trend: hợp đồng đang có lệnh'); continue; }
+      if ((st.cooldownUntil.get(`${sym}|${sig.side}`) ?? -Infinity) > t) { inc(skip, 'trend: cooldown cặp + chiều'); continue; }
+      const blocks = sideRuleBlocks(sym, sig.side, { mode: 'swing', ...(input.fgi !== undefined ? { fgi: input.fgi } : {}), now: t, onboardDate });
+      if (blocks.length > 0) {
+        for (const rule of new Set(blocks.join(' ').match(/#[A-Za-z0-9]+/g) ?? ['?'])) inc(skip, `trend: luật vào lệnh ${rule}`);
+        continue;
+      }
+      const premium = input.premiums.get(sym);
+      if (premium === undefined) { inc(skip, 'trend: thiếu giá mark/funding'); continue; }
+      const h1 = (await input.klines(sym, '1h', COMMON.slippage.volumeBars1h + 1)).slice(-COMMON.slippage.volumeBars1h);
+      const vol1m = h1.reduce((x, c) => x + c.quoteVolume, 0) / h1.length / 60;
+      if (!(vol1m > 0)) throw new Error(`${sym}: không ước được khối lượng 1 phút tại ${new Date(t).toISOString()}`);
+      const fb = fundingBufferAt(funding(sym), t, input.fundingIntervals.get(sym) ?? COMMON.defaultFundingIntervalHours);
+      if (fb.fallback) stats.fundingFallback++;
+      const tierPct = COMMON.costRoundTripPct[tierOf(ranks.get(sym) ?? 1)];
+      const costModel = { tierPct, quoteVolPerMin: vol1m };
+      const fundingBuffer = { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours };
+      const plan = buildTrendPlan({ signal: sig, markPrice: premium.markPrice, h4: await input.klines(sym, '4h', 31), tickSize: contract.tickSize,
+        stepSize: contract.stepSize, capital, riskPct: COMMON.risk.perTradePct, cost: costModel, fundingBuffer });
+      const pr = planOrders({
+        plan, grade: 'A', // hệ trend-d1 không chấm hạng (không qua máy quét) — mọi tín hiệu đi tiếp như --filter all
+        signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
+        maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t, costModel, fundingBuffer,
+        fundingMeanRate: meanFundingRate(funding(sym), t), trendSim: true, ...(await clusterDaily(input, sym)),
+      });
+      if (!pr.allowed) {
+        stats.plannerRejected++;
+        for (const why of pr.reasons.length > 0 ? pr.reasons : ['(không lý do)']) inc(rejects, bucket(why));
+        continue;
+      }
+      const tr = createTrade({
+        id: `${o.mode}-${stats.opened + 1}`, symbol: sym, mode: o.mode, policy: o.policy, placedAt: t, equityAtEntry: capital, contract,
+        plan, planner: pr, pathInterval: path(sym).interval,
+        cost: { tierPct, impactPct: COMMON.slippage.pctPerParticipation, vol1m },
+        meta: { grade: null, label: `trend-d1 ${sig.side === 'long' ? 'Long' : 'Short'}`, kind: 'trend', score: 0, signalId: key, key, afterTp1: null },
+      });
+      stats.opened++;
+      stats.trendOpened++;
+      active.push(tr);
+      st.used.add(key);
+      st.active.add(sym);
+    }
+  }
+
+  // #24 mtf-pullback (COMMON.entryRules.mtfPullback, chỉ Swing): MỖI GIỜ xét vũ trụ top swingUniverseSize tại t; điều kiện rẻ trước
+  // (chế độ BTC → phía, nến 1H vừa đóng cắt EMA20, đóng 4H so EMA50) rồi mới dựng vùng "clean" 1D/4H (core/mtf-pullback.ts) → CÙNG planner.
+  async function mtfStep(t: number, input: ScanInput, capital: number): Promise<void> {
+    const cfg = COMMON.entryRules.mtfPullback!;
+    const regime = marketRegime(await input.klines('BTCUSDT', '1d', 400)).regime;
+    const side = mtfSide(regime);
+    if (side === null) { inc(skip, 'mtf: chế độ BTC Đi ngang — không vào'); return; }
+    const ranks = liquidityRanks(input.tickers);
+    let universe = [...input.contracts].sort((a, b) => (ranks.get(a.symbol) ?? 1) - (ranks.get(b.symbol) ?? 1));
+    if (COMMON.entryRules.swingUniverseSize !== null) universe = universe.slice(0, COMMON.entryRules.swingUniverseSize);
+    const onboardDate = new Map(input.contracts.map((c) => [c.symbol, c.onboardDate]));
+    for (const contract of universe) {
+      const sym = contract.symbol;
+      const h1 = await input.klines(sym, '1h', 101);
+      const lastH1 = h1[h1.length - 1];
+      if (lastH1 === undefined || lastH1.closeTime + 1 !== t) continue; // nến 1H chưa đóng đúng lúc t (thiếu dữ liệu/ngừng giao dịch)
+      if (!h1Trigger(h1, side, cfg.emaH1)) continue;
+      const h4 = await input.klines(sym, '4h', CONFIG.swing.entryLimit);
+      if (!h4TrendOk(h4, side, cfg.emaH4)) continue;
+      stats.mtfTriggers++;
+      const key = `${sym}|mtf|${side}|${lastH1.openTime}`;
+      if (st.used.has(key)) { inc(skip, 'mtf: trùng khóa tín hiệu'); continue; }
+      if (st.active.has(sym)) { inc(skip, 'mtf: hợp đồng đang có lệnh'); continue; }
+      if ((st.cooldownUntil.get(`${sym}|${side}`) ?? -Infinity) > t) { inc(skip, 'mtf: cooldown cặp + chiều'); continue; }
+      const blocks = sideRuleBlocks(sym, side, { mode: 'swing', ...(input.fgi !== undefined ? { fgi: input.fgi } : {}), now: t, onboardDate });
+      if (blocks.length > 0) {
+        for (const rule of new Set(blocks.join(' ').match(/#[A-Za-z0-9]+/g) ?? ['?'])) inc(skip, `mtf: luật vào lệnh ${rule}`);
+        continue;
+      }
+      const premium = input.premiums.get(sym);
+      if (premium === undefined) { inc(skip, 'mtf: thiếu giá mark/funding'); continue; }
+      const vb = h1.slice(-COMMON.slippage.volumeBars1h);
+      const vol1m = vb.reduce((x, c) => x + c.quoteVolume, 0) / vb.length / 60;
+      if (!(vol1m > 0)) throw new Error(`${sym}: không ước được khối lượng 1 phút tại ${new Date(t).toISOString()}`);
+      const fb = fundingBufferAt(funding(sym), t, input.fundingIntervals.get(sym) ?? COMMON.defaultFundingIntervalHours);
+      const tierPct = COMMON.costRoundTripPct[tierOf(ranks.get(sym) ?? 1)];
+      const costModel = { tierPct, quoteVolPerMin: vol1m };
+      const fundingBuffer = { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours };
+      const m = buildMtfPlan({ side, h1, h4, d1: await input.klines(sym, '1d', CONFIG.swing.trendLimit), now: t, markPrice: premium.markPrice,
+        tickSize: contract.tickSize, stepSize: contract.stepSize, capital, riskPct: COMMON.risk.perTradePct, cost: costModel, fundingBuffer, cfg });
+      if (m.plan === null) { stats.mtfNoPlan++; inc(skip, bucket(m.reason)); continue; }
+      if (fb.fallback) stats.fundingFallback++;
+      const pr = planOrders({
+        plan: m.plan, grade: 'A', // hệ mtf-pullback không chấm hạng (không qua máy quét) — mọi tín hiệu đi tiếp như --filter all
+        signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
+        maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t, costModel, fundingBuffer,
+        fundingMeanRate: meanFundingRate(funding(sym), t), ...(await clusterDaily(input, sym)),
+      });
+      if (!pr.allowed) {
+        stats.plannerRejected++;
+        for (const why of pr.reasons.length > 0 ? pr.reasons : ['(không lý do)']) inc(rejects, bucket(why));
+        continue;
+      }
+      const tr = createTrade({
+        id: `${o.mode}-${stats.opened + 1}`, symbol: sym, mode: o.mode, policy: o.policy, placedAt: t, equityAtEntry: capital, contract,
+        plan: m.plan, planner: pr, pathInterval: path(sym).interval,
+        cost: { tierPct, impactPct: COMMON.slippage.pctPerParticipation, vol1m },
+        meta: { grade: null, label: `mtf-pullback ${side === 'long' ? 'Long' : 'Short'}`, kind: 'mtf', score: 0, signalId: key, key, afterTp1: null },
+      });
+      stats.opened++;
+      stats.mtfOpened++;
+      active.push(tr);
+      st.used.add(key);
+      st.active.add(sym);
+    }
+  }
+
+  // #25–#29 mtf-align (COMMON.entryRules.mtfAlign, chỉ Swing): MỖI 15 PHÚT xét vũ trụ top swingUniverseSize tại t; nến 15m kích hoạt (rẻ) trước,
+  // rồi xu hướng các khung cấu hình (core/mtf-pullback.ts frameTrend/alignSetup), rồi vùng "clean" cho TP1 → CÙNG planner (sàn chi phí bật
+  // bằng COMMON.risk.maxCostR trong biến thể). Lệnh hồi phục (#26): chốt 100% tại TP1, giữ ≤ recoveryMaxHoldHours (exitOverride).
+  const FRAME_BARS: Record<TrendFrame, number> = { '15m': 200, '1h': 200, '4h': CONFIG.swing.entryLimit, '1d': CONFIG.swing.trendLimit };
+  async function alignStep(t: number, input: ScanInput, capital: number): Promise<void> {
+    const cfg = COMMON.entryRules.mtfAlign!;
+    const ranks = liquidityRanks(input.tickers);
+    let universe = [...input.contracts].sort((a, b) => (ranks.get(a.symbol) ?? 1) - (ranks.get(b.symbol) ?? 1));
+    if (COMMON.entryRules.swingUniverseSize !== null) universe = universe.slice(0, COMMON.entryRules.swingUniverseSize);
+    const onboardDate = new Map(input.contracts.map((c) => [c.symbol, c.onboardDate]));
+    const need: TrendFrame[] = [...new Set<TrendFrame>([...cfg.frames, ...(cfg.recovery ? ['1d', '4h', '1h'] as TrendFrame[] : [])])];
+    for (const contract of universe) {
+      const sym = contract.symbol;
+      const m15 = await input.klines(sym, '15m', FRAME_BARS['15m']);
+      const lastM = m15[m15.length - 1];
+      if (lastM === undefined || lastM.closeTime + 1 !== t) continue; // nến 15m chưa đóng đúng lúc t
+      const trig = { long: m15Trigger(m15, 'long', cfg), short: m15Trigger(m15, 'short', cfg) };
+      if (!trig.long && !trig.short) continue;
+      const bars = new Map<TrendFrame, Awaited<ReturnType<ScanInput['klines']>>>([['15m', m15]]);
+      const barsOf = async (f: TrendFrame) => { let b = bars.get(f); if (b === undefined) { b = await input.klines(sym, f, FRAME_BARS[f]); bars.set(f, b); } return b; };
+      const trends: Partial<Record<TrendFrame, FrameTrend>> = {};
+      for (const f of need) trends[f] = frameTrend(await barsOf(f), cfg.emaFast, cfg.emaSlow);
+      const setup = alignSetup(trends, cfg.frames, cfg.recovery);
+      if (setup === null || !trig[setup.side]) continue;
+      const side = setup.side;
+      stats.alignSetups++;
+      const key = `${sym}|align|${side}|${lastM.openTime}`;
+      if (st.used.has(key)) { inc(skip, 'align: trùng khóa tín hiệu'); continue; }
+      if (st.active.has(sym)) { inc(skip, 'align: hợp đồng đang có lệnh'); continue; }
+      if ((st.cooldownUntil.get(`${sym}|${side}`) ?? -Infinity) > t) { inc(skip, 'align: cooldown cặp + chiều'); continue; }
+      const blocks = sideRuleBlocks(sym, side, { mode: 'swing', ...(input.fgi !== undefined ? { fgi: input.fgi } : {}), now: t, onboardDate });
+      if (blocks.length > 0) {
+        for (const rule of new Set(blocks.join(' ').match(/#[A-Za-z0-9]+/g) ?? ['?'])) inc(skip, `align: luật vào lệnh ${rule}`);
+        continue;
+      }
+      const premium = input.premiums.get(sym);
+      if (premium === undefined) { inc(skip, 'align: thiếu giá mark/funding'); continue; }
+      const h1 = await barsOf('1h');
+      const vb = h1.slice(-COMMON.slippage.volumeBars1h);
+      const vol1m = vb.reduce((x, c) => x + c.quoteVolume, 0) / vb.length / 60;
+      if (!(vol1m > 0)) throw new Error(`${sym}: không ước được khối lượng 1 phút tại ${new Date(t).toISOString()}`);
+      const fb = fundingBufferAt(funding(sym), t, input.fundingIntervals.get(sym) ?? COMMON.defaultFundingIntervalHours);
+      const tierPct = COMMON.costRoundTripPct[tierOf(ranks.get(sym) ?? 1)];
+      const costModel = { tierPct, quoteVolPerMin: vol1m };
+      const fundingBuffer = { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours };
+      const kindVn = setup.kind === 'trend' ? 'xu hướng' : 'hồi phục';
+      const label = `mtf-align ${kindVn} ${side === 'long' ? 'Long' : 'Short'}`;
+      const m = buildAlignPlan({ side, m15, h1, h4: await barsOf('4h'), d1: await barsOf('1d'), now: t, markPrice: premium.markPrice,
+        tickSize: contract.tickSize, stepSize: contract.stepSize, capital, riskPct: COMMON.risk.perTradePct, cost: costModel, fundingBuffer, cfg, label });
+      if (m.plan === null) { stats.alignNoPlan++; inc(skip, bucket(m.reason)); continue; }
+      if (fb.fallback) stats.fundingFallback++;
+      const pr = planOrders({
+        plan: m.plan, grade: 'A', // hệ mtf-align không chấm hạng (không qua máy quét)
+        signal: { id: key, fresh: true }, mode: o.mode, contract, capital, openTrades: portfolioView(active), openOrderCount: 0,
+        maxNotional: COMMON.slippage.maxParticipation * vol1m, markPrice: premium.markPrice, runId: 'sim', now: t, costModel, fundingBuffer,
+        fundingMeanRate: meanFundingRate(funding(sym), t), ...(await clusterDaily(input, sym)),
+      });
+      if (!pr.allowed) {
+        stats.plannerRejected++;
+        for (const why of pr.reasons.length > 0 ? pr.reasons : ['(không lý do)']) inc(rejects, bucket(why));
+        continue;
+      }
+      const tr = createTrade({
+        id: `${o.mode}-${stats.opened + 1}`, symbol: sym, mode: o.mode, policy: o.policy, placedAt: t, equityAtEntry: capital, contract,
+        plan: m.plan, planner: pr, pathInterval: path(sym).interval,
+        cost: { tierPct, impactPct: COMMON.slippage.pctPerParticipation, vol1m },
+        meta: { grade: null, label, kind: 'mtf', score: 0, signalId: key, key, afterTp1: null },
+        ...(setup.kind === 'recovery' ? { exitOverride: { tp1Pct: 100 as const, maxHoldHours: cfg.recoveryMaxHoldHours } } : {}),
+      });
+      stats.opened++;
+      if (setup.kind === 'trend') stats.alignOpenedTrend++; else stats.alignOpenedRecovery++;
+      active.push(tr);
+      st.used.add(key);
+      st.active.add(sym);
+    }
+  }
+
+  const trendOn = COMMON.trend.enabled && o.mode === 'swing';
+  const mtfOn = COMMON.entryRules.mtfPullback !== null && o.mode === 'swing';
+  const zonesOn = !(trendOn && COMMON.trend.replaceZones) && !mtfOn && !alignOn; // mtf-pullback / mtf-align thay hoàn toàn lệnh vùng Swing
   const started = performance.now();
+  const progress = (k: number, t: number) => {
+    if (k % 100 === 0 || k === times.length - 1) {
+      const el = (performance.now() - started) / 1000;
+      o.log(`[${k + 1}/${times.length}] ${new Date(t).toISOString()} | vốn ${book.equity.toFixed(0)} | mở ${active.length} | xong ${done.length} | 1m hỏi ${stats.m1Asked} tải ${stats.m1Fetched} | ${el.toFixed(0)} s`);
+    }
+  };
   for (let k = 0; k < times.length; k++) {
     const t = times[k]!;
     await advanceAll(t);
+    if (!zonesOn) {
+      // trend-d1 / mtf-pullback thay hoàn toàn lệnh vùng: không chạy máy quét; trend-d1 chỉ dựng dữ liệu theo thời điểm lúc nến 1D đóng
+      const daily = trendOn && t % DAY === 0;
+      const hourly = mtfOn && t % HOUR === 0;
+      if ((daily || hourly || alignOn) && !isPaused(book, t)) {
+        stats.steps++;
+        const input = rep.buildInput(t, { openTrades: portfolioView(active), prevSignals });
+        if (daily) await trendStep(t, input, book.equity);
+        if (hourly) await mtfStep(t, input, book.equity);
+        if (alignOn) await alignStep(t, input, book.equity);
+      }
+      progress(k, t);
+      continue;
+    }
     const input = rep.buildInput(t, { openTrades: portfolioView(active), prevSignals });
     const capital = book.equity;
     const r = await runScan({ ...input, capital });
@@ -282,6 +545,7 @@ async function simulate(o: RunOptions) {
         fundingBuffer: { maxAbsRate: fb.maxAbsRate, intervalHours: fb.intervalHours },
         fundingMeanRate: meanFundingRate(funding(a.symbol), t), // #1 sàn chi phí (chỉ dùng khi bật)
         ...(breakout !== undefined ? { breakout } : {}),
+        ...(await clusterDaily(input, a.symbol)),
       });
       if (!pr.allowed) {
         stats.plannerRejected++;
@@ -301,10 +565,8 @@ async function simulate(o: RunOptions) {
       st.used.add(pick.key);
       st.active.add(a.symbol);
     }
-    if (k % 100 === 0 || k === times.length - 1) {
-      const el = (performance.now() - started) / 1000;
-      o.log(`[${k + 1}/${times.length}] ${new Date(t).toISOString()} | vốn ${book.equity.toFixed(0)} | mở ${active.length} | xong ${done.length} | 1m hỏi ${stats.m1Asked} tải ${stats.m1Fetched} | ${el.toFixed(0)} s`);
-    }
+    if (trendOn && t % DAY === 0) await trendStep(t, input, book.equity); // replaceZones = false: trend-d1 chạy song song lệnh vùng
+    progress(k, t);
   }
   // Hết kỳ: chạy tới mốc cuối rồi đóng phần còn lại ở giá đóng nến cuối TRƯỚC mốc cuối
   await advanceAll(o.window.end);

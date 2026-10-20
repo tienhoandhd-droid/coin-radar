@@ -191,3 +191,12 @@ test('Task 8: bật luật cần funding (#5/#8) mà lần quét không có fund
     assert.match(r.warnings.join(' '), /#8.*thiếu funding TB/);
   });
 });
+
+test('FGI-hướng bật: lần quét Swing không có FGI → cảnh báo (mọi lệnh Swing mới bị chặn); có FGI → in lý do của FGI', async () => {
+  const { withConfigOverride } = await import('../packages/core/config-override.ts');
+  await withConfigOverride({ 'COMMON.entryRules.fgiDirection': { lagDays: 1, meanDays: 7, threshold: 50 } }, async () => {
+    assert.match((await runScan(input())).warnings.join(' '), /FGI-hướng đang bật nhưng .*thiếu/);
+    const r = await runScan({ ...input(), fgi: { side: 'long', reason: 'FGI TB 7 ngày = 61 ≥ 50 → chỉ Long' } });
+    assert.match(r.warnings.join(' '), /FGI-hướng: FGI TB 7 ngày = 61/);
+  });
+});

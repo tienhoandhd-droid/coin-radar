@@ -38,7 +38,8 @@ import { parseEvents, type MacroEvent } from '../packages/core/events.ts';
 import { advanceSignalState, type SignalState } from '../packages/core/signal.ts';
 import type { OpenTrade } from '../packages/core/portfolio.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, Mode, PremiumIndex } from '../packages/core/types.ts';
-import { HOUR, MINUTE, DAY, INTERVAL_MS, loadCandles, needFrom, planRange, type Interval } from './data.ts';
+import { HOUR, MINUTE, DAY, INTERVAL_MS, loadCandles, loadFgi, needFrom, planRange, type Interval } from './data.ts';
+import { fgiDirectionAt, type FgiRow } from '../packages/core/fgi.ts';
 import { meanFundingRate } from '../packages/core/sizing.ts';
 
 // ---- Kỳ phát triển D / kỳ mù B, C (docs/superpowers/plans/2026-10-19-ke-hoach-2-doi-chung-du-lieu-that.md, "Quy trình mô phỏng MÙ") ----
@@ -261,6 +262,15 @@ export function createReplay(o: ReplayOptions) {
     return v instanceof Error ? null : v;
   }
 
+  // FGI-hướng (chỉ khi luật bật): nạp data/cache/fgi.json một lần, cắt tại cuối cửa sổ; độ trễ theo thời điểm do fgiDirectionAt áp
+  let fgiRows: FgiRow[] | null = null;
+  function fgiAt(t: number): ScanInput['fgi'] {
+    const cfg = COMMON.entryRules.fgiDirection;
+    if (cfg === null) return undefined;
+    fgiRows ??= loadFgi(o.dir, o.window.end);
+    return fgiDirectionAt(fgiRows, t, cfg);
+  }
+
   function buildInput(t: number, state: ReplayState): ScanInput {
     if (!(t >= o.window.start && t < o.window.end)) {
       throw new Error(`mốc ${new Date(t).toISOString()} ngoài cửa sổ phát lại [${new Date(o.window.start).toISOString()}, ${new Date(o.window.end).toISOString()})`);
@@ -289,9 +299,11 @@ export function createReplay(o: ReplayOptions) {
       premiums.set(c.symbol, { symbol: c.symbol, markPrice: mark, lastFundingRate: fa.lastFundingRate, nextFundingTime: fa.nextFundingTime });
       if (fa.intervalHours !== null) fundingIntervals.set(c.symbol, fa.intervalHours);
     }
+    const fgi = fgiAt(t);
     return {
       mode: o.mode, contracts, tickers, books, premiums, fundingIntervals, now: t, events: o.events, capital: o.capital, limit: o.limit,
       openTrades: state.openTrades, prevSignals: state.prevSignals,
+      ...(fgi !== undefined ? { fgi } : {}),
       // Task 8 (#5/#8): funding TB có dấu các kỳ ĐÃ chốt trong N ngày tới t; không có kỳ nào → null
       fundingMean: (symbol, days) => {
         const f = fundingRows(symbol);

@@ -1,7 +1,8 @@
 import { COMMON } from './config.ts';
 import type { Analysis } from './analyze.ts';
 import type { Regime } from './regime.ts';
-import type { Mode } from './types.ts';
+import type { FgiDecision } from './fgi.ts';
+import type { Mode, Side } from './types.ts';
 
 // Luật vào lệnh MỚI theo mặt cắt ngang + chế độ thị trường (kế hoạch 2, Task 8; COMMON.entryRules — mặc định tắt hết). Hàm THUẦN, chạy
 // SAU khi chấm mọi mã của một lần quét (cần cả nhóm để xếp hạng RS / funding tại đúng thời điểm quét — không nhìn trước):
@@ -15,7 +16,32 @@ export type EntryFilterContext = {
   mode: Mode;
   regime: Regime;
   fundingMean?: (symbol: string, days: number) => number | null; // funding TB có dấu mỗi kỳ, kỳ đã chốt ≤ thời điểm quét; null = không có
+  // Luật đăng ký trước 20/10/2026 (dùng chung cho lệnh vùng và hệ trend-d1 — sideRuleBlocks):
+  fgi?: FgiDecision; // FGI-hướng tại thời điểm quét (core/fgi.ts); không có khi luật bật → chặn (fail closed)
+  now?: number; // thời điểm quyết định (ms) — cho minListingDays
+  onboardDate?: ReadonlyMap<string, number>; // ngày niêm yết theo mã (exchangeInfo onboardDate) — cho minListingDays
 };
+
+// Luật không cần mặt cắt ngang, theo (mã, phía): chỉ phía cho phép (sides), FGI-hướng (chỉ Swing), số ngày niêm yết tối thiểu.
+// Trả các lý do chặn (rỗng = không chặn). Thẻ #sides / #FGI / #listing để bộ mô phỏng đếm theo luật. Thiếu số liệu → chặn.
+export function sideRuleBlocks(symbol: string, side: Side, ctx: Pick<EntryFilterContext, 'mode' | 'fgi' | 'now' | 'onboardDate'>): string[] {
+  const R = COMMON.entryRules;
+  const why: string[] = [];
+  const word = side === 'long' ? 'Long' : 'Short';
+  if (!R.sides.includes(side)) why.push(`#sides chỉ vào lệnh ${R.sides.map((x) => (x === 'long' ? 'Long' : 'Short')).join('/')} — bỏ ${word}`);
+  if (R.fgiDirection !== null && ctx.mode === 'swing') {
+    if (ctx.fgi === undefined || ctx.fgi.side === null) why.push(`#FGI ${ctx.fgi?.reason ?? 'không có dữ liệu chỉ số Sợ hãi & Tham lam'} — không vào lệnh mới`);
+    else if (ctx.fgi.side !== side) why.push(`#FGI ${ctx.fgi.reason} — bỏ ${word}`);
+  }
+  if (R.minListingDays !== null) {
+    const listed = ctx.onboardDate?.get(symbol);
+    if (ctx.now === undefined || listed === undefined) why.push(`#listing thiếu ngày niêm yết của ${symbol} — không vào lệnh mới`);
+    else if (ctx.now - listed < R.minListingDays * 86_400_000) {
+      why.push(`#listing niêm yết ${((ctx.now - listed) / 86_400_000).toFixed(1).replace('.', ',')} ngày < ${R.minListingDays} ngày`);
+    }
+  }
+  return why;
+}
 
 const REGIME_VN: Record<Regime, string> = { up: 'Lên', sideways: 'Đi ngang', down: 'Xuống' };
 
@@ -76,6 +102,7 @@ export function entryBlocks(results: readonly Analysis[], ctx: EntryFilterContex
         if (side === 'short' && pct < R.fundingXsPct) why.push(`#8 Short cần phân vị funding ≥ ${R.fundingXsPct}% (mã này ${pct.toFixed(0)}%)`);
       }
     }
+    why.push(...sideRuleBlocks(a.symbol, side, ctx));
     if (why.length > 0) out.set(a.symbol, why.join('; '));
   }
   return out;

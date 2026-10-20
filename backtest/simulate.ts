@@ -37,6 +37,7 @@ import { snapToTick } from '../packages/core/price.ts';
 import { splitQuantity } from '../packages/core/plan.ts';
 import { fundingGuard } from '../packages/core/funding-guard.ts';
 import { atr } from '../packages/core/indicators.ts';
+import { trendStopX } from '../packages/core/trend.ts';
 import { exitSplit, type PlannerPlan, type PlannerResult } from '../packages/bot/planner.ts';
 // Công thức khớp/phí/trượt/funding/trailing dùng chung với sàn giả lập của bot (packages/bot/paper.ts) — chỉ nằm ở fill-model.ts
 import {
@@ -55,7 +56,8 @@ const DAY = 86_400_000;
 export type SimCost = FillCost; // tierPct (khứ hồi), impactPct, vol1m (Infinity = bỏ trượt theo cỡ, chỉ dùng trong test)
 
 export type TrailState = { kind: 'callback'; actX: number; cbPct: number; peakX: number | null } | { kind: 'atr'; dist: number }
-  | { kind: 'close4h'; levelX: number | null }; // C3: mức dừng chỉ đổi khi nến 4H ĐÓNG (bot đặt lại STOP_MARKET), giữa nến là dừng tĩnh
+  | { kind: 'close4h'; levelX: number | null } // C3: mức dừng chỉ đổi khi nến 4H ĐÓNG (bot đặt lại STOP_MARKET), giữa nến là dừng tĩnh
+  | { kind: 'close1d'; levelX: number | null }; // trend-d1: mức dừng chỉ đổi khi nến 1D ĐÓNG (đỉnh giá đóng từ khi vào ∓ trailAtr × ATR 1D)
 export type Part = { name: 'TP1' | 'TP2' | 'TP3' | 'TR'; qty: number; targetX: number | null; trail: TrailState | null; open: boolean };
 export type EntryLeg = {
   role: 'E1' | 'E2'; ioc: boolean; limitX: number; qty: number; expireAt: number | null; cancelX: number | null;
@@ -77,7 +79,7 @@ export type Flags = {
   fundingGuardTightened: number; fundingGuardClosed: number; // F1: chốt chặn funding khi chạy (siết SL / đóng)
 };
 export type AfterTp1 = { rule: AfterTp1Rule; ruleIfMarketOnly: AfterTp1Rule | null } | null;
-export type TradeMeta = { grade: string | null; label: string; kind: 'zone' | 'pattern'; score: number; signalId: string; key: string; afterTp1: AfterTp1 };
+export type TradeMeta = { grade: string | null; label: string; kind: 'zone' | 'pattern' | 'trend' | 'mtf'; score: number; signalId: string; key: string; afterTp1: AfterTp1 };
 // Định cỡ của planner: rủi ro dự kiến (% vốn, ở giá khớp xấu nhất) + lý do giảm khối lượng (nếu có)
 export type Sizing = { plannedRiskPct: number; requestedQty: number; qty: number; notes: string[] };
 
@@ -85,14 +87,14 @@ export type SimTrade = {
   k: {
     id: string; symbol: string; mode: Mode; side: Side; d: 1 | -1; policy: ExitPolicy; placedAt: number; equityAtEntry: number;
     tick: number; qStep: number; leverage: number; costPct: number; cost: SimCost; pathInterval: string; meta: TradeMeta;
-    initialStopX: number; tp1X: number; trailOnly: boolean; actX: number; cbPct: number; beX: number | null; tp2X: number | null; tp3X: number | null;
+    initialStopX: number; tp1X: number; trailOnly: boolean; trend: boolean; tp1Full: boolean; actX: number; cbPct: number; beX: number | null; tp2X: number | null; tp3X: number | null;
     trailAtr: number; timeStopMs: number; maxHoldMs: number; entryType: PlannerPlan['entryType']; sizing: Sizing;
     riskModel: { a: number; b: number; fundingPerUnit: number }; // từ planner: rủi ro(q) = q·a + q²·b
   };
   s: State;
   b: {
     gross: number; costs: number; funding: number; exits: Exit[]; flows: Array<{ t: number; amount: number }>;
-    firstFillAt: number | null; maxPosQty: number; entryNotional: number; nextT: number; lastFundingT: number; h4Idx: number;
+    firstFillAt: number | null; maxPosQty: number; entryNotional: number; nextT: number; lastFundingT: number; h4Idx: number; d1Idx: number;
     closedAt: number | null; reason: string | null; flags: Flags; liqX: number | null;
   };
 };
@@ -101,6 +103,8 @@ export type SimTrade = {
 export function createTrade(a: {
   id: string; symbol: string; mode: Mode; policy: ExitPolicy; placedAt: number; equityAtEntry: number; contract: Contract;
   plan: PlannerPlan; planner: PlannerResult; cost: SimCost; pathInterval: string; meta: TradeMeta;
+  // #26 lệnh hồi phục (chỉ mô phỏng): chốt 100% tại TP1 (không trailing), giữ tối đa maxHoldHours giờ — thay cách thoát C2 của planner
+  exitOverride?: { tp1Pct: 100; maxHoldHours: number };
 }): SimTrade {
   const pr = a.planner;
   if (!pr.allowed || pr.sizing === null) throw new Error(`createTrade ${a.symbol}: planner không cho vào (${pr.reasons.join('; ')})`);
@@ -111,8 +115,10 @@ export function createTrade(a: {
   const tr = pr.legs.find((l) => l.op === 'placeTrailing');
   const be = pr.legs.find((l) => l.op === 'placeStopLoss' && l.role === 'BE');
   // #3 (Task 8): lệnh phá vỡ không TP1 — planner chỉ đặt SL + trailing 100% (exitRule.tp1Pct = 0)
-  const trailOnly = tp === undefined && pr.exitRule.tp1Pct === 0;
-  if (sl?.op !== 'placeStopLoss' || tr?.op !== 'placeTrailing' || (!trailOnly && tp?.op !== 'placeTakeProfit')) throw new Error(`createTrade ${a.symbol}: planner thiếu SL/TP1/trailing`);
+  // trend-d1: planner chỉ đặt SL (không TP1, không trailing trên sàn) — thoát bằng dừng theo giá đóng 1D (trail 'close1d')
+  const trend = a.plan.trendD1 === true;
+  const trailOnly = !trend && tp === undefined && pr.exitRule.tp1Pct === 0;
+  if (sl?.op !== 'placeStopLoss' || (!trend && tr?.op !== 'placeTrailing') || (!trailOnly && !trend && tp?.op !== 'placeTakeProfit')) throw new Error(`createTrade ${a.symbol}: planner thiếu SL/TP1/trailing`);
   const legs: EntryLeg[] = pr.legs.flatMap((l): EntryLeg[] => {
     if (l.op !== 'placeEntry' || l.input.kind !== 'limit') return [];
     return [{
@@ -132,16 +138,19 @@ export function createTrade(a: {
       id: a.id, symbol: a.symbol, mode: a.mode, side, d, policy: a.policy, placedAt: a.placedAt, equityAtEntry: a.equityAtEntry,
       tick: a.contract.tickSize, qStep: pr.exitRule.qtyStep, leverage: pr.sizing.leverage, costPct: a.plan.costPct, cost: a.cost,
       pathInterval: a.pathInterval, meta: a.meta,
-      initialStopX: toX(d, sl.input.triggerPrice), tp1X: tp?.op === 'placeTakeProfit' ? toX(d, tp.input.triggerPrice) : NaN, trailOnly,
-      actX: toX(d, tr.input.activatePrice), cbPct: tr.input.callbackPct,
+      initialStopX: toX(d, sl.input.triggerPrice), tp1X: tp?.op === 'placeTakeProfit' ? toX(d, tp.input.triggerPrice) : NaN, trailOnly, trend,
+      tp1Full: a.exitOverride !== undefined,
+      actX: tr?.op === 'placeTrailing' ? toX(d, tr.input.activatePrice) : NaN, cbPct: tr?.op === 'placeTrailing' ? tr.input.callbackPct : NaN,
       beX: be?.op === 'placeStopLoss' ? toX(d, be.input.triggerPrice) : null, tp2X: tgt(1), tp3X: tgt(2), trailAtr,
-      timeStopMs: cfg.timeStopHours * HOUR, maxHoldMs: trailOnly ? COMMON.breakout.maxHoldDays * DAY : cfg.maxHoldHours * HOUR, entryType: a.plan.entryType,
+      // trend-d1: không dừng theo thời gian "chưa đạt +1R" (hệ xu hướng chờ lâu), chỉ giữ tối đa COMMON.trend.maxHoldDays ngày
+      timeStopMs: trend ? Infinity : cfg.timeStopHours * HOUR,
+      maxHoldMs: a.exitOverride !== undefined ? a.exitOverride.maxHoldHours * HOUR : trend ? COMMON.trend.maxHoldDays * DAY : trailOnly ? COMMON.breakout.maxHoldDays * DAY : cfg.maxHoldHours * HOUR, entryType: a.plan.entryType,
       sizing: { plannedRiskPct: pr.sizing.realRiskPct, requestedQty: pr.sizing.requestedQty, qty: pr.sizing.qty, notes: pr.reasons },
       riskModel: { a: pr.sizing.riskModel.a, b: pr.sizing.riskModel.b, fundingPerUnit: pr.sizing.riskModel.fundingPerUnit },
     },
     s: { legs, parts: [], posQty: 0, avgX: 0, stopX: toX(d, sl.input.triggerPrice), floorX: null, tp1Done: false, peakX: null, troughX: null, tp1At: null, maxCloseX: null },
     b: {
-      gross: 0, costs: 0, funding: 0, exits: [], flows: [], firstFillAt: null, maxPosQty: 0, entryNotional: 0, nextT: a.placedAt, lastFundingT: a.placedAt, h4Idx: 0,
+      gross: 0, costs: 0, funding: 0, exits: [], flows: [], firstFillAt: null, maxPosQty: 0, entryNotional: 0, nextT: a.placedAt, lastFundingT: a.placedAt, h4Idx: 0, d1Idx: 0,
       closedAt: null, reason: null, flags: { gap: false, resolvedBars: 0, unresolvedBars: 0, unresolvedTrailing: 0, iocPartial: false, liquidation: false, limitCancelledUnresolved: 0,
         fundingGuardTightened: 0, fundingGuardClosed: 0 },
       liqX: null,
@@ -157,6 +166,14 @@ export const isDone = (tr: SimTrade) => tr.b.closedAt !== null;
 
 function rebuildParts(tr: SimTrade, s: State): void {
   const k = tr.k;
+  if (k.trend) { // trend-d1: 100% vị thế theo dừng giá đóng 1D (mức tính ở onD1Closes; trước nến 1D đóng đầu tiên = SL ban đầu)
+    s.parts = [{ name: 'TR' as const, qty: s.posQty, targetX: null, trail: { kind: 'close1d' as const, levelX: null }, open: true }];
+    return;
+  }
+  if (k.tp1Full) { // #26 lệnh hồi phục: 100% vị thế chốt tại TP1
+    s.parts = [{ name: 'TP1' as const, qty: s.posQty, targetX: k.tp1X, trail: null, open: true }];
+    return;
+  }
   if (k.trailOnly) { // #3: 100% vị thế theo TRAILING_STOP_MARKET kích hoạt +1R
     s.parts = [{ name: 'TR' as const, qty: s.posQty, targetX: null, trail: { kind: 'callback' as const, actX: k.actX, cbPct: k.cbPct, peakX: null }, open: true }];
     return;
@@ -198,7 +215,7 @@ function trailLevel(tr: SimTrade, s: State, p: Part): number {
     if (t.peakX === null) return -Infinity;
     return trailStopX(tr.k.d, t.peakX, t.cbPct);
   }
-  if (t.kind === 'close4h') return t.levelX ?? -Infinity;
+  if (t.kind === 'close4h' || t.kind === 'close1d') return t.levelX ?? -Infinity;
   if (!Number.isFinite(t.dist) || s.peakX === null) return -Infinity;
   return s.peakX - t.dist;
 }
@@ -524,11 +541,32 @@ function onH4Closes(tr: SimTrade, T: number, h4: H4Ctx): void {
 }
 export type H4Ctx = { c: readonly Candle[]; atr: readonly number[] };
 
-function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[], h4: H4Ctx | null): void {
+// trend-d1: xử lý các nến 1D đã ĐÓNG trước T (closeTime < T — không nhìn trước) và đóng SAU lúc khớp vào: đỉnh giá đóng từ khi vào,
+// mức dừng = max(mức cũ, SL ban đầu, đỉnh đóng − trailAtr × ATR(atrDays) 1D của nến đó) — chỉ siết, không bao giờ nới (core/trend.ts).
+function onD1Closes(tr: SimTrade, T: number, d1: H4Ctx): void {
+  const s = tr.s;
+  const b = tr.b;
+  while (b.d1Idx < d1.c.length && d1.c[b.d1Idx]!.closeTime < T) {
+    const i = b.d1Idx++;
+    const bar = d1.c[i]!;
+    if (b.firstFillAt === null || bar.closeTime < b.firstFillAt || s.posQty <= 0) continue;
+    s.maxCloseX = Math.max(s.maxCloseX ?? -Infinity, tr.k.d * bar.close);
+    const a = d1.atr[i]!;
+    if (!Number.isFinite(a)) continue;
+    for (const p of s.parts) {
+      if (p.open && p.trail?.kind === 'close1d') {
+        p.trail.levelX = trendStopX({ prevLevelX: p.trail.levelX, initialStopX: tr.k.initialStopX, bestCloseX: s.maxCloseX, atrD: a, trailAtr: COMMON.trend.trailAtr });
+      }
+    }
+  }
+}
+
+function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[], h4: H4Ctx | null, d1: H4Ctx | null = null): void {
   const s = tr.s;
   const b = tr.b;
   const T = bar.openTime;
   if (h4 !== null) onH4Closes(tr, T, h4);
+  if (d1 !== null) onD1Closes(tr, T, d1);
   for (const leg of s.legs) if (leg.status === 'pending' && !leg.ioc && leg.expireAt !== null && leg.expireAt <= T) leg.status = 'expired';
   let settled = false;
   for (const row of funding) {
@@ -554,16 +592,19 @@ function preBar(tr: SimTrade, bar: Candle, funding: readonly FundingRow[], h4: H
 
 // Chạy lệnh qua các nến có openTime trong [tr.b.nextT, until). series tăng dần theo openTime.
 // ctx.h4: nến 4H của mã (C3 bắt buộc — có nến khởi động trước lúc vào để tính ATR), chỉ nến đã đóng trong kỳ.
+// ctx.d1: nến 1D của mã (trend-d1 bắt buộc — có nến khởi động để tính ATR(COMMON.trend.atrDays)), chỉ nến đã đóng trong kỳ.
 export async function advanceTrade(tr: SimTrade, series: readonly Candle[], until: number,
-  ctx: { funding: readonly FundingRow[]; resolve: Resolver | null; h4?: readonly Candle[] }): Promise<void> {
+  ctx: { funding: readonly FundingRow[]; resolve: Resolver | null; h4?: readonly Candle[]; d1?: readonly Candle[] }): Promise<void> {
   if (tr.k.policy === 'C3' && ctx.h4 === undefined) throw new Error(`${tr.k.symbol}: thoát C3 cần nến 4H (ctx.h4)`);
+  if (tr.k.trend && ctx.d1 === undefined) throw new Error(`${tr.k.symbol}: thoát trend-d1 cần nến 1D (ctx.d1)`);
   const h4: H4Ctx | null = tr.k.policy === 'C3' && ctx.h4 !== undefined ? { c: ctx.h4, atr: atr([...ctx.h4], COMMON.exitC3.atrPeriod) } : null;
+  const d1: H4Ctx | null = tr.k.trend && ctx.d1 !== undefined ? { c: ctx.d1, atr: atr([...ctx.d1], COMMON.trend.atrDays) } : null;
   let lo = 0, hi = series.length;
   while (lo < hi) { const m = (lo + hi) >>> 1; if (series[m]!.openTime < tr.b.nextT) lo = m + 1; else hi = m; }
   for (let i = lo; i < series.length && !isDone(tr); i++) {
     const bar = series[i]!;
     if (bar.openTime >= until) break;
-    preBar(tr, bar, ctx.funding, h4);
+    preBar(tr, bar, ctx.funding, h4, d1);
     if (!isDone(tr)) await feedBar(tr, bar, ctx.resolve);
     tr.b.nextT = bar.openTime + 1;
   }
@@ -591,7 +632,7 @@ export function portfolioView(trades: readonly SimTrade[]): OpenTrade[] {
 
 // ------------------------------------------------------------------ bản ghi lệnh ---------------------------------------------------
 export type TradeRecord = {
-  id: string; symbol: string; side: Side; mode: Mode; policy: ExitPolicy; grade: string | null; label: string; kind: 'zone' | 'pattern';
+  id: string; symbol: string; side: Side; mode: Mode; policy: ExitPolicy; grade: string | null; label: string; kind: 'zone' | 'pattern' | 'trend' | 'mtf';
   score: number; signalId: string; key: string; pathInterval: string; entryType: string;
   placedAt: string; entryTime: string | null; exitTime: string | null; filled: boolean;
   legs: Array<{ role: string; ioc: boolean; limit: number; qty: number; status: string; filledQty: number; fillPrice: number | null; fillTime: string | null }>;

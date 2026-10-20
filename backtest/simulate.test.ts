@@ -531,3 +531,61 @@ test('#3 lệnh phá vỡ không TP1: 100% trailing callback kích hoạt +1R, g
     assert.equal(r.reason, 'trailing');
   });
 });
+
+test('trend-d1: 100% dừng theo giá ĐÓNG 1D = đỉnh đóng từ khi vào − 3×ATR(20) 1D (không nới quá SL ban đầu), không dừng theo thời gian, giữ ≤ 180 ngày', async () => {
+  const D = 24 * H;
+  const p = { ...plan('long'), targets: [], exit: { policy: 'C2', tp1Qty: 0, trailQty: 0, trailing: null }, trailAtr: 9, trendD1: true } as PlannerPlan;
+  const mk = (id: string) => createTrade({
+    id, symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: p.capital, contract: C, plan: p, cost: NO_IMPACT, pathInterval: '1d',
+    planner: planned(p, { trendSim: true }), meta: { grade: null, label: 'trend-d1 Long', kind: 'trend', score: 0, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  const tr = mk('td');
+  assert.equal(tr.k.trend, true);
+  assert.equal(tr.k.timeStopMs, Infinity);
+  assert.equal(tr.k.maxHoldMs, 180 * D);
+  const warm = bars(Array.from({ length: 20 }, () => [100, 101, 99, 100] as [number, number, number, number]), T0 - 20 * D, D); // ATR(20) = 2
+  const path = bars([[100, 101, 99.5, 100], [100, 121, 100.5, 120], [119, 119.5, 110, 111]], T0, D);
+  await advanceTrade(tr, path, Infinity, { funding: [], resolve: null, d1: [...warm, ...path] });
+  const r = tradeRecord(tr);
+  // sau nến 0: ATR (2×19 + 1,5)/20 = 1,975 → 100 − 5,925 < SL 95 → giữ 95; sau nến 1: ATR (1,975×19 + 21)/20 = 2,92625 → 120 − 8,77875 = 111,22125
+  const atr1 = (((2 * 19 + 1.5) / 20) * 19 + 21) / 20;
+  assert.deepEqual(r.exits.map((e) => e.role), ['TR']);
+  close(r.exits[0]!.qty, r.qty);
+  close(r.exits[0]!.price, 120 - 3 * atr1);
+  assert.equal(r.reason, 'trailing');
+  assert.equal(r.kind, 'trend');
+  // thiếu nến 1D → lỗi rõ ràng
+  await assert.rejects(advanceTrade(mk('td2'), path, Infinity, { funding: [], resolve: null }), /trend-d1 cần nến 1D/);
+});
+
+test('trend-d1: trước nến 1D đóng đầu tiên sau khi vào, mức dừng = SL ban đầu (giá thủng SL → thoát SL, −1R)', async () => {
+  const D = 24 * H;
+  const p = { ...plan('short'), targets: [], exit: { policy: 'C2', tp1Qty: 0, trailQty: 0, trailing: null }, trailAtr: 9, trendD1: true } as PlannerPlan;
+  const tr = createTrade({
+    id: 'ts', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: p.capital, contract: C, plan: p, cost: NO_IMPACT, pathInterval: '1h',
+    planner: planned(p, { trendSim: true }), meta: { grade: null, label: 'trend-d1 Short', kind: 'trend', score: 0, signalId: 'sig', key: 'k', afterTp1: null },
+  });
+  const warm = bars(Array.from({ length: 20 }, () => [100, 101, 99, 100] as [number, number, number, number]), T0 - 20 * D, D);
+  await advanceTrade(tr, bars([[100, 100.5, 99, 100], [100, 106, 99.5, 105]], T0, H), Infinity, { funding: [], resolve: null, d1: warm });
+  const r = tradeRecord(tr);
+  assert.equal(r.reason, 'stop_loss');
+  close(r.exits[0]!.price, 105);
+  assert.ok(r.R < -0.99 && r.R > -1.01, String(r.R));
+});
+
+test('#26 lệnh hồi phục (exitOverride): chốt 100% tại TP1 (không trailing), giữ tối đa 48 giờ', async () => {
+  const mk = () => createTrade({
+    id: 'rc', symbol: C.symbol, mode: 'swing', policy: 'C2', placedAt: T0, equityAtEntry: CAPITAL, contract: C, plan: plan('long'), cost: NO_IMPACT, pathInterval: '1h',
+    planner: planned(plan('long')), meta: { grade: null, label: 'mtf-align hồi phục Long', kind: 'mtf', score: 0, signalId: 'sig', key: 'k', afterTp1: null },
+    exitOverride: { tp1Pct: 100, maxHoldHours: 48 },
+  });
+  const tr = mk();
+  assert.equal(tr.k.maxHoldMs, 48 * H);
+  const r = await run(tr, bars([[100, 101, 99.5, 100], [100, 126, 100.5, 124]], T0, H));
+  assert.deepEqual(r.exits.map((e) => [e.role, e.qty]), [['TP1', r.qty]]);
+  close(r.exits[0]!.price, 125);
+  // không chạm TP1/SL: đóng ở giá mở nến đầu tiên sau 48 giờ
+  const r2 = await run(mk(), bars(Array.from({ length: 50 }, () => [100, 102, 99, 101] as [number, number, number, number]), T0, H));
+  assert.equal(r2.reason, 'max_hold');
+  assert.equal(r2.exitTime, new Date(T0 + 48 * H).toISOString());
+});

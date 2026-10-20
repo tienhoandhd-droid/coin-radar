@@ -1,3 +1,4 @@
+import { COMMON } from '../core/config.ts';
 import type { BookTicker, Candle, Contract, MarketTicker, PremiumIndex } from '../core/types.ts';
 import type { MarginBracket } from '../core/margin.ts';
 import { isClosed } from '../core/candles.ts';
@@ -57,6 +58,7 @@ export function parseContracts(raw: unknown): Contract[] {
   const symbols = (raw as { symbols?: unknown } | null | undefined)?.symbols;
   return (arr(symbols, 'exchangeInfo.symbols') as RawSymbol[])
     .filter((s) => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING')
+    .filter((s) => !COMMON.stablecoinBases.includes(s.baseAsset)) // stablecoin neo USD (USDCUSDT…): không phải tài sản để giao dịch xu hướng
     .filter((s) => {
       // Thiếu underlyingType → ném lỗi (không âm thầm giữ). Chỉ giữ 'COIN', loại hợp đồng chỉ số (INDEX) như BTCDOMUSDT.
       if (typeof s.underlyingType !== 'string' || s.underlyingType === '') {

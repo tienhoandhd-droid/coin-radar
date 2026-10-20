@@ -130,7 +130,8 @@ export function evaluateChecks(tr: AttrTrade, cx: AttrContext, cfg: AttrConfig):
   if (Number.isFinite(atrEntry) && d < cfg.stopAtrK * atrEntry) set('stop_tight', 'có', `khoảng cắt lỗ ${f2(d / atrEntry)}×ATR(14) khung vào lệnh (< ${cfg.stopAtrK})`);
   else {
     const horizon = Math.min(t1 + cfg.sweepBars * cx.entryIntervalMs, cx.periodEnd);
-    const swept = tr.reason === 'stop_loss'
+    // lệnh không có TP1 (phá vỡ #3, trend-d1): tp1 = NaN, đọc lại từ JSON thành null — không kiểm "bị quét SL rồi chạm TP1"
+    const swept = tr.reason === 'stop_loss' && Number.isFinite(tr.tp1)
       ? cx.entryBars.find((c) => c.openTime >= t1 && c.closeTime < horizon && (sgn === 1 ? c.high >= tr.tp1 : c.low <= tr.tp1))
       : undefined;
     if (swept !== undefined) set('stop_tight', 'có', `bị quét SL: dừng lỗ ${iso(t1)} rồi giá chạm TP1 ${tr.tp1} lúc ${iso(swept.openTime)} (≤ ${cfg.sweepBars} nến)`);

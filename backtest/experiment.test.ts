@@ -180,3 +180,55 @@ test('sr-confirm (lần thử #17): Swing, ghim gốc f1-funding-fix, bật vùn
   assert.equal(c.pinnedBase, 'sr-confirm');
   assert.deepEqual(c.modes, ['swing']);
 });
+
+test('lần thử #18–#23 (đăng ký trước 20/10/2026): Swing, ghim đúng gốc, tính vào k (17 → 23); mỗi lần thử có cost-cal-<tên> ghim chính nó', async () => {
+  const { applyConfigOverride } = await import('../packages/core/config-override.ts');
+  const fgi = { lagDays: 1, meanDays: 7, threshold: 50 };
+  const want: Record<string, { base: string; override: Record<string, unknown> }> = {
+    'sr-long': { base: 'sr-confirm', override: { 'COMMON.entryRules.sides': ['long'] } },
+    'fgi-dir': { base: 'f1-funding-fix', override: { 'COMMON.entryRules.fgiDirection': fgi } },
+    'sr-fgi': { base: 'sr-confirm', override: { 'COMMON.entryRules.fgiDirection': fgi } },
+    'risk-cluster': { base: 'f1-funding-fix', override: { 'COMMON.portfolio.cluster': { corrDays: 30, corrMax: 0.7, betaDays: 60, betaFloor: 0.5, maxBetaRiskPct: 10 }, 'COMMON.entryRules.minListingDays': 30 } },
+    'trend-d1': { base: 'f1-funding-fix', override: { 'COMMON.trend.enabled': true } },
+    'trend-d1-fgi': { base: 'f1-funding-fix', override: { 'COMMON.trend.enabled': true, 'COMMON.trend.sides': ['long', 'short'], 'COMMON.entryRules.fgiDirection': fgi } },
+  };
+  let log = LOG_HEADER;
+  for (const name of ['filter-A', 'exit-A0', 'p1-cost-floor-k010', 'tp1-any-strength']) for (const m of ['swing', 'fast']) log += `| 2026-10-19 | ${name} | ${m} | x |\n`;
+  for (const name of ['p3-breakout-n20', 'p4-trend-only', 'p5-short-asym', 'p6-c3-tp30-m3', 'p7-swing-top150', 'p8-funding-xs70', 'combo-loc', 'sr-confirm']) log += `| 2026-10-19 | ${name} | swing | x |\n`;
+  log += '| 2026-10-19 | p2-fast-4h | fast | x |\n| 2026-10-19 | cost-cal-sr | swing | x |\n';
+  assert.equal(countTrials(log, 'sr-confirm', ['swing']), 17, 'k trước các lần thử mới');
+  for (const [name, w] of Object.entries(want)) {
+    const v = VARIANTS[name]!;
+    assert.ok(v.wired && v.notTrial === undefined && v.sensitivity !== true, name);
+    assert.deepEqual(v.configOverride, w.override, name);
+    assert.deepEqual(v.modes, ['swing'], name);
+    assert.equal(v.pinnedBase, w.base, name);
+    assert.throws(() => checkBase(v, 'baseline'), /chỉ chạy với --base/);
+    // khóa có thật trong config.ts và hợp lệ khi chồng lên gốc f1-funding-fix (trend-d1 cần chốt chặn funding) — ghi đè rồi trả lại ngay
+    applyConfigOverride({ ...VARIANTS['f1-funding-fix']!.configOverride, ...v.configOverride })();
+    const c = VARIANTS[`cost-cal-${name}`]!;
+    assert.ok(c.wired && c.sensitivity === true && notTrialNames().has(c.name), c.name);
+    assert.equal(c.pinnedBase, name);
+    assert.deepEqual(c.configOverride, { 'COMMON.costRoundTripPct': COST_CALIBRATED });
+    log += `| 2026-10-20 | ${name} | swing | x |\n| 2026-10-20 | cost-cal-${name} | swing | x |\n`;
+  }
+  assert.equal(countTrials(log, 'trend-d1-fgi', ['swing']), 23);
+  // #24–#29: hệ vào lệnh đa khung (thay lệnh vùng Swing), ghim f1-funding-fix; #25–#29 bật sàn chi phí 0,10R; k → 29
+  const frames: Record<string, string[]> = { 'mtf-align': ['1d', '4h', '1h'], 'mtf-recovery': ['1d', '4h', '1h'], 'tf-15m': ['15m'], 'tf-1h': ['1h'], 'tf-4h': ['4h'] };
+  for (const name of ['mtf-pullback', ...Object.keys(frames)]) {
+    const v = VARIANTS[name]!;
+    assert.ok(v.wired && v.notTrial === undefined, name);
+    assert.equal(v.pinnedBase, 'f1-funding-fix', name);
+    assert.deepEqual(v.modes, ['swing'], name);
+    applyConfigOverride({ ...VARIANTS['f1-funding-fix']!.configOverride, ...v.configOverride })();
+    if (name !== 'mtf-pullback') {
+      const a = v.configOverride['COMMON.entryRules.mtfAlign'] as { frames: string[]; recovery: boolean };
+      assert.deepEqual(a.frames, frames[name], name);
+      assert.equal(a.recovery, name === 'mtf-recovery', name);
+      assert.equal(v.configOverride['COMMON.risk.maxCostR'], 0.1, name);
+    }
+    assert.equal(VARIANTS[`cost-cal-${name}`]!.pinnedBase, name);
+    log += `| 2026-10-20 | ${name} | swing | x |\n| 2026-10-20 | cost-cal-${name} | swing | x |\n`;
+  }
+  assert.equal(countTrials(log, 'tf-4h', ['swing']), 29);
+});

@@ -73,6 +73,11 @@ export const COMMON = {
     maxOpenTrades: 10, // trần 10 lệnh CÒN RỦI RO cùng lúc (lệnh đã qua TP1 không tính — người dùng chốt 19/10/2026), đủ 10 thì không vào lệnh mới (thay đề xuất cũ 3 lệnh/6%/5 altcoin/2 cùng ngành/3 cùng chiều) — người dùng chốt 19/10/2026
     maxOpenRiskPct: 10, // tổng rủi ro đang mở ≤ 10% vốn, lệnh đã qua TP1 tính 0 (đánh giá độc lập C1) — người dùng chốt 19/10/2026
     marginSafetyFactor: 0.8, // tổng ký quỹ các lệnh mở + lệnh mới ≤ vốn bot × mức này (C3) — đề xuất, chưa backtest
+    // Kiểm soát rủi ro danh mục "risk-cluster" (đăng ký trước 20/10/2026, docs/superpowers/plans/2026-10-20-luat-moi-va-kiem-mu-C.md) — chỉ SIẾT:
+    // (1) từ chối lệnh mới nếu tương quan lợi suất ngày corrDays ngày với một lệnh đang mở CÙNG PHÍA ≥ corrMax (một lệnh mỗi cụm);
+    // (2) Σ max(β, betaFloor) × rủi ro lệnh ≤ maxBetaRiskPct% vốn (β = beta lợi suất ngày betaDays ngày so với BTC), cộng thêm trần cũ.
+    // Chỉ dùng nến 1D đã đóng trước lúc quyết định (packages/core/risk-cluster.ts). null = tắt (mặc định). Thiếu số liệu → không vào lệnh.
+    cluster: null as null | { corrDays: number; corrMax: number; betaDays: number; betaFloor: number; maxBetaRiskPct: number },
   },
   exit: {
     defaultPolicy: 'C2' as ExitPolicy, // người dùng chốt 19/10/2026: TP1 chốt 50%, 50% còn lại trailing stop trên sàn kích hoạt tại TP1. 'A0' = 50/30/20 cố định (luật cũ, để đối chứng)
@@ -285,7 +290,35 @@ export const COMMON = {
     // Áp trong buildPlan (plan.ts) vì đổi cả SL/TP1, không chỉ chặn: nến 4H đã đóng cuối chạm vùng mạnh ≥ 2, đóng lại đúng phía, râu ≥ 50%,
     // taker đúng phía (COMMON.zones.confirm) → vào market; không thì kế hoạch không hợp lệ kèm lý do. Tín hiệu mô hình Swing bị bỏ.
     srConfirm: false as boolean,
+    // Luật mới đăng ký trước 20/10/2026 (docs/superpowers/plans/2026-10-20-luat-moi-va-kiem-mu-C.md) — mặc định TẮT:
+    // FGI-hướng (chỉ Swing, cả lệnh vùng lẫn hệ trend-d1): chỉ số Sợ hãi & Tham lam của Alternative.me (BTC, theo ngày). Giá trị ngày d chỉ
+    // được dùng từ 00:00 UTC ngày d + lagDays; TB meanDays ngày gần nhất đã biết ≥ threshold → chỉ Long, < threshold → chỉ Short.
+    // Thiếu dữ liệu → không vào lệnh mới (packages/core/fgi.ts). null = tắt; biến thể: { lagDays: 1, meanDays: 7, threshold: 50 }.
+    fgiDirection: null as null | { lagDays: number; meanDays: number; threshold: number },
+    sides: ['long', 'short'] as Array<'long' | 'short'>, // chỉ vào lệnh mới các phía này (mọi chế độ); biến thể "chỉ Long": ['long']
+    minListingDays: null as number | null, // bỏ hợp đồng niêm yết chưa đủ N ngày tại lúc quyết định (onboardDate exchangeInfo); null = tắt; biến thể 30
+    // Chỉ khi chạy thật (máy quét/bot — lịch sử không có deliveryDate theo thời điểm): bỏ hẳn khỏi vũ trụ quét hợp đồng có deliveryDate
+    // trước COMMON.perpetualDeliveryFloor (đã có lịch tất toán/hủy niêm yết). Cổng G-06 vẫn chặn các mã này kể cả khi tắt. Mặc định tắt.
+    liveSkipScheduledDelivery: false as boolean,
+    // Lần thử #24 "mtf-pullback" (đăng ký trước 20/10/2026, mục BỔ SUNG của kế hoạch 2026-10-20) — CHỈ MÔ PHỎNG, thay lệnh vùng Swing:
+    // BTC 1D Lên/Xuống chọn phía; đóng 4H so EMA(emaH4) 4H; nến 1H vừa đóng chạm vùng "clean" độ mạnh ≥ minStrength (hoặc cách ≤ nearAtr ×
+    // ATR(atrPeriod) 4H) và cắt qua EMA(emaH1) 1H; SL ngoài vùng slBufferAtr × ATR 4H; TP1 = vùng cản mạnh gần nhất với R:R ≥ minRR; thoát C2
+    // (packages/core/mtf-pullback.ts). null = tắt; biến thể: { emaH4: 50, emaH1: 20, atrPeriod: 14, nearAtr: 0.5, slBufferAtr: 0.25, minStrength: 2, minRR: 1.5 }.
+    mtfPullback: null as null | { emaH4: number; emaH1: number; atrPeriod: number; nearAtr: number; slBufferAtr: number; minStrength: number; minRR: number },
+    // Lần thử #25 "mtf-align" / #26 "mtf-recovery" (đăng ký trước 20/10/2026, mục BỔ SUNG #25/#26) — CHỈ MÔ PHỎNG, thay lệnh vùng Swing, xét mỗi
+    // nến 15m: xu hướng 1D/4H/1H (đóng so EMA(emaSlow), EMA(emaFast) so EMA(emaSlow)) cùng phía; nến 15m hồi về EMA(emaFast) trong touchBars nến
+    // rồi bật lên; SL = cực trị slBars nến 15m ∓ slBufferAtr × ATR(atrPeriod) 1H; TP1 = vùng cản "clean" mạnh ≥ minStrength, R:R ≥ minRR; C2.
+    // recovery = true (#26): thêm lệnh hồi phục (1D ngược 4H + 1H) chốt 100% tại TP1, giữ ≤ recoveryMaxHoldHours giờ. null = tắt.
+    // frames: khung phải cùng xu hướng (#27/#28/#29 dùng MỘT khung: ['15m'] / ['1h'] / ['4h']).
+    mtfAlign: null as null | { frames: Array<'15m' | '1h' | '4h' | '1d'>; emaFast: number; emaSlow: number; touchBars: number; slBars: number; slBufferAtr: number; atrPeriod: number;
+      minStrength: number; minRR: number; recovery: boolean; recoveryMaxHoldHours: number },
   },
+  // Hệ đi theo xu hướng khung ngày "trend-d1" (đăng ký trước 20/10/2026, kế hoạch 2026-10-20) — CHỈ MÔ PHỎNG (bot chưa đặt lại STOP_MARKET
+  // theo giá đóng 1D). Bật cho Swing + replaceZones: thay hoàn toàn lệnh vùng. Vào khi nến 1D đóng > đỉnh giá đóng donchianDays nến trước
+  // (Short: < đáy, chỉ khi sides có 'short'), lệnh thị trường ở nến kế tiếp; SL = giá vào ∓ stopAtr × ATR(atrDays) 1D; thoát 100% bằng dừng
+  // theo giá ĐÓNG 1D = đỉnh giá đóng từ khi vào ∓ trailAtr × ATR(atrDays) 1D, không nới quá SL ban đầu; giữ tối đa maxHoldDays ngày; không TP.
+  trend: { enabled: false as boolean, donchianDays: 50, atrDays: 20, stopAtr: 2, trailAtr: 3, maxHoldDays: 180,
+    sides: ['long'] as Array<'long' | 'short'>, replaceZones: true as boolean },
   // Phí sàn USDⓈ-M (ví dụ Regular User: maker 0,02%, taker 0,05% — bài hỗ trợ Binance 360033544231, sàn ghi là ví dụ). makerTakerSplit = false
   // (mặc định): mọi lần khớp trả nửa phí nhóm costRoundTripPct (gồm trượt). true: lệnh LIMIT vào lệnh (GTD, maker) chỉ trả makerPct, không
   // trượt; lệnh khớp kiểu market (IOC, STOP/TP/TRAILING_STOP_MARKET) giữ nửa phí nhóm (= taker + trượt nền). Dùng ở sàn chi phí (#1) và mô phỏng.
@@ -329,6 +362,10 @@ export const COMMON = {
     BOJ: { before: 2, after: 2 },
   }, // cửa sổ chặn quanh sự kiện vĩ mô (giờ) — đề xuất, chưa backtest
   eventCalendarWarnDays: 14, // I4: lịch sự kiện còn < 14 ngày → cảnh báo đầu bản in; đã qua sự kiện cuối → G-07 trượt — brief B0b
+  // Vũ trụ (packages/binance/parse.ts parseContracts — dùng chung máy quét, bot, phát lại): bỏ hợp đồng có tài sản cơ sở là stablecoin neo USD.
+  // Giá gần như cố định → SL cực sát (vd. 0,1%) → notional gấp hàng chục lần vốn với 2% rủi ro (kiểm nhiều năm 20/10/2026 thấy USDCUSDT).
+  // exchangeInfo không có nhãn stablecoin (underlyingSubType của USDCUSDT = ['Crypto']) → danh sách tay; 19/10/2026 chỉ USDCUSDT có trong USDⓈ-M.
+  stablecoinBases: ['USDC', 'FDUSD', 'TUSD', 'USDP', 'DAI', 'BUSD', 'USDE', 'PYUSD', 'RLUSD', 'USD1'] as string[],
   perpetualDeliveryFloor: Date.UTC(2100, 0, 1), // G-06: hợp đồng vĩnh cửu có deliveryDate TRƯỚC mốc này = có ngày tất toán thật (thường do lịch hủy niêm yết).
   // Quan sát exchangeInfo 19/10/2026: 523/525 hợp đồng = 2100-12-25; EPICUSDT 2026-10-20, VELODROMEUSDT 2026-10-28. Chưa có câu chữ tài liệu Binance xác nhận.
   expiryFlagHours: 24, // gắn cờ ±24h quanh đáo hạn quyền chọn quý — đề xuất, chưa backtest
