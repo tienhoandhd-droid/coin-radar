@@ -7,3 +7,4 @@ data/cache/
 data/bot/
 data/history/
 !.env.example
+data/external/
