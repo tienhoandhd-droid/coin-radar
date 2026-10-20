@@ -27,10 +27,11 @@ export function configProblems(target: 'sim' | 'bot' = 'sim'): string[] {
     if (modes.includes('btc-regime')) {
       const b = COMMON.btcRegime;
       if (b.symbol !== 'BTCUSDT') out.push(`COMMON.btcRegime.symbol = ${b.symbol} — luật đã khóa chỉ cho BTCUSDT`);
-      for (const [k, v] of Object.entries({ smaDays: b.smaDays, atrDays: b.atrDays, klinesLimit: b.klinesLimit })) {
+      for (const [k, v] of Object.entries({ smaDays: b.smaDays, atrDays: b.atrDays, klinesLimit: b.klinesLimit, entryMaxAttempts: b.entryMaxAttempts })) {
         if (!Number.isInteger(v) || v < 1) out.push(`COMMON.btcRegime.${k} = ${v} phải là số nguyên ≥ 1`);
       }
       if (b.klinesLimit < Math.max(b.smaDays, b.atrDays + 1) + 1 || b.klinesLimit > 1500) out.push(`COMMON.btcRegime.klinesLimit = ${b.klinesLimit} phải đủ cho SMA${b.smaDays}/ATR${b.atrDays} và ≤ 1500`);
+      if (!(b.entryRetryMinutes > 0) || !(b.entryWindowHours > 0) || b.entryWindowHours >= 24) out.push(`COMMON.btcRegime: entryRetryMinutes ${b.entryRetryMinutes} phải > 0, entryWindowHours ${b.entryWindowHours} trong (0; 24)`);
       if (!(b.slAtr > 0)) out.push(`COMMON.btcRegime.slAtr = ${b.slAtr} phải > 0`);
       if (!(b.maxNotionalX > 0 && b.maxNotionalX <= 1)) out.push(`COMMON.btcRegime.maxNotionalX = ${b.maxNotionalX} phải trong (0; 1] (luật: không đòn bẩy > 1×)`);
       for (const [k, v] of Object.entries({ sideCostPct: b.sideCostPct, slippagePct: b.slippagePct, entryCapPct: b.entryCapPct })) {

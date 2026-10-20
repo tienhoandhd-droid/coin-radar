@@ -35,6 +35,21 @@ Mặc định trong `packages/core/config.ts` là `COMMON.bot.modes = ['btc-regi
   `btc_regime_decision` — không quyết định lại cùng nến). Thiếu dữ liệu nến → không làm gì, báo Telegram, thử lại ở lượt định kỳ.
 - Tính vào cầu chì / trần 10 lệnh / tổng rủi ro mở 10% như mọi lệnh. Tin Telegram mỗi ngày: "BTC theo chế độ — nến 1D …".
 
+#### Sai khác đã duyệt so với mô phỏng đã khóa (`btc-regime-sim.ts`)
+
+| # | Bot | Mô phỏng | Ảnh hưởng |
+|---|---|---|---|
+| 1 | Lệnh vào LIMIT IOC giá trần = mark + 0,1%. Không khớp (hết hạn, bị từ chối vd -2019) → **thử lại sau 60 phút, tối đa 3 lần/ngày**; mỗi lần xét lại tín hiệu trên nến 1D đã đóng và định cỡ lại theo giá lúc đó (cùng trần +0,1%). Lần 3 hỏng → nhật ký `skip` "IOC không khớp 3 lần" + Telegram cảnh báo. Mỗi lần thử ghi `btc_regime_attempt` | Vào ở giá mở nến, luôn khớp | Có thể lỡ một ngày vào lệnh |
+| 2 | **Cửa sổ vào lệnh 4 giờ** sau 00:00 UTC: không lần thử nào bắt đầu muộn hơn. Ngoài cửa sổ (vd máy bật lúc 05:00), quyết định bù chỉ **ĐÓNG** khi tín hiệu tắt; vào lệnh thì ghi `skip` kèm lý do | Không có khái niệm trễ | Máy tắt qua sáng → lỡ vào ngày đó |
+| 3 | IOC khớp một phần → giữ đúng phần đã khớp (SL closePosition phủ), nhật ký/Telegram ghi khối lượng khớp THẬT | Khớp đủ | Vị thế nhỏ hơn |
+| 4 | Giá trị vị thế ≤ **0,8 × vốn** (trần ký quỹ `marginSafetyFactor` của danh mục, đòn bẩy 1×) | ≤ 1 × vốn | Chỉ ngày có khoảng SL + phí < 2,5% (2% / 0,8) |
+| 5 | Khoảng SL để định cỡ đo từ giá trần IOC; giá vào = giá khớp thật | Đo từ giá mở | Khối lượng chỉ nhỏ hơn |
+| 6 | Rủi ro mỗi lệnh = min(2%, trần live `riskPerTradePct`) | 2% | Chỉ nhỏ hơn khi chạy live có trần chặt hơn |
+| 7 | Chốt chặn funding chạy **mỗi kỳ funding (8 giờ)**; nếu không đọc được funding, siết SL phòng trước theo **funding (giá trị tuyệt đối) xấu nhất 30 ngày** (dự phóng 24 giờ tới lần quyết định sau) | Mỗi ngày, funding thật | Chỉ siết sớm/chặt hơn |
+| 8 | SL trên sàn kích hoạt theo **MARK_PRICE** (STOP_MARKET) | Chạm khi giá THẤP của nến 1D ≤ SL | Mark có thể không chạm khi giá giao dịch chạm (và ngược lại); khớp market có trượt |
+| 9 | Đóng theo tín hiệu chỉ đóng **khối lượng bot đã mở** (khớp vào trong nhật ký); vị thế lớn hơn (lệnh tay) → KHẨN, không đụng phần thủ công | Không có lệnh tay | — |
+| 10 | Đóng bị sàn từ chối → KHẨN, không ghi quyết định, lượt định kỳ (60 s) thử lại; SL vẫn trên sàn | — | — |
+
 ## 1. Cài đặt
 
 Yêu cầu: Node 24 (`node --version` ≥ 24), mạng ra `fapi.binance.com` / `fstream.binance.com` (paper) — không cần thư viện thêm.

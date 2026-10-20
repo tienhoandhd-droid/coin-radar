@@ -142,3 +142,15 @@ test('chốt chặn funding (siết SL): (giá vào − SL)·qty + phí + trư�
   assert.ok(run.actions.some((a) => a.type === 'place_stop' && a.qty === null), 'SL mới closePosition');
   assert.ok(run.journal.some((e) => e.type === 'stop_tightened'));
 });
+
+test('trần live chặt hơn: riskPct = min(2%, trần live) → định cỡ theo mức thấp hơn; bộ lệnh từ chối khối lượng vượt trần đó', () => {
+  const one = regimeEntrySizing({ contract: BTC, capital: 10_000, markPrice: 60_000, atr: 700, riskPct: 1 });
+  assert.ok(one.ok);
+  assert.ok(one.riskAmount <= 100 + 1e-9 && one.riskAmount > 95, String(one.riskAmount));
+  const two = regimeEntrySizing({ contract: BTC, capital: 10_000, markPrice: 60_000, atr: 700 });
+  assert.ok(two.ok);
+  const r = planRegimeEntry({ contract: BTC, sizing: two, qty: two.qty, capital: 10_000, markPrice: 60_000, signalId: SID, runId: 'run1', now: NOW, openOrderCount: 0, riskPct: 1 });
+  assert.equal(r.allowed, false);
+  assert.match(r.reasons.join(' '), /vượt 1%\/lệnh/);
+  assert.equal(regimeSignalId(Date.UTC(2026, 9, 21) - 1, 2), 'BTCUSDT|btc-regime|long|2026-10-21|lan2');
+});

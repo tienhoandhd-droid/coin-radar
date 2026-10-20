@@ -331,8 +331,12 @@ export const COMMON = {
   // giá trị vị thế = min(maxNotionalX × vốn, 2% vốn / (khoảng SL % + 2 × sideCostPct + slippagePct)); đòn bẩy 1×.
   // entryCapPct: chân vào là LIMIT IOC giá trần = giá mark × (1 + mức này %) — như chân "market" của Swing; định cỡ dùng giá trần này
   // (khoảng SL tính từ giá xấu nhất → khối lượng chỉ nhỏ hơn luật). Đề xuất, chưa kiểm trên Demo.
+  // Sai khác ĐÃ DUYỆT (người dùng, 20/10/2026): chân IOC không khớp → thử lại sau entryRetryMinutes phút, tối đa entryMaxAttempts lần/ngày
+  // (mỗi lần xét lại tín hiệu trên nến 1D đã đóng và định cỡ lại theo giá lúc đó); không lần thử nào bắt đầu sau entryWindowHours giờ kể từ
+  // 00:00 UTC — ngoài cửa sổ, quyết định bù chỉ còn ĐÓNG (tín hiệu tắt), vào lệnh thì ghi 'skip'.
   btcRegime: { symbol: 'BTCUSDT', smaDays: 50, atrDays: 20, slAtr: 2.5, maxNotionalX: 1, sideCostPct: 0.0575, slippagePct: 0.02, entryCapPct: 0.1,
-    klinesLimit: 499 }, // 499 nến: đủ khởi động ATR Wilder (sai khác so với chuỗi dài < 1e-10), trọng số REST 2 (< 500)
+    klinesLimit: 499, // 499 nến: đủ khởi động ATR Wilder (sai khác so với chuỗi dài < 1e-10), trọng số REST 2 (< 500)
+    entryRetryMinutes: 60, entryMaxAttempts: 3, entryWindowHours: 4 },
   // Phí sàn USDⓈ-M (ví dụ Regular User: maker 0,02%, taker 0,05% — bài hỗ trợ Binance 360033544231, sàn ghi là ví dụ). makerTakerSplit = false
   // (mặc định): mọi lần khớp trả nửa phí nhóm costRoundTripPct (gồm trượt). true: lệnh LIMIT vào lệnh (GTD, maker) chỉ trả makerPct, không
   // trượt; lệnh khớp kiểu market (IOC, STOP/TP/TRAILING_STOP_MARKET) giữ nửa phí nhóm (= taker + trượt nền). Dùng ở sàn chi phí (#1) và mô phỏng.

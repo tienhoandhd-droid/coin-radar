@@ -44,8 +44,10 @@ của Swing; cổng `checkEntry` (cầu chì, trần danh mục, trần live) á
 Vòng đời (`main.ts`): nến 1D BTC đóng → quyết định; khởi động/định kỳ → quyết định nến đã lỡ (nhật ký `btc_regime_decision` chống quyết
 định lại). Đối chiếu: lệnh chỉ có SL không đặt TP1/trailing; ngân sách 2% tính theo vốn lúc vào (không cắt vị thế khi giá giảm).
 Chốt chặn funding dùng chung (`funding-runtime.ts`), phí chiều ra = phí taker + trượt của luật (`plan.exitCostPct`).
-Sai khác so với mô phỏng: chốt chặn chạy mỗi kỳ funding (mô phỏng: mỗi ngày) — chỉ siết sớm hơn, không lỏng hơn; giá vào là giá khớp IOC
-thật (mô phỏng: giá mở nến) và khoảng SL để định cỡ đo từ giá trần IOC (khối lượng chỉ nhỏ hơn).
+Sai khác đã duyệt so với mô phỏng: bảng đầy đủ trong `docs/runbook-bot.md` (mục "Sai khác đã duyệt so với mô phỏng đã khóa") —
+thử lại IOC 60 phút × tối đa 3 lần trong cửa sổ 4 giờ sau 00:00 UTC (ngoài cửa sổ chỉ đóng), khớp một phần giữ phần đã khớp, notional ≤ 0,8 × vốn
+(trần ký quỹ), rủi ro = min(2%, trần live), chốt chặn funding mỗi 8 giờ (dự phòng theo |funding| xấu nhất 30 ngày), SL theo MARK_PRICE
+(mô phỏng: giá thấp nến 1D), đóng chỉ phần bot đã mở.
 
 ## Kiến trúc
 

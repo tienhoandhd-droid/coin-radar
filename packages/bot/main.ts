@@ -10,6 +10,7 @@ import { parseBookTickers, parseContracts, parseFundingInfo, parseKlines, parseL
 import { CONFIG, COMMON } from '../core/config.ts';
 import { fundingFallbackRate, maxAbsFundingRate, meanFundingRate } from '../core/sizing.ts';
 import { donchianBreakout } from '../core/breakout.ts';
+import { tickDecimals } from '../core/price.ts';
 import { parseEvents, type MacroEvent } from '../core/events.ts';
 import type { OpenTrade } from '../core/portfolio.ts';
 import type { MarginBracket } from '../core/margin.ts';
@@ -755,12 +756,15 @@ export function createBot(deps: BotDeps) {
   const regimeTrade = (): TradeState | undefined => activeTrades().find((t) => t.mode === 'btc-regime' && t.symbol === REGIME_SYM);
 
   // Lỡ quyết định (máy tắt qua 00:00 UTC, REST lỗi lúc đóng nến): nến 1D đóng cuối chưa có quyết định trong nhật ký → quyết định ngay.
-  // Không gọi REST khi nhật ký đã có quyết định cho nến đóng cuối (một lần gọi klines mỗi ngày).
+  // Không gọi REST khi nhật ký đã có quyết định cho nến đóng cuối (một lần gọi klines mỗi ngày), hoặc đang chờ lần thử IOC kế tiếp.
   function regimeCatchUp(label: string): Promise<void> {
     if (!modes.includes('btc-regime') || stopping) return Promise.resolve();
-    const expected = Math.floor(deps.now() / DAY) * DAY - 1;
+    const now = deps.now();
+    const expected = Math.floor(now / DAY) * DAY - 1;
     const last = journal.state().btcRegime?.closeTime ?? -Infinity;
     if (last >= expected) return Promise.resolve();
+    const at = journal.state().btcRegimeAttempts;
+    if (at !== null && at.closeTime === expected && now < at.lastAt + COMMON.btcRegime.entryRetryMinutes * MIN) return Promise.resolve();
     decisionChain = decisionChain.then(() => regimeDecide(label)).catch((e: unknown) => {
       lastError = `btc-regime: ${errText(e)}`;
       log(`LỖI ${lastError}`);
@@ -785,7 +789,8 @@ export function createBot(deps: BotDeps) {
     if (isBanned()) { log(`Bỏ qua quyết định btc-regime (${label}): đang bị chặn`); return; }
     if (lastFetched === null) { log(`Bỏ qua quyết định btc-regime (${label}): chưa đọc được vốn từ sàn — thử lại ở lượt định kỳ`); return; }
     const now = deps.now();
-    const candles = await klinesRest(REGIME_SYM, '1d', COMMON.btcRegime.klinesLimit);
+    const R = COMMON.btcRegime;
+    const candles = await klinesRest(REGIME_SYM, '1d', R.klinesLimit);
     const sig = regimeSignal(candles, now);
     if (!sig.ok) {
       trace('btc-regime:no-data');
@@ -816,52 +821,118 @@ export function createBot(deps: BotDeps) {
       }
       return;
     }
-    if (act === 'enter') {
-      if (pos !== undefined || activeTrades().some((t) => t.symbol === REGIME_SYM)) {
-        return recordRegime(sig, 'skip', `KHÔNG vào — ${REGIME_SYM} đang có lệnh/vị thế khác của bot (${pos?.positionAmt ?? 'lệnh chờ'})`, null);
-      }
-      const sid = regimeSignalId(sig.closeTime);
-      const note = await regimeEnter(sig, sid);
-      return recordRegime(sig, journal.hasSignal(sid) ? act : 'skip', note, sid);
+    if (act !== 'enter') return;
+    if (pos !== undefined || activeTrades().some((t) => t.symbol === REGIME_SYM)) {
+      return recordRegime(sig, 'skip', `KHÔNG vào — ${REGIME_SYM} đang có lệnh/vị thế khác của bot (${pos?.positionAmt ?? 'lệnh chờ'})`, null);
     }
+    // Sai khác đã duyệt: IOC không khớp → thử lại sau entryRetryMinutes, tối đa entryMaxAttempts lần, chỉ trong entryWindowHours giờ đầu ngày
+    const at = journal.state().btcRegimeAttempts;
+    const done = at !== null && at.closeTime === sig.closeTime ? at.count : 0;
+    if (done > 0 && now < at!.lastAt + R.entryRetryMinutes * MIN) { log(`btc-regime: chờ lần thử IOC kế tiếp (sau ${new Date(at!.lastAt + R.entryRetryMinutes * MIN).toISOString()})`); return; }
+    if (now - (sig.closeTime + 1) > R.entryWindowHours * H) {
+      trace('btc-regime:window');
+      return recordRegime(sig, 'skip', `KHÔNG vào — ngoài cửa sổ vào lệnh (quá ${R.entryWindowHours} giờ sau 00:00 UTC)${done > 0 ? `; IOC đã không khớp ${done} lần` : ''}`, null);
+    }
+    const attempt = done + 1;
+    const sid = regimeSignalId(sig.closeTime, attempt);
+    const r = await regimeEnter(sig, sid);
+    if (!r.sent) return recordRegime(sig, 'skip', r.note, sid);
+    const result = r.filledQty <= 0 ? 'no_fill' : r.filledQty < r.placedQty ? 'partial' : 'filled';
+    journal.append({ type: 'btc_regime_attempt', attempt: { closeTime: sig.closeTime, attempt, at: deps.now(), signalId: sid, placedQty: r.placedQty, filledQty: r.filledQty, result, note: r.note } });
+    trace(`btc-regime:attempt${attempt}:${result}`);
+    if (result !== 'no_fill') {
+      const part = result === 'partial' ? ` (khớp MỘT PHẦN ${r.filledQty}/${r.placedQty})` : '';
+      return recordRegime(sig, 'enter', `vào Long ${r.filledQty} BTC${part} — ${r.note}`, sid);
+    }
+    log(`CẢNH BÁO btc-regime: IOC lần ${attempt}/${R.entryMaxAttempts} KHÔNG khớp (${r.note})`);
+    if (attempt >= R.entryMaxAttempts) {
+      notify({ level: 'warn', symbol: REGIME_SYM, text: `BTC theo chế độ: IOC không khớp ${R.entryMaxAttempts} lần — bỏ vào lệnh hôm nay, chờ quyết định ngày mai` });
+      return recordRegime(sig, 'skip', `KHÔNG vào — IOC không khớp ${R.entryMaxAttempts} lần`, sid);
+    }
+    notify({ level: 'warn', symbol: REGIME_SYM, text: `BTC theo chế độ: IOC lần ${attempt}/${R.entryMaxAttempts} không khớp (${r.note}) — thử lại sau ${R.entryRetryMinutes} phút` });
   }
 
-  // Đóng theo tín hiệu: market reduce-only CẢ vị thế thật → đối chiếu (hủy SL, đánh dấu đóng). true = sàn không còn vị thế.
+  // Khối lượng ĐÃ KHỚP thật của lệnh vào (khớp E1/E2 trong nhật ký sau đối chiếu). Không thấy khớp mà lệnh còn mở và sàn có vị thế → lấy
+  // khối lượng vị thế (khớp chưa tới qua userTrades) kèm cảnh báo.
+  function regimeFilledQty(sid: string): number {
+    const t = journal.state().trades[sid];
+    if (t === undefined) return 0;
+    const step = t.plan.qtyStep;
+    const f = t.fills.filter((x) => x.role === 'E1' || x.role === 'E2').reduce((s, x) => s + x.qty, 0);
+    if (f > 0) return Number((Math.round(f / step) * step).toFixed(tickDecimals(step)));
+    const p = lastFetched?.ex.positions.find((x) => x.symbol === t.symbol && x.positionAmt !== 0);
+    if (t.status !== 'closed' && p !== undefined) {
+      log(`CẢNH BÁO btc-regime ${sid}: chưa thấy khớp trong nhật ký nhưng sàn có vị thế ${p.positionAmt} — dùng khối lượng vị thế`);
+      return Math.abs(p.positionAmt);
+    }
+    return 0;
+  }
+
+  // Đóng theo tín hiệu: market reduce-only ĐÚNG khối lượng bot đã mở (khớp vào trong nhật ký) — KHÔNG đụng phần thủ công nếu vị thế lớn hơn.
+  // true = phần của bot đã đóng (sàn chỉ còn phần thủ công, hoặc không còn vị thế).
   async function regimeExit(t: TradeState, sig: Extract<RegimeSignal, { ok: true }>): Promise<boolean> {
     regimeExiting.add(t.signalId);
+    let manual = 0;
     await serial(`đóng ${REGIME_SYM} btc-regime`, async () => {
       const f = await fetchState([REGIME_SYM]);
       if (f === null) return;
       lastFetched = f;
       const p = f.ex.positions.find((x) => x.symbol === REGIME_SYM && x.positionAmt !== 0);
       if (p === undefined) return;
+      const step = t.plan.qtyStep;
+      const posQty = Math.abs(p.positionAmt);
+      let botQty = regimeFilledQty(t.signalId);
+      if (!(botQty > 0)) {
+        botQty = posQty;
+        log(`CẢNH BÁO btc-regime ${t.signalId}: nhật ký không có khớp vào — đóng theo khối lượng vị thế ${posQty}`);
+      }
+      const qty = Math.min(botQty, posQty);
+      if (posQty - botQty > step / 2) {
+        manual = Number((posQty - botQty).toFixed(tickDecimals(step)));
+        notify({ level: 'urgent', symbol: REGIME_SYM, text: `KHẨN ${REGIME_SYM}: vị thế ${posQty} lớn hơn phần bot mở ${botQty} — có lệnh THỦ CÔNG ${manual}; bot chỉ đóng ${qty}, KHÔNG đụng phần thủ công (xử lý tay; SL closePosition của bot còn trên sàn sẽ đóng cả vị thế nếu chạm)` });
+      }
       const rep = await executeActions([{
-        type: 'reduce_only', symbol: REGIME_SYM, signalId: t.signalId, side: t.side, qty: Math.abs(p.positionAmt),
+        type: 'reduce_only', symbol: REGIME_SYM, signalId: t.signalId, side: t.side, qty,
         reason: `btc-regime: giá đóng 1D ${sig.close} ≤ SMA${COMMON.btcRegime.smaDays} ${sig.sma.toFixed(2)} — đóng theo luật`,
       }], execCtx(f.ex.positions));
       if (rep.halted?.kind === 'banned') setBanned(rep.halted.reason);
+      if (manual > 0) {
+        const f2 = await fetchState([REGIME_SYM]);
+        if (f2 !== null) lastFetched = f2;
+        const left = Math.abs(f2?.ex.positions.find((x) => x.symbol === REGIME_SYM)?.positionAmt ?? NaN);
+        // Phần bot đã đóng → lệnh của bot kết thúc; phần còn lại là vị thế lạ (đối chiếu khóa mã, báo khẩn)
+        if (Math.abs(left - manual) <= step / 2) journal.append({ type: 'trade_closed', signalId: t.signalId, reason: `btc-regime: đã đóng phần bot ${qty}, còn vị thế thủ công ${manual}` });
+      }
       await reconcileLoop(['sau đóng btc-regime']);
     });
-    return !(lastFetched?.ex.positions.some((x) => x.symbol === REGIME_SYM && x.positionAmt !== 0) ?? true);
+    const left = Math.abs(lastFetched?.ex.positions.find((x) => x.symbol === REGIME_SYM)?.positionAmt ?? 0);
+    return left <= manual + t.plan.qtyStep / 2 && journal.state().trades[t.signalId]?.status === 'closed';
   }
 
-  // Vào Long theo luật. Trả câu mô tả kết quả (ghi vào quyết định ngày). Lỗi REST/sàn ném ra → không ghi quyết định, lượt sau thử lại
-  // (mã tín hiệu theo ngày khử trùng: một nến quyết định tối đa một lệnh vào).
-  async function regimeEnter(sig: Extract<RegimeSignal, { ok: true }>, sid: string): Promise<string> {
+  // Một lần thử vào Long theo luật. sent=false: không gửi lệnh (bị chặn — lý do trong note). sent=true: đã gửi IOC, filledQty = khớp thật
+  // sau đối chiếu. Lỗi REST/sàn/dữ liệu cũ ném ra → không ghi quyết định/lần thử, lượt định kỳ thử lại (mã tín hiệu chống vào trùng).
+  type RegimeEnterResult = { sent: false; note: string } | { sent: true; placedQty: number; filledQty: number; note: string };
+  async function regimeEnter(sig: Extract<RegimeSignal, { ok: true }>, sid: string): Promise<RegimeEnterResult> {
     const sym = REGIME_SYM;
-    if (journal.hasSignal(sid)) return 'đã vào lệnh cho nến này trước đó';
-    if (tg.isPaused()) { trace('btc-regime:paused'); return 'KHÔNG vào — người dùng đang tạm dừng (/dung)'; }
-    if (blocked.has(sym)) return 'KHÔNG vào — mã đang bị khóa (vị thế lạ)';
-    if (fundingBlocked.has(sym)) return 'KHÔNG vào — chốt chặn funding của mã đang lỗi';
+    if (journal.hasSignal(sid)) {
+      // Lần thử này đã gửi trước đó (tiến trình dừng giữa chừng) → không gửi lại, chỉ đọc kết quả
+      const t = journal.state().trades[sid]!;
+      return { sent: true, placedQty: t.legs.E1?.qty ?? 0, filledQty: regimeFilledQty(sid), note: 'lần thử đã gửi trước khi khởi động lại' };
+    }
+    if (tg.isPaused()) { trace('btc-regime:paused'); return { sent: false, note: 'KHÔNG vào — người dùng đang tạm dừng (/dung)' }; }
+    if (blocked.has(sym)) return { sent: false, note: 'KHÔNG vào — mã đang bị khóa (vị thế lạ)' };
+    if (fundingBlocked.has(sym)) return { sent: false, note: 'KHÔNG vào — chốt chặn funding của mã đang lỗi' };
     const contract = contracts.get(sym);
-    if (contract === undefined) return `KHÔNG vào — không có bộ lọc sàn ${sym}`;
+    if (contract === undefined) return { sent: false, note: `KHÔNG vào — không có bộ lọc sàn ${sym}` };
+    // Trần rủi ro: 2% (COMMON) hoặc thấp hơn nếu trần live chặt hơn
+    const riskPct = Math.min(COMMON.risk.perTradePct, deps.liveCaps?.riskPerTradePct ?? Infinity);
     try {
       // Dữ liệu cũ thường là tạm thời (luồng đang nối lại) → ném lỗi: KHÔNG ghi quyết định, lượt định kỳ thử lại (mã tín hiệu theo ngày chống vào trùng)
       if (!(await ensureFresh(sym, '1d'))) { trace('btc-regime:stale'); throw new Error(`KHÔNG vào ${sym} — dữ liệu cũ (giá mark hoặc nến 1d không cập nhật trong ${freshWaitMs / 1000} s), thử lại ở lượt định kỳ`); }
       const mark = await markOf(sym);
       const capital = capitalOf(lastFetched!.equity);
-      const sz = regimeEntrySizing({ contract, capital, markPrice: mark, atr: sig.atr });
-      if (!sz.ok) return `KHÔNG vào — ${sz.reason}`;
+      const sz = regimeEntrySizing({ contract, capital, markPrice: mark, atr: sig.atr, riskPct });
+      if (!sz.ok) return { sent: false, note: `KHÔNG vào — ${sz.reason}` };
       const gate = () => checkEntry({
         now: deps.now(), barMs: DAY, cooldownBars: 0, signal: { symbol: sym, side: 'long', grade: 'A', fresh: true },
         protections: journal.state().protections, recentCloses: journal.state().outcomes,
@@ -869,24 +940,24 @@ export function createBot(deps: BotDeps) {
         openTrades: portfolio(), capital, ...(deps.liveCaps !== null ? { liveCaps: deps.liveCaps } : {}),
       });
       const ce = gate();
-      if (!ce.allowed || ce.canOpen === null) { trace('btc-regime:protections'); return `KHÔNG vào (protections) — ${ce.reasons.join('; ')}`; }
-      let out = '';
+      if (!ce.allowed || ce.canOpen === null) { trace('btc-regime:protections'); return { sent: false, note: `KHÔNG vào (protections) — ${ce.reasons.join('; ')}` }; }
+      let out: RegimeEnterResult | null = null;
       await serial(`vào lệnh ${sym} btc-regime`, async () => {
         // Kiểm lại NGAY trước khi gửi (lượt đối chiếu/cầu chì/dừng có thể vừa đổi)
-        if (stopping) { out = 'KHÔNG vào — bot đang tắt'; return; }
-        if (tg.isPaused()) { out = 'KHÔNG vào — người dùng vừa tạm dừng (/dung)'; return; }
-        if (journal.hasSignal(sid) || activeTrades().some((t) => t.symbol === sym)) { out = 'KHÔNG vào — mã vừa có lệnh'; return; }
+        if (stopping) { out = { sent: false, note: 'KHÔNG vào — bot đang tắt' }; return; }
+        if (tg.isPaused()) { out = { sent: false, note: 'KHÔNG vào — người dùng vừa tạm dừng (/dung)' }; return; }
+        if (journal.hasSignal(sid) || activeTrades().some((t) => t.symbol === sym)) { out = { sent: false, note: 'KHÔNG vào — mã vừa có lệnh' }; return; }
         const late = gate();
-        if (!late.allowed || late.canOpen === null) { out = `KHÔNG vào (kiểm lại ngay trước khi gửi) — ${late.reasons.join('; ')}`; return; }
+        if (!late.allowed || late.canOpen === null) { out = { sent: false, note: `KHÔNG vào (kiểm lại ngay trước khi gửi) — ${late.reasons.join('; ')}` }; return; }
         const now = deps.now();
         const f = lastFetched!;
         const openOrderCount = f.ex.openOrders.filter((o) => o.symbol === sym).length + f.ex.openAlgoOrders.filter((o) => o.symbol === sym).length;
-        const pr = planRegimeEntry({ contract, sizing: sz, qty: late.canOpen.adjustedQty, capital, markPrice: mark, signalId: sid, runId: deps.runId, now, openOrderCount });
-        if (!pr.allowed || pr.sizing === null) { trace('btc-regime:planner'); out = `KHÔNG vào — ${pr.reasons.join('; ')}`; return; }
+        const pr = planRegimeEntry({ contract, sizing: sz, qty: late.canOpen.adjustedQty, capital, markPrice: mark, signalId: sid, runId: deps.runId, now, openOrderCount, riskPct });
+        if (!pr.allowed || pr.sizing === null) { trace('btc-regime:planner'); out = { sent: false, note: `KHÔNG vào — ${pr.reasons.join('; ')}` }; return; }
         const mt = await orders.setMarginTypeIsolated(sym);
-        if (mt.kind !== 'ok') { out = `KHÔNG vào — không đặt được ISOLATED (${mt.kind} ${mt.msg})`; return; }
+        if (mt.kind !== 'ok') { out = { sent: false, note: `KHÔNG vào — không đặt được ISOLATED (${mt.kind} ${mt.msg})` }; return; }
         const lv = await orders.setLeverage(sym, pr.sizing.leverage);
-        if (lv.kind !== 'ok') { out = `KHÔNG vào — không đặt được đòn bẩy ${pr.sizing.leverage}x (${lv.kind} ${lv.msg})`; return; }
+        if (lv.kind !== 'ok') { out = { sent: false, note: `KHÔNG vào — không đặt được đòn bẩy ${pr.sizing.leverage}x (${lv.kind} ${lv.msg})` }; return; }
         deps.setPaperCost?.(sym, { tierPct: pr.sizing.costPct, impactPct: COMMON.slippage.pctPerParticipation, vol1m: Infinity });
         const base = tradeFromPlan({ signalId: sid, runId: deps.runId, now, result: pr, costPct: pr.sizing.costPct });
         const trade: TradeState = {
@@ -900,13 +971,19 @@ export function createBot(deps: BotDeps) {
         const msg = tgAlerts.regimeEntry({ symbol: sym, entry: s.worstEntry, stop: trade.plan.stop, qty: s.qty, notional: s.notional, riskUsdt: s.riskAmount });
         notify({ level: msg.level, symbol: sym, text: msg.text });
         await reconcileLoop(['sau vào lệnh']); // R2: khớp → SL lên sàn NGAY
-        out = `vào Long ${s.qty} BTC (giá trần ${s.worstEntry}, SL ${trade.plan.stop}, rủi ro ${s.riskAmount.toFixed(2)} USDT${pr.reasons.length > 0 ? `; ${pr.reasons.join('; ')}` : ''})`;
+        const res = entryLegNote(sid);
+        out = { sent: true, placedQty: s.qty, filledQty: regimeFilledQty(sid), note: `giá trần ${s.worstEntry}, SL ${trade.plan.stop}, rủi ro tối đa ${s.riskAmount.toFixed(2)} USDT${res}${pr.reasons.length > 0 ? `; ${pr.reasons.join('; ')}` : ''}` };
       });
-      if (out === '') throw new Error(`gửi lệnh vào ${sym} lỗi: ${lastError ?? 'không rõ'}`); // serial đã ghi lỗi → không ghi quyết định, lượt sau thử lại
+      if (out === null) throw new Error(`gửi lệnh vào ${sym} lỗi: ${lastError ?? 'không rõ'}`); // serial đã ghi lỗi → không ghi quyết định, lượt sau thử lại
       return out;
     } finally {
       pinned.delete(sym);
     }
+  }
+  // Kết quả sàn trả cho chân E1 của lần thử (vd "từ chối -2019") — để ghi lý do IOC không khớp
+  function entryLegNote(sid: string): string {
+    const leg = journal.state().trades[sid]?.legs.E1;
+    return leg === undefined || leg.status === 'filled' || leg.status === 'open' ? '' : `; chân vào: ${leg.status}`;
   }
 
   // ---- Funding: chốt chặn khi chạy sau mỗi kỳ chốt (nghĩa vụ B8b) ----

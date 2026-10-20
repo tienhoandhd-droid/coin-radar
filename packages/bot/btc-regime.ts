@@ -20,7 +20,8 @@ const floorQ = (x: number, step: number) => (x > 0 && Number.isFinite(x) ? Numbe
 
 // Khối lượng theo luật ở giá xấu nhất (giá trần IOC). SL tính từ giá mark (giá vào dự kiến) như luật "giá vào − 2,5 × ATR";
 // khoảng SL để định cỡ đo từ giá trần → lỗ khi chạm SL (gồm phí 2 chiều + trượt) ≤ 2% vốn ở MỌI giá khớp được phép.
-export function regimeEntrySizing(a: { contract: Contract; capital: number; markPrice: number; atr: number }): RegimeSizing {
+// riskPct: % vốn rủi ro mỗi lệnh = min(COMMON.risk.perTradePct, trần live riskPerTradePct) — nơi gọi tính (vắng = COMMON.risk.perTradePct)
+export function regimeEntrySizing(a: { contract: Contract; capital: number; markPrice: number; atr: number; riskPct?: number }): RegimeSizing {
   const c = a.contract;
   if (!(a.markPrice > 0) || !Number.isFinite(a.markPrice)) return { ok: false, reason: `giá mark ${a.markPrice} không hợp lệ` };
   if (!(a.atr > 0) || !Number.isFinite(a.atr)) return { ok: false, reason: `ATR ${a.atr} không hợp lệ` };
@@ -28,7 +29,7 @@ export function regimeEntrySizing(a: { contract: Contract; capital: number; mark
   const worstEntry = snapToTick(a.markPrice * (1 + COMMON.btcRegime.entryCapPct / 100), c.tickSize, 'down');
   const stop = snapToTick(regimeStop(a.markPrice, a.atr), c.tickSize, 'down');
   if (!(stop > 0) || !(stop < a.markPrice)) return { ok: false, reason: `SL ${stop} không hợp lệ (giá mark ${a.markPrice}, ATR ${a.atr})` };
-  const notional = regimeNotional({ equity: a.capital, entry: worstEntry, stop });
+  const notional = regimeNotional({ equity: a.capital, entry: worstEntry, stop, riskPct: a.riskPct ?? COMMON.risk.perTradePct });
   const qtyStep = Math.max(c.stepSize, c.marketStepSize);
   const qty = floorQ(notional / worstEntry, qtyStep);
   const costPct = regimeCostPct();
@@ -41,7 +42,7 @@ const riskOf = (qty: number, entry: number, stop: number, costPct: number) => qt
 // Bộ lệnh (E1 IOC + SL) với khối lượng cuối qty (≤ khối lượng luật — nơi gọi đã cắt theo danh mục canOpen). Vi phạm → allowed=false, legs=[].
 export function planRegimeEntry(a: {
   contract: Contract; sizing: Extract<RegimeSizing, { ok: true }>; qty: number; capital: number; markPrice: number;
-  signalId: string; runId: string; now: number; openOrderCount: number;
+  signalId: string; runId: string; now: number; openOrderCount: number; riskPct?: number;
 }): PlannerResult {
   const c = a.contract;
   const s = a.sizing;
@@ -57,7 +58,8 @@ export function planRegimeEntry(a: {
   if (s.worstEntry < a.markPrice) problems.push(`Giá trần ${s.worstEntry} dưới giá mark ${a.markPrice}`);
   const riskAmount = riskOf(qty, s.worstEntry, s.stop, s.costPct);
   const realRiskPct = (riskAmount / a.capital) * 100;
-  if (realRiskPct > COMMON.risk.perTradePct + 1e-9) problems.push(`Rủi ro thực ${realRiskPct.toFixed(4)}% vượt ${COMMON.risk.perTradePct}%/lệnh`);
+  const riskCap = a.riskPct ?? COMMON.risk.perTradePct;
+  if (realRiskPct > riskCap + 1e-9) problems.push(`Rủi ro thực ${realRiskPct.toFixed(4)}% vượt ${riskCap}%/lệnh`);
   const notional = qty * s.worstEntry;
   if (notional > COMMON.btcRegime.maxNotionalX * a.capital * (1 + 1e-9)) problems.push(`Giá trị vị thế ${notional.toFixed(2)} vượt ${COMMON.btcRegime.maxNotionalX} × vốn ${a.capital}`);
   const slots = bracketSlots({ entryLegs: 1, tp1: false, trailing: false, breakevenFloor: false });
@@ -94,5 +96,6 @@ export function planRegimeEntry(a: {
   };
 }
 
-// Mã tín hiệu của một lần vào lệnh: một mã cho mỗi nến quyết định (khử trùng: một ngày tối đa một lệnh vào)
-export const regimeSignalId = (closeTime: number) => `${COMMON.btcRegime.symbol}|btc-regime|long|${new Date(closeTime + 1).toISOString().slice(0, 10)}`;
+// Mã tín hiệu của một LẦN THỬ vào lệnh: một mã cho mỗi (nến quyết định, lần thử) — khử trùng; lần 1 giữ dạng cũ, lần thử lại thêm "|lanN"
+export const regimeSignalId = (closeTime: number, attempt = 1) =>
+  `${COMMON.btcRegime.symbol}|btc-regime|long|${new Date(closeTime + 1).toISOString().slice(0, 10)}${attempt > 1 ? `|lan${attempt}` : ''}`;

@@ -45,6 +45,11 @@ export type JournalState = {
   // Hệ btc-regime: quyết định ngày gần nhất ĐÃ làm (theo nến 1D đã đóng) — khởi động lại không quyết định lại cùng nến (chạm SL trong ngày
   // thì CHỜ lần quyết định kế tiếp mới vào lại), lỡ nến (máy tắt) thì quyết định ngay lúc khởi động. null = chưa quyết định lần nào.
   btcRegime: RegimeDecision | null;
+  // Các lần thử vào lệnh (IOC) của nến quyết định đang xét — chưa ghi quyết định khi lần thử không khớp và còn được thử lại
+  btcRegimeAttempts: { closeTime: number; count: number; lastAt: number } | null;
+};
+export type RegimeAttempt = {
+  closeTime: number; attempt: number; at: number; signalId: string; placedQty: number; filledQty: number; result: 'filled' | 'partial' | 'no_fill'; note: string;
 };
 export type RegimeDecision = { closeTime: number; want: 'long' | 'flat'; action: string; note: string; close: number; sma: number; atr: number; signalId: string | null };
 
@@ -75,10 +80,11 @@ export type JournalEventBody =
   | { type: 'equity'; peak: number; day: string; dayStartEquity: number }
   | { type: 'funding_state'; symbol: string; worstRate: number; lastGood: { at: number; lockedLoss: number } | null }
   | { type: 'btc_regime_decision'; decision: RegimeDecision }
+  | { type: 'btc_regime_attempt'; attempt: RegimeAttempt }
   | { type: 'note'; text: string };
 export type JournalEvent = { seq: number; at: number } & JournalEventBody;
 
-export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null, fundingGuard: {}, btcRegime: null });
+export const emptyState = (): JournalState => ({ seq: 0, trades: {}, prevSignals: {}, protections: {}, positions: {}, unprotected: {}, outcomes: [], equity: null, fundingGuard: {}, btcRegime: null, btcRegimeAttempts: null });
 
 export function journalFileName(at: number): string {
   return `journal-${new Date(at).toISOString().slice(0, 10)}.jsonl`;
@@ -100,6 +106,7 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
   s.equity ??= null;
   s.fundingGuard ??= {};
   s.btcRegime ??= null; // ảnh chụp/nhật ký trước hệ btc-regime
+  s.btcRegimeAttempts ??= null;
   const tradeOf = (signalId: string): TradeState | null => {
     const t = s.trades[signalId];
     if (t === undefined) warn(`sự kiện #${e.seq} (${e.type}) tham chiếu lệnh ${signalId} không có trong nhật ký — bỏ qua`);
@@ -247,6 +254,14 @@ export function applyEvent(s: JournalState, e: JournalEvent, warn: Warn = defaul
     case 'btc_regime_decision':
       s.btcRegime = { ...e.decision };
       break;
+    case 'btc_regime_attempt': {
+      const cur = s.btcRegimeAttempts;
+      const a = e.attempt;
+      s.btcRegimeAttempts = cur !== null && cur.closeTime === a.closeTime
+        ? { closeTime: a.closeTime, count: Math.max(cur.count, a.attempt), lastAt: Math.max(cur.lastAt, a.at) }
+        : { closeTime: a.closeTime, count: a.attempt, lastAt: a.at };
+      break;
+    }
     case 'note':
       break;
     default:
@@ -313,6 +328,7 @@ function restoreFull(dir: string, warn: Warn): { state: JournalState; tornLine: 
       state.equity ??= null;
       state.fundingGuard ??= {};
       state.btcRegime ??= null;
+      state.btcRegimeAttempts ??= null;
       snapshotAt = snap.at;
     } catch (e) {
       warn(`ảnh chụp ${snapPath} không đọc được (${e instanceof Error ? e.message : String(e)}) — phát lại toàn bộ nhật ký`);

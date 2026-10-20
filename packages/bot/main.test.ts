@@ -52,7 +52,9 @@ type FakeStream = MarketStreamLike & {
 
 // btcDaily: giá đóng nến 1D BTCUSDT theo giờ mở (vắng = 60 000 cố định); trả null = REST không có nến đó (thiếu dữ liệu)
 function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => Promise<ScanResult>; funding?: Array<{ fundingTime: number; fundingRate: number; markPrice: string }>; mark?: number;
-  btcDaily?: (openTime: number) => number | null } = {}) {
+  btcDaily?: (openTime: number) => number | null;
+  apiWrap?: (inner: BotDeps['api']) => BotDeps['api']; // chặn/sửa request tới sàn giả lập (giả lập từ chối, khớp một phần…)
+} = {}) {
   const dir = o.dir ?? mkdtempSync(join(tmpdir(), 'cr-bot-'));
   const clock = { t: T0 };
   const now = () => clock.t;
@@ -118,7 +120,7 @@ function harness(o: { dir?: string; balance?: number; scan?: (i: ScanInput) => P
     log: (m) => logs.push(m),
     publicGet,
     publicGetBot: (path: string) => { botGets.push(path); return deps.publicGet(path); },
-    api: paper.api,
+    api: o.apiWrap ? o.apiWrap(paper.api) : paper.api,
     syncClock: async () => 0,
     paper,
     createUserStream: null,
@@ -819,5 +821,159 @@ test('btc-regime: /dung → không vào (quyết định ghi "skip"); cầu chì
     await h2.drive(h2.bot.idle());
     assert.equal(regimeTrades(h2).length, 0);
     assert.match(h2.journal.state().btcRegime!.note, /protections.*loss_streak/);
+  });
+});
+
+// ---- btc-regime: thử lại IOC (sai khác đã duyệt), khớp thật, đóng chỉ phần của bot ----
+type Req = Parameters<BotDeps['api']['request']>[0];
+const isIoc = (o: Req) => o.method === 'POST' && o.path === '/fapi/v1/order' && o.params?.timeInForce === 'IOC';
+const isReduce = (o: Req) => o.method === 'POST' && o.path === '/fapi/v1/order' && o.params?.reduceOnly === 'true' && o.params?.type === 'MARKET';
+const rejected = (code: number, msg: string) => ({ kind: 'rejected' as const, code, msg, status: 400, body: { code, msg }, orderCount: { tenSec: null, oneMin: null } });
+const attemptsOf = (h: ReturnType<typeof harness>) => events(h.journal).flatMap((e) => (e.type === 'btc_regime_attempt' ? [e.attempt] : []));
+
+test('btc-regime IOC bị từ chối (-2019) → thử lại sau 60 phút (xét lại tín hiệu, định cỡ lại), tối đa 3 lần; lần 3 hỏng → "skip: IOC không khớp 3 lần" + cảnh báo', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising, apiWrap: (inner) => ({ request: async (o) => (isIoc(o) ? rejected(-2019, 'Margin is insufficient.') : inner.request(o)) }) });
+    h.clock.t = D0 + 30_000; // 00:00:30 UTC
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(attemptsOf(h).length, 1);
+    assert.equal(attemptsOf(h)[0]!.result, 'no_fill');
+    assert.equal(h.journal.state().btcRegime, null, 'chưa ghi quyết định — còn thử lại');
+    assert.ok(h.notes.some((n) => n.level === 'warn' && /IOC lần 1\/3 không khớp/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    const calls = regimeKlineCalls(h);
+    h.clock.t += 30 * 60_000; // mới 30 phút: không thử, không gọi REST
+    await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(attemptsOf(h).length, 1);
+    assert.equal(regimeKlineCalls(h), calls);
+    for (const k of [2, 3]) {
+      h.clock.t = attemptsOf(h)[k - 2]!.at + 60 * 60_000 + 1_000;
+      await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+      assert.equal(attemptsOf(h).length, k, h.logs.slice(-6).join('\n'));
+    }
+    const at = attemptsOf(h);
+    assert.deepEqual(at.map((a) => a.signalId), ['BTCUSDT|btc-regime|long|2026-10-20', 'BTCUSDT|btc-regime|long|2026-10-20|lan2', 'BTCUSDT|btc-regime|long|2026-10-20|lan3']);
+    assert.ok(at.every((a) => a.result === 'no_fill' && a.filledQty === 0 && a.placedQty > 0));
+    const d = h.journal.state().btcRegime!;
+    assert.equal(d.action, 'skip');
+    assert.match(d.note, /IOC không khớp 3 lần/);
+    assert.ok(h.notes.some((n) => n.level === 'warn' && /IOC không khớp 3 lần/.test(n.text)));
+    assert.equal(btcPos(h), 0);
+    assert.ok(!h.notes.some((n) => /BTC theo chế độ — nến 1D.*vào Long/.test(n.text)), 'không báo "vào Long" khi không khớp');
+  });
+});
+
+test('btc-regime IOC hết hạn không khớp (giá vượt trần) → lần 2 sau 60 phút khớp → quyết định "enter" với khối lượng khớp thật', async () => {
+  await withConfigOverride(REGIME, async () => {
+    let first = true;
+    const h = harness({ btcDaily: rising, apiWrap: (inner) => ({ request: async (o) => {
+      if (isIoc(o) && first) { first = false; return inner.request({ ...o, params: { ...o.params, price: '59000.0' } }); } // giá trần dưới giá → IOC EXPIRED
+      return inner.request(o);
+    } }) });
+    h.clock.t = D0 + 30_000;
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(attemptsOf(h)[0]?.result, 'no_fill', h.logs.slice(-8).join('\n'));
+    assert.equal(btcPos(h), 0);
+    h.clock.t = attemptsOf(h)[0]!.at + 60 * 60_000 + 1_000;
+    await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(attemptsOf(h)[1]?.result, 'filled');
+    const d = h.journal.state().btcRegime!;
+    assert.equal(d.action, 'enter');
+    assert.equal(d.signalId, 'BTCUSDT|btc-regime|long|2026-10-20|lan2');
+    assert.match(d.note, /^vào Long 0\.105 BTC/);
+    assert.equal(btcPos(h), 0.105);
+    assert.equal((await btcAlgos(h)).length, 1);
+  });
+});
+
+test('btc-regime IOC khớp MỘT PHẦN → nhật ký/Telegram ghi khối lượng khớp thật (không phải khối lượng đặt), SL closePosition phủ phần đã khớp', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising, apiWrap: (inner) => ({ request: async (o) => (isIoc(o) ? inner.request({ ...o, params: { ...o.params, quantity: '0.050' } }) : inner.request(o)) }) });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    const a = attemptsOf(h)[0]!;
+    assert.equal(a.result, 'partial');
+    assert.equal(a.placedQty, 0.105);
+    assert.equal(a.filledQty, 0.05);
+    const d = h.journal.state().btcRegime!;
+    assert.equal(d.action, 'enter');
+    assert.match(d.note, /vào Long 0\.05 BTC \(khớp MỘT PHẦN 0\.05\/0\.105\)/);
+    assert.ok(h.notes.some((n) => /vào Long 0\.05 BTC/.test(n.text)));
+    assert.equal(btcPos(h), 0.05);
+    assert.equal((await btcAlgos(h)).length, 1);
+  });
+});
+
+test('btc-regime đóng THẤT BẠI (sàn từ chối reduce-only) → KHẨN, không ghi quyết định; lượt định kỳ thử lại → đóng được, ghi "exit"', async () => {
+  await withConfigOverride(REGIME, async () => {
+    let crash = false;
+    let failClose = true;
+    const h = harness({ btcDaily: (t) => (crash && t >= D0 ? 50_000 : rising(t)), apiWrap: (inner) => ({ request: async (o) => {
+      if (isReduce(o) && failClose) { failClose = false; return rejected(-1001, 'Internal error; unable to process your request. Please try again.'); }
+      return inner.request(o);
+    } }) });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(btcPos(h), 0.105);
+    crash = true;
+    h.clock.t = D0 + DAY_MS + 1_000;
+    await h.drive(h.bot.onMarketEvent('trigger', dailyClose(D0 + DAY_MS - 1)).then(() => h.bot.idle()));
+    assert.equal(btcPos(h), 0.105, 'lần đóng đầu bị từ chối');
+    assert.notEqual(h.journal.state().btcRegime!.closeTime, D0 + DAY_MS - 1, 'chưa ghi quyết định cho nến 20/10');
+    assert.ok(h.notes.some((n) => n.level === 'urgent' && /CHƯA đóng được/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    assert.equal((await btcAlgos(h)).length, 1, 'SL vẫn trên sàn');
+    h.clock.t += 60_000;
+    await h.drive(h.bot.periodic().then(() => h.bot.idle()));
+    assert.equal(btcPos(h), 0);
+    assert.equal(h.journal.state().btcRegime!.action, 'exit');
+    assert.equal(h.journal.state().btcRegime!.closeTime, D0 + DAY_MS - 1);
+  });
+});
+
+test('btc-regime cửa sổ vào lệnh 4 giờ: quyết định bù lúc 05:00 UTC → KHÔNG vào (skip, nêu lý do); nhưng tín hiệu tắt thì VẪN đóng', async () => {
+  await withConfigOverride(REGIME, async () => {
+    const h = harness({ btcDaily: rising });
+    h.clock.t = D0 + 5 * H;
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    assert.equal(regimeTrades(h).length, 0);
+    assert.equal(h.journal.state().btcRegime!.action, 'skip');
+    assert.match(h.journal.state().btcRegime!.note, /ngoài cửa sổ vào lệnh \(quá 4 giờ sau 00:00 UTC\)/);
+    // có vị thế (vào lúc 03:59), máy tắt, bật lại 05:00 ngày sau với tín hiệu tắt → đóng
+    let crash = false;
+    const g = harness({ btcDaily: (t) => (crash && t >= D0 ? 50_000 : rising(t)) });
+    await g.drive(g.bot.start());
+    await g.drive(g.bot.idle());
+    assert.equal(btcPos(g), 0.105);
+    await g.drive(g.bot.stop());
+    crash = true;
+    const g2 = harness({ dir: g.dir, btcDaily: (t) => (t >= D0 ? 50_000 : rising(t)) });
+    g2.clock.t = D0 + DAY_MS + 5 * H;
+    await g2.drive(g2.bot.start());
+    await g2.drive(g2.bot.idle());
+    assert.equal(btcPos(g2), 0);
+    assert.equal(g2.journal.state().btcRegime!.action, 'exit');
+  });
+});
+
+test('btc-regime đóng theo tín hiệu chỉ đóng phần BOT đã mở: có lệnh THỦ CÔNG cộng thêm → KHẨN, phần thủ công giữ nguyên', async () => {
+  await withConfigOverride(REGIME, async () => {
+    let crash = false;
+    // bot khớp một phần 0,05 (còn chỗ rủi ro → đối chiếu không cắt phần thủ công), rồi người dùng mua tay thêm 0,01
+    const h = harness({ btcDaily: (t) => (crash && t >= D0 ? 50_000 : rising(t)),
+      apiWrap: (inner) => ({ request: async (o) => (isIoc(o) ? inner.request({ ...o, params: { ...o.params, quantity: '0.050' } }) : inner.request(o)) }) });
+    await h.drive(h.bot.start());
+    await h.drive(h.bot.idle());
+    const r = await h.drive(h.paper.api.request({ method: 'POST', path: '/fapi/v1/order', params: { symbol: 'BTCUSDT', side: 'BUY', type: 'MARKET', quantity: '0.010', newClientOrderId: 'tay-1' }, createsOrder: true }));
+    assert.equal(r.kind, 'ok', JSON.stringify(r.body));
+    assert.equal(btcPos(h), 0.06);
+    crash = true;
+    h.clock.t = D0 + DAY_MS + 1_000;
+    await h.drive(h.bot.onMarketEvent('trigger', dailyClose(D0 + DAY_MS - 1)).then(() => h.bot.idle()));
+    assert.equal(btcPos(h), 0.01, 'chỉ đóng 0,05 của bot');
+    assert.ok(h.notes.some((n) => n.level === 'urgent' && /THỦ CÔNG 0\.01/.test(n.text)), h.notes.map((n) => n.text).join('\n'));
+    assert.equal(regimeTrades(h)[0]!.status, 'closed');
+    assert.equal(h.journal.state().btcRegime!.action, 'exit');
   });
 });
