@@ -197,8 +197,8 @@ test('B8b khởi động ĐÚNG THỨ TỰ: giờ → exchangeInfo → tài kho�
   assert.deepEqual(steps, ['clock', 'exchangeInfo', 'account', 'journal', 'paper_backfill', 'seed', 'reconcile', 'streams']);
   const trigger = h.streams[0]!;
   assert.deepEqual([...trigger.symbols], ['BTCUSDT']);
-  assert.deepEqual([...trigger.intervals].sort(), ['15m', '4h']); // COMMON.bot.modes mặc định = swing + fast
-  assert.ok(trigger.seeds.length === 2 && trigger.calls.indexOf('seed') < trigger.calls.indexOf('start'), 'seedLastClosed TRƯỚC start()');
+  assert.deepEqual([...trigger.intervals].sort(), ['4h']); // COMMON.bot.modes mặc định = chỉ swing (người dùng chốt 20/10/2026)
+  assert.ok(trigger.seeds.length === 1 && trigger.calls.indexOf('seed') < trigger.calls.indexOf('start'), 'seedLastClosed TRƯỚC start()');
   assert.ok(h.bot.trace().includes('reconcile:khởi động'));
   assert.ok(h.logs.some((l) => /Bot bật/.test(l)));
 });
@@ -442,17 +442,19 @@ test('R1 #4b đối chiếu KHÔNG xếp hàng sau việc vào lệnh (lúc lệ
 });
 
 test('R1 #4c mốc 4H: quét Swing và Lướt nhanh chạy LẦN LƯỢT (không đồng thời trên cùng ngân sách IP); đối chiếu dùng ngân sách ưu tiên bot', async () => {
-  const log: string[] = [];
-  let h: ReturnType<typeof harness>;
-  h = harness({ scan: async (i) => { log.push(`start ${i.mode}`); await h.deps.sleep(5_000); log.push(`end ${i.mode}`); return emptyScan(i); } });
-  await h.drive(h.bot.start());
-  h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
-  const a = h.bot.onMarketEvent('trigger', closeOf('15m', Date.UTC(2026, 9, 20, 4, 0, 0) - 1));
-  const b = h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1));
-  await h.drive(Promise.all([a, b]).then(() => h.bot.idle()));
-  assert.equal(log.length, 4);
-  assert.ok(log[0]!.startsWith('start') && log[1]!.startsWith('end') && log[2]!.startsWith('start'), log.join(' | '));
-  assert.ok(h.botGets.some((g) => g.startsWith('/fapi/v1/klines?symbol=BTCUSDT')), 'mốc nến REST của đối chiếu/khởi động đi bằng ngân sách bot');
+  await withConfigOverride({ 'COMMON.bot.modes': ['swing', 'fast'] }, async () => {
+    const log: string[] = [];
+    let h: ReturnType<typeof harness>;
+    h = harness({ scan: async (i) => { log.push(`start ${i.mode}`); await h.deps.sleep(5_000); log.push(`end ${i.mode}`); return emptyScan(i); } });
+    await h.drive(h.bot.start());
+    h.clock.t = Date.UTC(2026, 9, 20, 4, 0, 1);
+    const a = h.bot.onMarketEvent('trigger', closeOf('15m', Date.UTC(2026, 9, 20, 4, 0, 0) - 1));
+    const b = h.bot.onMarketEvent('trigger', closeOf('4h', Date.UTC(2026, 9, 20, 4, 0, 0) - 1));
+    await h.drive(Promise.all([a, b]).then(() => h.bot.idle()));
+    assert.equal(log.length, 4);
+    assert.ok(log[0]!.startsWith('start') && log[1]!.startsWith('end') && log[2]!.startsWith('start'), log.join(' | '));
+    assert.ok(h.botGets.some((g) => g.startsWith('/fapi/v1/klines?symbol=BTCUSDT')), 'mốc nến REST của đối chiếu/khởi động đi bằng ngân sách bot');
+  });
 });
 
 // ======================= B8b vòng 2 (rà soát lại 1) =======================

@@ -524,14 +524,15 @@ test('#3 không TP1: mặc định từ chối; bật + đóng 1D phá đỉnh D
   });
 });
 
-test('COMMON.bot.modes: mặc định bot giao dịch cả Swing lẫn Lướt nhanh; bỏ "fast" → planner từ chối mọi lệnh Lướt nhanh, Swing vẫn vào', async () => {
+test('COMMON.bot.modes: mặc định bot chỉ giao dịch Swing (người dùng chốt 20/10/2026) → planner từ chối mọi lệnh Lướt nhanh, Swing vẫn vào; thêm "fast" → Lướt nhanh được xét', async () => {
   const { withConfigOverride } = await import('../core/config-override.ts');
-  assert.deepEqual(COMMON.bot.modes, ['swing', 'fast']);
+  assert.deepEqual(COMMON.bot.modes, ['swing']);
   const plan = mkPlan('long', 'market', false);
-  await withConfigOverride({ 'COMMON.bot.modes': ['swing'] }, async () => {
-    const r = planOrders(input(plan, { mode: 'fast' }));
-    assert.equal(r.allowed, false);
-    assert.match(r.reasons.join(' '), /chế độ fast đang tắt/);
-    assert.equal(planOrders(input(plan)).allowed, true);
+  const r = planOrders(input(plan, { mode: 'fast' }));
+  assert.equal(r.allowed, false);
+  assert.match(r.reasons.join(' '), /chế độ fast đang tắt/);
+  assert.equal(planOrders(input(plan)).allowed, true);
+  await withConfigOverride({ 'COMMON.bot.modes': ['swing', 'fast'] }, async () => {
+    assert.equal(planOrders(input(plan, { mode: 'fast' })).allowed, true);
   });
 });
