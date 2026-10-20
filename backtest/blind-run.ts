@@ -34,7 +34,7 @@ import type { ExitPolicy } from '../packages/core/exit.ts';
 import type { Mode } from '../packages/core/types.ts';
 import { assertWindowAllowed, blindPeriodOfLock, loadContracts, type BlindAuth, type Window } from './replay.ts';
 import { report, runSimulation, type Filter } from './simulate-run.ts';
-import { requireWired, stackRun, BASELINE_SPEC, type RunSpec } from './experiment.ts';
+import { requireWired, stackRun, checkBase, VARIANTS, BASELINE_SPEC, type RunSpec } from './experiment.ts';
 import { computeStats, type StatTrade } from './stats.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -124,23 +124,26 @@ export function parseLock(text: string): Lock {
   return { lockedCommit: raw.lockedCommit, configHash: raw.configHash, capital: raw.capital, pauseHours: raw.pauseHours, criteria: raw.criteria, candidates };
 }
 
-// Cấu hình hiệu lực của ứng viên = ĐÚNG cách experiment.ts dựng trên D: stackRun(cấu hình của gốc, biến thể), với cấu hình của gốc
-// = BASELINE_SPEC ('baseline') hoặc stackRun(BASELINE_SPEC, gốc) — gốc là biến thể đã chạy trên 'baseline' (như f1-funding-fix; gốc
-// chồng nhiều tầng không hỗ trợ). policy/filter trong tệp khóa phải TRÙNG cấu hình chồng, khác → từ chối.
+// Cấu hình hiệu lực của ứng viên = ĐÚNG cách experiment.ts dựng trên D: stackRun(cấu hình của gốc, biến thể), cấu hình của gốc dựng ĐỆ QUY
+// theo chuỗi pinnedBase (gốc không ghim → chạy trên 'baseline', như f1-funding-fix). Vd. cost-cal-sr-long → sr-long → sr-confirm →
+// f1-funding-fix → baseline (rà soát C1 20/10/2026: bản cũ chỉ chồng 2 tầng, mất tầng f1). Mỗi tầng kiểm chế độ và gốc ghim (checkBase).
+// policy/filter trong tệp khóa phải TRÙNG cấu hình chồng, khác → từ chối.
 export type Effective = { base: string } & RunSpec;
 export function effectiveSpec(c: Candidate): Effective {
   const modeOk = (name: string, modes: readonly Mode[] | undefined) => {
     if (modes !== undefined && !modes.includes(c.mode)) throw new Error(`ứng viên "${c.id}": biến thể "${name}" không áp dụng cho chế độ ${c.mode} (chỉ ${modes.join(', ')})`);
   };
-  let baseSpec: RunSpec = BASELINE_SPEC;
-  if (c.base !== 'baseline') {
-    const b = requireWired(c.base);
-    modeOk(b.name, b.modes);
-    baseSpec = stackRun(BASELINE_SPEC, b);
-  }
+  const specOf = (name: string, base: string, depth: number): RunSpec => {
+    if (name === 'baseline') return BASELINE_SPEC;
+    if (depth > 20) throw new Error(`ứng viên "${c.id}": chuỗi gốc quá sâu (vòng lặp pinnedBase?) tại "${name}"`);
+    const v = requireWired(name);
+    modeOk(v.name, v.modes);
+    checkBase(v, base);
+    return stackRun(base === 'baseline' ? BASELINE_SPEC : specOf(base, VARIANTS[base]?.pinnedBase ?? 'baseline', depth + 1), v);
+  };
+  if (c.base !== 'baseline') requireWired(c.base); // gốc không có / chưa nối → lỗi rõ trước
   const v = requireWired(c.variant);
-  modeOk(v.name, v.modes);
-  const spec = stackRun(baseSpec, v);
+  const spec = specOf(c.variant, c.base, 0);
   if (spec.policy !== c.policy) throw new Error(`ứng viên "${c.id}": policy ${c.policy} trái cấu hình chồng (gốc ${c.base} + ${v.name} → ${spec.policy})`);
   if (spec.filter !== c.filter) throw new Error(`ứng viên "${c.id}": filter ${c.filter} trái cấu hình chồng (gốc ${c.base} + ${v.name} → ${spec.filter})`);
   return { base: c.base, ...spec };
@@ -175,13 +178,20 @@ function readMarker(path: string): Marker {
   }
 }
 
-// Ảnh chụp đầu vào để kiểm lại sau: thư mục đệm + sha256 các tệp quyết định vũ trụ/sự kiện (null = không có tệp)
-function snapshotInputs(root: string, dir: string): Inputs {
+// Ảnh chụp đầu vào để kiểm lại sau: thư mục đệm + sha256 các tệp quyết định vũ trụ/sự kiện (null = không có tệp). withFgi: cấu hình của
+// một ứng viên bật FGI-hướng → băm thêm <dir>/fgi.json (rà soát M6: tệp FGI tải lại giữa lúc khóa và lúc chạy phải bị phát hiện).
+export function snapshotInputs(root: string, dir: string, withFgi = false): Inputs {
   const h = (p: string) => (existsSync(p) ? sha256(readFileSync(p)) : null);
   const abs = resolvePath(root, dir);
   return { dir, sha256: { 'exchange-info.json': h(join(abs, 'exchange-info.json')), 'universe.json': h(join(abs, 'universe.json')),
-    'data/events/events.json': h(join(root, 'data/events/events.json')) } };
+    'data/events/events.json': h(join(root, 'data/events/events.json')), ...(withFgi ? { 'fgi.json': h(join(abs, 'fgi.json')) } : {}) } };
 }
+
+// Cấu hình (sau ghi đè) có bật FGI-hướng không
+export const usesFgi = (o: Record<string, unknown>) => {
+  const v = o['COMMON.entryRules.fgiDirection'];
+  return v !== undefined ? v !== null : COMMON.entryRules.fgiDirection !== null;
+};
 
 const iso = (t: number) => new Date(t).toISOString();
 
@@ -249,7 +259,7 @@ export async function runBlind(a: BlindArgs, d: BlindDeps): Promise<void> {
       if (existsSync(dir)) throw new Error(`Từ chối: ứng viên "${c.id}" đã chạy (${dir} có marker, chưa xong — có thể đổ giữa chừng). Chạy lại chỉ với --rerun-after-crash ${c.id} (được ghi vào kết quả)`);
     }
   }
-  const inputs = snapshotInputs(d.repoRoot, a.dir ?? 'data/cache');
+  const inputs = snapshotInputs(d.repoRoot, a.dir ?? 'data/cache', [...effective.values()].some((e) => usesFgi(e.configOverride)));
   for (const c of todo) {
     const dir = dirOf(c.id);
     mkdirSync(dir, { recursive: true });

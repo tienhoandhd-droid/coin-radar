@@ -458,3 +458,48 @@ test('chạy với gốc chồng: mô phỏng nhận cấu hình chồng; effect
   assert.equal(w.calls[0]!.policy, eff.policy);
   assert.equal(w.calls[0]!.filter, eff.filter);
 });
+
+// ---------------------------------------------------------------- rà soát C1 / M6 (20/10/2026) ---------------------------------------
+test('C1 effectiveSpec dựng ĐỆ QUY theo pinnedBase: cost-cal-sr-long (4 tầng) và sr-long giữ đủ tầng f1-funding-fix như cấu hình đã chạy trên D', () => {
+  const f1 = VARIANTS['f1-funding-fix']!.configOverride;
+  const sr = VARIANTS['sr-confirm']!.configOverride;
+  const want = { ...f1, ...sr, ...VARIANTS['sr-long']!.configOverride };
+  const srLong = effectiveSpec({ id: 'a', mode: 'swing', filter: 'all', policy: 'C2', variant: 'sr-long', base: 'sr-confirm' });
+  assert.deepEqual(srLong.configOverride, want);
+  const cal = effectiveSpec({ id: 'b', mode: 'swing', filter: 'all', policy: 'C2', variant: 'cost-cal-sr-long', base: 'sr-long' });
+  assert.deepEqual(cal.configOverride, { ...want, ...VARIANTS['cost-cal-sr-long']!.configOverride });
+  assert.equal(cal.configOverride['COMMON.risk.fundingRuntimeGuard'], true, 'tầng f1 không được mất');
+  // cost-cal-trend-d1: chốt chặn funding phải có (giữ lệnh tới 180 ngày)
+  const td = effectiveSpec({ id: 'c', mode: 'swing', filter: 'all', policy: 'C2', variant: 'cost-cal-trend-d1', base: 'trend-d1' });
+  assert.deepEqual(Object.keys(td.configOverride).sort(), ['COMMON.costRoundTripPct', 'COMMON.risk.fundingBufferHorizon', 'COMMON.risk.fundingRuntimeGuard', 'COMMON.trend.enabled']);
+  // gốc ghim sai → từ chối
+  assert.throws(() => effectiveSpec({ id: 'd', mode: 'swing', filter: 'all', policy: 'C2', variant: 'sr-long', base: 'f1-funding-fix' }), /chỉ chạy với --base sr-confirm/);
+  // khớp effective.json của D khi có
+  for (const [variant, base] of [['sr-long', 'sr-confirm'], ['cost-cal-trend-d1', 'trend-d1']] as const) {
+    const f = join(import.meta.dirname, '..', 'output/experiments', variant, 'swing', 'effective.json');
+    if (!existsSync(f)) continue;
+    const d = JSON.parse(readFileSync(f, 'utf8'));
+    assert.deepEqual(effectiveSpec({ id: 'e', mode: 'swing', filter: 'all', policy: 'C2', variant, base }).configOverride, d.configOverride, variant);
+  }
+});
+
+test('M6 snapshotInputs: ứng viên bật FGI-hướng → băm thêm fgi.json của thư mục đệm; không bật → không có khóa fgi.json', async () => {
+  const { snapshotInputs, usesFgi } = await import('./blind-run.ts');
+  const { createHash } = await import('node:crypto');
+  const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+  const root = mkdtempSync(join(tmpdir(), 'blind-fgi-'));
+  mkdirSync(join(root, 'data/cache'), { recursive: true });
+  writeFileSync(join(root, 'data/cache/fgi.json'), '{"raw":1}');
+  assert.equal(snapshotInputs(root, 'data/cache').sha256['fgi.json'], undefined);
+  assert.equal(snapshotInputs(root, 'data/cache', true).sha256['fgi.json'], sha('{"raw":1}'));
+  assert.equal(usesFgi(VARIANTS['fgi-dir']!.configOverride), true);
+  assert.equal(usesFgi(VARIANTS['trend-d1']!.configOverride), false);
+  // chạy thật qua runBlind: ứng viên fgi-dir → marker có sha256 của fgi.json
+  const c = { id: 'swing-fgi', mode: 'swing' as const, filter: 'all' as const, policy: 'C2' as const, variant: 'fgi-dir', base: 'f1-funding-fix' };
+  const w = world(md(lockObj({ candidates: [c] })));
+  mkdirSync(join(w.root, 'data/cache'), { recursive: true });
+  writeFileSync(join(w.root, 'data/cache/fgi.json'), '{"raw":2}');
+  await runBlind(args, w.deps);
+  const m = JSON.parse(readFileSync(join(w.root, 'output/blind/swing-fgi/started.json'), 'utf8'));
+  assert.equal(m.inputs.sha256['fgi.json'], sha('{"raw":2}'));
+});
