@@ -104,3 +104,17 @@ test('Sau TP1 (phần còn lại chạy trailing ≥ hòa vốn, không sửa đ
   assert.ok(bad.actions.some((a) => a.type === 'market_close'));
   assert.ok(!bad.actions.some((a) => a.type === 'place_stop'));
 });
+
+test('Đã mất (phí + funding) vượt ngân sách nhưng lệnh đang lãi xa: SIẾT SL qua giá vào (không đóng); SL cũ đã ở phía lãi → không báo Telegram', () => {
+  for (const side of ['long', 'short'] as const) {
+    const d = side === 'long' ? 1 : -1;
+    const t = trade(side, 100 + d * 1); // SL cũ 101 (Long) / 99 (Short) — đã ở phía có lãi của giá vào 100
+    const r = fundingGuardActions({ trade: t, positionQty: 3.5, avgEntry: 100, mark: 100 + d * 30, contract: C, algos: [slAlgo(t, 100 + d * 1)], trades: rows, fundingIncome: -24.5, riskPct: 2, capitalFallback: 5000 });
+    // đã mất 0,5 + 24,5 = 25 > 20 → SL mới phải khóa lãi ≥ 5 + phí ra trên 3,5 coin
+    assert.equal(r.result.action, 'tighten', side);
+    assert.ok(r.actions.some((a) => a.type === 'place_stop'), side);
+    assert.ok(!r.actions.some((a) => a.type === 'market_close'), `${side}: không đóng lệnh đang lãi`);
+    assert.ok(!r.actions.some((a) => a.type === 'alert'), `${side}: không gửi tin cho lần siết thường lệ`);
+    assert.ok(r.result.action === 'tighten' && r.result.lossAtStop <= 20 + 1e-9, `${side}: lỗ tại SL mới ≤ 2% vốn lúc vào`);
+  }
+});

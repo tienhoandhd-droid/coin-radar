@@ -94,7 +94,10 @@ export function fundingGuardActions(a: {
     if (fallback && o === head) continue;
     actions.push({ type: 'cancel_algo', symbol: sym, signalId: sid, clientId: o.clientId, algoId: o.algoId, onlyAfterPlaced: clientId, replacedBy: null, reason: `Thay lệnh dừng bằng ${clientId} (chốt chặn funding)` });
   }
-  actions.push({ type: 'alert', level: 'warn', symbol: sym, signalId: sid, text: `${sym}: ${why}` });
+  // Chỉ báo Telegram khi SL cũ còn ở phía lỗ của giá vào (lần siết có ý nghĩa rủi ro). SL cũ đã ở phía có lãi → các lần siết tiếp theo
+  // (mỗi kỳ funding vài tick) chỉ ghi nhật ký stop_tightened ở trên — chạy lại dữ liệu cũ: ~3 tin/ngày, 2 486 tin trong 6 năm.
+  const d = t.side === 'long' ? 1 : -1;
+  if (d * (stopUsed - a.avgEntry) < 0) actions.push({ type: 'alert', level: 'warn', symbol: sym, signalId: sid, text: `${sym}: ${why}` });
   return { result, lockedLoss, lossBefore, stopUsed, budget, actions, journal };
 
   function pushClose(reason: string): void {
