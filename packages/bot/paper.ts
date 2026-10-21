@@ -798,8 +798,13 @@ export function createPaperExchange(opts: PaperOptions) {
       })));
     }
     if (m === 'GET' && path === '/fapi/v1/income') {
+      // startTime/endTime lọc theo giờ như sàn thật (main.ts tính kết quả lệnh bằng funding từ lúc tạo lệnh tới nay — trước đây bị bỏ qua
+      // → kết quả lệnh paper cộng cả funding của các lệnh CŨ; phát hiện khi chạy bot trên dữ liệu cũ, backtest/bot-replay.ts)
       const type = str(req, 'incomeType');
-      return ok(st.income.filter((r) => (s === undefined || r.symbol === s) && (type === undefined || r.incomeType === type))
+      const from = pnum(str(req, 'startTime'));
+      const to = pnum(str(req, 'endTime'));
+      return ok(st.income.filter((r) => (s === undefined || r.symbol === s) && (type === undefined || r.incomeType === type)
+        && (!Number.isFinite(from) || r.time >= from) && (!Number.isFinite(to) || r.time <= to))
         .map((r) => ({ symbol: r.symbol, incomeType: r.incomeType, income: String(r.income), asset: 'USDT', info: '', time: r.time, tranId: r.tranId, tradeId: '' })));
     }
     if (m === 'GET' && path === '/fapi/v1/positionSide/dual') return ok({ dualSidePosition: false });

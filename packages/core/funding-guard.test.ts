@@ -36,6 +36,20 @@ test('Short đối xứng: SL 105 → siết xuống, làm tròn xuống', () =>
   assert.equal(fundingGuard({ ...S, lockedLoss: 320, markPrice: 104.2 }).action, 'close');
 });
 
+test('lỗ đã chốt (funding) ≥ ngân sách nhưng lệnh đang LÃI → siết SL qua phía có lợi của giá vào (không đóng), tổng lỗ tại SL ≤ 2%', () => {
+  // Long vào 100, mark 250, funding đã trả 2 100 > ngân sách 2 000: s ≥ (40 000 + 100) / (400 × 0,9995) = 100,3001… → 100,31 < mark
+  const r = fundingGuard({ ...L, markPrice: 250, lockedLoss: 2100 });
+  assert.equal(r.action, 'tighten');
+  if (r.action === 'tighten') {
+    assert.equal(r.stop, 100.31);
+    assert.ok(r.lossAtStop <= 2000 + 1e-9, `tổng ${r.lossAtStop}`);
+  }
+  // Short đối xứng: vào 100, mark 40 → s ≤ (−100 + 40 000) / (400 × 1,0005) = 99,7001… → 99,7
+  const s = fundingGuard({ ...L, side: 'short', stop: 105, markPrice: 40, lockedLoss: 2100 });
+  assert.equal(s.action, 'tighten');
+  if (s.action === 'tighten') assert.equal(s.stop, 99.7);
+});
+
 test('không bao giờ nới SL; vị thế 0 → giữ nguyên', () => {
   const r = fundingGuard({ ...L, stop: 99, lockedLoss: 0 });
   assert.equal(r.action, 'keep');

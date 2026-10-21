@@ -202,6 +202,11 @@ for (const side of SIDES) {
     close(ex.snapshot().wallet, w0 + amt);
     const inc = await api(ex, 'GET', '/fapi/v1/income', { symbol: C.symbol, incomeType: 'FUNDING_FEE' });
     assert.equal((inc.body as unknown[]).length, 1);
+    // startTime/endTime lọc theo giờ như sàn thật (kết quả lệnh sau không được cộng funding của lệnh trước)
+    const ft = Number((inc.body as Array<{ time: number }>)[0]!.time);
+    assert.equal(((await api(ex, 'GET', '/fapi/v1/income', { symbol: C.symbol, incomeType: 'FUNDING_FEE', startTime: String(ft + 1) })).body as unknown[]).length, 0);
+    assert.equal(((await api(ex, 'GET', '/fapi/v1/income', { symbol: C.symbol, incomeType: 'FUNDING_FEE', endTime: String(ft - 1) })).body as unknown[]).length, 0);
+    assert.equal(((await api(ex, 'GET', '/fapi/v1/income', { symbol: C.symbol, incomeType: 'FUNDING_FEE', startTime: String(ft), endTime: String(ft) })).body as unknown[]).length, 1);
   });
 
   test(`${side}: reduce-only không được tăng vị thế — đóng market khi chưa có vị thế / cùng chiều → -2022; TP kích hoạt khi vị thế đã đóng → REJECTED`, async () => {

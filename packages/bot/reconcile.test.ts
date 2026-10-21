@@ -407,6 +407,14 @@ for (const side of SIDES) {
     assert.equal(ofType(run([t], healthy(t), ctx(side)), 'reduce_only').length, 0);
   });
 
+  test(`[${side}] 22b. SL đã dời qua phía CÓ LỢI của giá vào (chốt chặn funding siết khi lệnh lãi) → không tính khoảng đó là rủi ro, không giảm`, () => {
+    // giá vào 100, SL 110 (Long) / 90 (Short), mark 120 / 80: chạm SL vẫn lãi 10/coin — trước đây |giá vào − SL| bị coi là rủi ro 6,06% → cắt vị thế
+    const t = mkTrade(side, { plan: { stop: px(side, 110) } as TradeState['plan'] });
+    t.legs.SL!.triggerPrice = t.plan.stop;
+    const acts = run([t], healthy(t), ctx(side, 120));
+    assert.equal(ofType(acts, 'reduce_only').length, 0, JSON.stringify(acts.filter((a) => a.type !== 'alert')));
+  });
+
   test(`[${side}] 23. mã client trùng đã nằm trên sàn (gửi xong nhưng chưa ghi kết quả) → không đặt lại, chỉ cập nhật`, () => {
     const t = mkTrade(side);
     t.legs.SL!.status = 'intent';

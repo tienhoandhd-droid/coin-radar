@@ -534,7 +534,9 @@ export function reconcile(desired: readonly TradeState[], ex: ExchangeState, ctx
 
       // ---- Rủi ro thực ở giá khớp thật (nghĩa vụ B3 #3): > 2% → giảm bằng reduce-only, SAU khi SL đã nằm trên sàn ----
       let base = floorStep(F > 0 ? Math.min(F, posQty) : posQty, step);
-      const perUnit = Math.abs(avg - stopPx) + (avg * t.plan.costPct) / 100;
+      // Có dấu: SL ở phía CÓ LỢI của giá vào (chốt chặn funding dời SL qua giá vào khi lệnh lãi) là lãi đã khóa, không phải rủi ro —
+      // trước đây dùng |giá vào − SL| nên coi khoảng lãi đó là rủi ro và cắt bớt vị thế (phát hiện bằng backtest/bot-replay.ts)
+      const perUnit = d * (avg - stopPx) + (avg * t.plan.costPct) / 100;
       // btc-regime giữ lệnh nhiều tuần: ngân sách theo vốn LÚC VÀO (luật đã khóa "≤ 2% vốn lúc vào") — vốn hiện tại gồm PnL chưa chốt của
       // CHÍNH vị thế này, dùng nó thì giá giảm về SL sẽ làm "rủi ro" vượt ngân sách và cắt bớt vị thế (luật không có giảm vị thế)
       const budgetBase = t.mode === 'btc-regime' && typeof t.equityAtEntry === 'number' && t.equityAtEntry > 0 ? t.equityAtEntry : ctx.capital;

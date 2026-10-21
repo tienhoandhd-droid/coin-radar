@@ -41,7 +41,10 @@ export function fundingGuard(i: FundingGuardInput): FundingGuardResult {
   // Long: q(e − s) + q·s·c ≤ room → s ≥ (q·e − room) / (q(1 − c)); Short: q(s − e) + q·s·c ≤ room → s ≤ (room + q·e) / (q(1 + c))
   const raw = long ? (i.qty * i.avgEntry - room) / (i.qty * (1 - i.exitCostFrac)) : (room + i.qty * i.avgEntry) / (i.qty * (1 + i.exitCostFrac));
   const stop = snapToTick(raw, i.tickSize, long ? 'up' : 'down');
-  if (!(room > 0) || (long ? stop >= i.markPrice : stop <= i.markPrice)) {
+  // room ≤ 0 (funding + phí đã trả ≥ ngân sách) KHÔNG tự nó buộc đóng: lệnh đang lãi thì SL qua phía có lợi của giá vào (vẫn dưới mark
+  // với Long) giữ tổng lỗ ≤ ngân sách — như mô phỏng đã khóa (btc-regime-sim.ts GUARD=1). Trước đây đóng ngay → cắt lệnh thắng lớn
+  // (phát hiện khi chạy bot trên dữ liệu cũ, backtest/bot-replay.ts). Chỉ đóng khi SL cần đã chạm/qua giá mark.
+  if (!Number.isFinite(stop) || (long ? stop >= i.markPrice : stop <= i.markPrice)) {
     return { action: 'close', reason: `lỗ đã chốt ${i.lockedLoss.toFixed(2)} + lỗ tại SL vượt ${i.riskPct}% vốn lúc vào; SL cần ${raw} đã qua giá mark ${i.markPrice}` };
   }
   return { action: 'tighten', stop, lossAtStop: lossAtStop(i, stop) };
