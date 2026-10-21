@@ -3,79 +3,11 @@
 //   node backtest/research/more-trades/run.ts union     — in/ghi danh sách mã từng lọt top 20 (để tải nến 4H + funding)
 //   node backtest/research/more-trades/run.ts           — chạy đủ và ghi báo cáo
 import { writeFileSync, existsSync } from 'node:fs';
-import { blockBootstrapMeanCI } from '../../stats.ts';
-import { ROOT, OUT, DAY, H4, BAN, exchangeMeta, exclusionReason, allHistSymbols } from './common.ts';
-import { P, stats, makeSeries, makeDaily, topOnDay, simulate, type Series, type Daily, type Result, type Trade } from './sim.ts';
+import { ROOT, OUT } from './common.ts';
+import { P, stats } from './sim.ts';
+import { D, ds, PER, excluded, unionTop, runOne, metrics, pct, num, n3Features, type M } from './lab.ts';
 
-const D = (s: string) => Date.parse(s + 'T00:00:00Z');
-const ds = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-const PER = { p1: { from: D('2020-01-01'), toDay: D('2025-12-31') }, p2: { from: D('2026-01-01'), toDay: D('2026-09-18') } };
-if (PER.p2.toDay + DAY > BAN) throw new Error('ASSERT: kỳ 2 chạm vùng cấm');
 const mode = process.argv[2] ?? 'all';
-
-// ---------- rổ ----------
-const meta = exchangeMeta();
-const excluded: { sym: string; why: string }[] = [];
-let dailies: Map<string, Daily> | null = null;
-function loadDailies(): Map<string, Daily> {
-  if (dailies) return dailies;
-  dailies = new Map();
-  for (const s of allHistSymbols()) {
-    const why = exclusionReason(s, meta);
-    if (why) { excluded.push({ sym: s, why }); continue; }
-    dailies.set(s, makeDaily(s, meta.get(s)?.onboard));
-  }
-  return dailies;
-}
-const topCache = new Map<number, string[]>();
-const universe = (dClosed: number) => {
-  let u = topCache.get(dClosed);
-  if (!u) { u = topOnDay([...loadDailies().values()], dClosed); topCache.set(dClosed, u); }
-  return u;
-};
-
-const series1d = new Map<string, Series>(), series4h = new Map<string, Series>();
-const get1d = (s: string) => { let x = series1d.get(s); if (!x) { x = makeSeries(s, '1d'); series1d.set(s, x); } return x; };
-const get4h = (s: string) => { let x = series4h.get(s); if (!x) { x = makeSeries(s, '4h'); series4h.set(s, x); } return x; };
-
-function unionTop(): string[] {
-  const u = new Set<string>();
-  for (const p of [PER.p1, PER.p2]) for (let d = p.from / DAY - 1; d <= p.toDay / DAY; d++) for (const s of universe(d)) u.add(s);
-  return [...u].sort();
-}
-
-function runOne(name: string, tf: '1d' | '4h', basket: boolean, per: { from: number; toDay: number }): Result {
-  const step = tf === '1d' ? DAY : H4;
-  const to = per.toDay + DAY - step;
-  const map = new Map<string, Series>();
-  const syms = basket ? unionTop() : ['BTCUSDT'];
-  for (const s of syms) map.set(s, tf === '1d' ? get1d(s) : get4h(s));
-  return simulate({ name, series: map, step, from: per.from, to, universe: basket ? universe : null, dailies: basket ? loadDailies() : null });
-}
-
-// ---------- chỉ số ----------
-type M = { tot: number; cagr: number; dd: number; mar: number; n: number; perYear: number; perDay: number; win: number; mean: number; lo: number; hi: number; pf: number; worst: number; fees: number; fund: number; top5: number; days: number };
-function metrics(r: Result, d0: number, d1: number): M { // d0, d1: ms đầu ngày, bao gồm
-  const lo = r.days.indexOf(d0 / DAY), hi = r.days.indexOf(d1 / DAY);
-  if (lo < 0 || hi < 0) throw new Error(`${r.name}: thiếu ngày ${ds(d0)}..${ds(d1)} trên đường vốn`);
-  const start = lo === 0 ? 10000 : r.eq[lo - 1]!, end = r.eq[hi]!;
-  let pk = start, dd = 0; for (let i = lo; i <= hi; i++) { pk = Math.max(pk, r.eq[i]!); dd = Math.max(dd, 1 - r.eq[i]! / pk); }
-  const days = hi - lo + 1, tot = end / start - 1, cagr = Math.pow(end / start, 365 / days) - 1;
-  const tr = r.trades.filter((t) => t.e >= d0 && t.e < d1 + DAY);
-  const pc = tr.map((t) => t.pnl / t.eq0);
-  const ci = blockBootstrapMeanCI(pc, tr.map((t) => ds(t.e)), { resamples: 5000, seed: 20261019, alpha: 0.05 });
-  const gp = tr.filter((t) => t.pnl > 0).reduce((s, t) => s + t.pnl, 0), gl = -tr.filter((t) => t.pnl < 0).reduce((s, t) => s + t.pnl, 0);
-  const net = gp - gl;
-  const top5 = [...tr].sort((a, b) => b.pnl - a.pnl).slice(0, 5).reduce((s, t) => s + t.pnl, 0);
-  return {
-    tot, cagr, dd, mar: dd > 0 ? cagr / dd : NaN, n: tr.length, perYear: tr.length / (days / 365), perDay: tr.length / days,
-    win: tr.length ? tr.filter((t) => t.pnl > 0).length / tr.length : NaN, mean: ci.mean, lo: ci.lo, hi: ci.hi,
-    pf: gl > 0 ? gp / gl : Infinity, worst: tr.length ? Math.max(...pc.map((x) => -x)) : NaN,
-    fees: tr.reduce((s, t) => s + t.fees, 0) / start, fund: tr.reduce((s, t) => s + t.fund, 0) / start, top5: net > 0 ? top5 / net : NaN, days,
-  };
-}
-const pct = (x: number, d = 1) => Number.isFinite(x) ? (x * 100).toFixed(d).replace('.', ',') + '%' : '—';
-const num = (x: number, d = 2) => Number.isFinite(x) ? x.toFixed(d).replace('.', ',') : (x === Infinity ? '∞' : '—');
 
 if (mode === 'control') {
   const r = runOne('Đối chứng', '1d', false, PER.p1);
@@ -100,7 +32,16 @@ const VARS: { key: string; name: string; tf: '1d' | '4h'; basket: boolean }[] = 
 ];
 const union = unionTop();
 for (const s of union) if (!existsSync(`${OUT}/4h/${s}.json`)) throw new Error(`thiếu nến 4H ${s} — chạy dl.ts 4h trước`);
-const res = VARS.map((v) => ({ v, r1: runOne(v.name, v.tf, v.basket, PER.p1), r2: runOne(v.name, v.tf, v.basket, PER.p2) }));
+// N3 ghi kèm bối cảnh lúc vào từng lệnh (chỉ ghi lại, không đổi quyết định) → data/history/more-trades/n3-trades.json
+const ex = (k: string) => (k === 'N3' ? { features: n3Features } : {});
+const res = VARS.map((v) => ({ v, r1: runOne(v.name, v.tf, v.basket, PER.p1, ex(v.key)), r2: runOne(v.name, v.tf, v.basket, PER.p2, ex(v.key)) }));
+for (const x of res) if (x.v.key === 'N3') writeFileSync(`${OUT}/n3-trades.json`, JSON.stringify({
+  note: 'Lệnh N3 (rổ top 20, 4H) — kỳ 1 = 2020-01-01→2025-12-31, kỳ 2 = 2026-01-01→2026-09-18 (hai lần chạy riêng, vốn 10 000). Thời điểm ms UTC; pnl/fund/fees bằng USDT; fund > 0 = trả, < 0 = nhận; R = pnl ÷ riskAmt; mfe/mae = % giá so với giá vào; f = bối cảnh lúc vào (xem lab.ts n3Features).',
+  trades: [...x.r1.trades.map((t) => ({ run: 'p1', ...t })), ...x.r2.trades.map((t) => ({ run: 'p2', ...t }))].map((t) => ({
+    ...t, eIso: new Date(t.e).toISOString(), xIso: new Date(t.x).toISOString(), pctEq: t.pnl / t.eq0, R: t.pnl / t.riskAmt,
+    holdH: (t.x - t.e) / 3_600_000, mfe: t.hi / t.entryPx - 1, mae: t.lo / t.entryPx - 1,
+  })),
+}));
 for (const x of res) console.log(`${x.v.key}: kỳ 1 ${x.r1.trades.length} lệnh, kỳ 2 ${x.r2.trades.length} lệnh`);
 
 let md = '';

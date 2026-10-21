@@ -75,7 +75,7 @@ export function ret50(x: Daily, d: number): number {
   return i === undefined || j === undefined ? NaN : x.c[i]! / x.c[j]! - 1;
 }
 // lợi suất log ngày (khóa = openTime của nến sau), chỉ các nến ngày ≤ d (đã đóng trước quyết định), lấy 2×corrDays gần nhất
-function retsUpTo(x: Daily, d: number): Map<number, number> {
+export function retsUpTo(x: Daily, d: number): Map<number, number> {
   const m = new Map<number, number>();
   const i = x.byDay.get(d) ?? (() => { let k = -1; for (let q = 0; q < x.t.length && Math.floor(x.t[q]! / DAY) <= d; q++) k = q; return k; })();
   for (let k = Math.max(1, i - 2 * P.corrDays); k <= i; k++) {
@@ -86,16 +86,30 @@ function retsUpTo(x: Daily, d: number): Map<number, number> {
 }
 
 // ---------- mô phỏng ----------
-export type Trade = { sym: string; e: number; x: number; pnl: number; fund: number; fees: number; eq0: number; reason: string };
-type Pos = { s: Series; qty: number; entry: number; sl: number; eq0: number; e: number; fund: number; cost: number; fi: number; want: number };
+// Trường cấp lệnh (phân tích N3, kế hoạch 2026-10-21-phan-tich-n3.md): giá vào/ra, khối lượng, SL ban đầu, tiền rủi ro lúc vào
+//   (= khối lượng × giá vào × d2, ≈ 2% vốn nếu không bị cắt theo trần rủi ro), giá cao/thấp nhất trong lúc giữ (MFE/MAE),
+//   số lệnh đang mở lúc vào (chưa tính lệnh này), funding nhận ở kỳ cực đoan (xem dropFundAbove) và bối cảnh lúc vào (f).
+export type Trade = {
+  sym: string; e: number; x: number; pnl: number; fund: number; fees: number; eq0: number; reason: string;
+  entryPx: number; exitPx: number; qty: number; sl0: number; riskAmt: number; hi: number; lo: number; nOpen: number; fundX: number;
+  f: Record<string, number> | null;
+};
+type Pos = { s: Series; qty: number; entry: number; sl: number; eq0: number; e: number; fund: number; cost: number; fi: number; want: number;
+  sl0: number; riskAmt: number; hi: number; lo: number; nOpen: number; fundX: number; f: Record<string, number> | null };
 export type Result = { name: string; days: number[]; eq: number[]; trades: Trade[]; corrBlocked: number; riskTrimmed: number; riskBlocked: number; maxOpenBlocked: number; maxConcurrent: number };
 
 export function simulate(o: {
   name: string; series: Map<string, Series>; step: number; from: number; to: number; // [from, to] theo ms mốc mở nến; to = mở nến cuối cùng
   universe: ((dClosed: number) => string[]) | null; // null = chỉ BTC (một mã)
   dailies: Map<string, Daily> | null;
+  // Tùy chọn cho phân tích N3 (bỏ trống = luật N3 gốc, kết quả không đổi):
+  features?: (sym: string, t: number, i: number, nOpen: number) => Record<string, number>; // bối cảnh lúc vào (chỉ dùng dữ liệu trước t)
+  allow?: (f: Record<string, number>) => boolean; // luật lọc vào lệnh (cần features)
+  maxOpen?: number; // thay trần số lệnh mở P.maxOpen
+  dropFundAbove?: number; // > 0: BỎ khoản funding NHẬN ở kỳ có |funding quy 8 giờ| > ngưỡng (đo lãi khi không có funding bơm)
 }): Result {
   const { series, step } = o;
+  const maxOpen = o.maxOpen ?? P.maxOpen;
   let cash = 10000;
   const open = new Map<string, Pos>();
   const trades: Trade[] = []; const days: number[] = []; const eq: number[] = [];
@@ -110,17 +124,22 @@ export function simulate(o: {
     const c = P.side * px * p.qty;
     cash += p.qty * px - c;
     const pnl = p.qty * (px - p.entry) - p.cost - c - p.fund;
-    trades.push({ sym: p.s.sym, e: p.e, x: t, pnl, fund: p.fund, fees: p.cost + c, eq0: p.eq0, reason });
+    trades.push({ sym: p.s.sym, e: p.e, x: t, pnl, fund: p.fund, fees: p.cost + c, eq0: p.eq0, reason,
+      entryPx: p.entry, exitPx: px, qty: p.qty, sl0: p.sl0, riskAmt: p.riskAmt, hi: Math.max(p.hi, px), lo: Math.min(p.lo, px), nOpen: p.nOpen, fundX: p.fundX, f: p.f });
     open.delete(p.s.sym);
   };
   const payF = (p: Pos, upto: number) => {
     const f = p.s.fund;
     while (p.fi < f.length && f[p.fi]!.t <= upto) {
       const x = f[p.fi++]!;
+      const gap = p.fi >= 2 ? x.t - f[p.fi - 2]!.t : 8 * 3_600_000; // khoảng giữa hai kỳ funding (1/4/8 giờ)
+      const extreme = o.dropFundAbove !== undefined && x.r < 0 && Math.abs(x.r) * (8 * 3_600_000 / gap) > o.dropFundAbove;
       const bt = Math.floor(x.t / step) * step; const j = p.s.idx.get(bt);
       if (j === undefined) continue; // không có nến chứa kỳ funding (như mô phỏng gốc: bỏ)
       const frac = (x.t - bt) / step; const px = p.s.b.o[j]! + (p.s.b.c[j]! - p.s.b.o[j]!) * frac;
-      const amt = p.qty * px * x.r; cash -= amt; p.fund += amt;
+      const amt = p.qty * px * x.r;
+      if (extreme) { p.fundX += amt; continue; } // khoản nhận cực đoan: ghi lại nhưng không cộng vào vốn
+      cash -= amt; p.fund += amt;
     }
   };
   const riskOf = (p: Pos) => p.sl >= p.entry ? 0 : Math.max(0, (p.entry - p.sl) * p.qty + p.cost + p.fund + (P.side + P.slip) * p.sl * p.qty);
@@ -139,7 +158,9 @@ export function simulate(o: {
     for (const c of pending) {
       const s = series.get(c.sym)!; const i = s.idx.get(t);
       if (i === undefined || open.has(c.sym)) continue;
-      if (open.size >= P.maxOpen) { maxOpenBlocked++; continue; }
+      let f: Record<string, number> | null = null;
+      if (o.allow) { f = o.features!(c.sym, t, i, open.size); if (!o.allow(f)) continue; }
+      if (open.size >= maxOpen) { maxOpenBlocked++; continue; }
       if (o.dailies && open.size) {
         const rNew = retsUpTo(o.dailies.get(c.sym)!, dClosedPrev);
         let bad = false;
@@ -164,13 +185,16 @@ export function simulate(o: {
       if (!(qty > 0)) continue;
       const cost = P.side * entry * qty; cash -= entry * qty + cost;
       let fi = 0; while (fi < s.fund.length && s.fund[fi]!.t <= t) fi++;
-      open.set(c.sym, { s, qty, entry, sl, eq0: eqNow, e: t, fund: 0, cost, fi, want: 1 });
+      if (o.features && !f) f = o.features(c.sym, t, i, open.size);
+      open.set(c.sym, { s, qty, entry, sl, eq0: eqNow, e: t, fund: 0, cost, fi, want: 1, sl0: sl, riskAmt: qty * entry * d2, hi: entry, lo: entry, nOpen: open.size, fundX: 0, f });
     }
     maxConcurrent = Math.max(maxConcurrent, open.size);
     // 2) trong nến: funding còn lại, chốt chặn funding, chạm SL
     for (const p of [...open.values()]) {
       const i = p.s.idx.get(t); if (i === undefined) continue;
       payF(p, t + step - 1);
+      p.hi = Math.max(p.hi, p.s.b.h[i]!);
+      if (!(p.s.b.l[i]! <= p.sl)) p.lo = Math.min(p.lo, p.s.b.l[i]!); // nến chạm SL: đáy tính bằng giá khớp (lúc đóng lệnh)
       const roomG = P.risk * p.eq0 - p.cost - p.fund - (P.side + P.slip) * p.sl * p.qty;
       const slMin = p.entry - roomG / p.qty;
       if (slMin > p.sl) p.sl = slMin;
